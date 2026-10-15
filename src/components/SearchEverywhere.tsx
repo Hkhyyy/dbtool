@@ -1,0 +1,355 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ConnectionView, dbVisible, meta, targetId } from "../lib/api";
+import { fuzzyScore } from "../lib/fuzzy";
+import { ColumnIcon, RoutineIcon, SchemaIcon, SequenceIcon, TableIcon, ViewIcon } from "./icons";
+
+export type SeTab = "all" | "database" | "files" | "symbols" | "actions";
+const TABS: { id: SeTab; label: string }[] = [
+  { id: "all", label: "All" },
+  { id: "database", label: "Database" },
+  { id: "files", label: "Files" },
+  { id: "symbols", label: "Symbols" },
+  { id: "actions", label: "Actions" },
+];
+
+export interface DbObject {
+  connId: string;
+  db: string;
+  schema: string;
+  name: string;
+  /** schema | table | view | matview | sequence | foreign | function | procedure | column */
+  kind: string;
+  /** column 일 때 소속 테이블 */
+  table?: string;
+  type?: string;
+}
+export interface FileItem {
+  key: string;
+  icon: string;
+  title: string;
+  hint: string;
+  open: boolean;
+}
+export interface ActionItem {
+  name: string;
+  shortcut?: string;
+  group?: string;
+  run: () => void;
+  disabled?: boolean;
+}
+
+type Row =
+  | { t: "db"; o: DbObject; score: number }
+  | { t: "file"; f: FileItem; score: number }
+  | { t: "action"; a: ActionItem; score: number };
+
+// ── 객체 인덱스 캐시 (대상 DB별). Refresh(⌥⌘Y)·재접속 시 invalidate ──
+const objCache = new Map<string, Promise<DbObject[]>>();
+const colCache = new Map<string, Promise<DbObject[]>>();
+const dbCache = new Map<string, Promise<string[]>>();
+export function invalidateSearchIndex(connId?: string) {
+  for (const m of [objCache, colCache, dbCache] as Map<string, unknown>[])
+    for (const k of [...m.keys()]) if (!connId || k === connId || k.startsWith(connId + "::")) m.delete(k);
+}
+const defaultDbOf = (c: ConnectionView) => c.database || (c.kind === "postgres" ? "postgres" : "");
+async function targetsOf(c: ConnectionView): Promise<string[]> {
+  if (c.options?.singleDb) return [defaultDbOf(c)];
+  if (!dbCache.has(c.id)) dbCache.set(c.id, meta.databases(c.id).catch(() => [defaultDbOf(c)]));
+  const dbs = await dbCache.get(c.id)!;
+  return dbs.filter((d) => dbVisible(c.scope, d, defaultDbOf(c)) && !["template0", "template1", "rdsadmin"].includes(d)).slice(0, 8);
+}
+function objectsOf(c: ConnectionView, db: string): Promise<DbObject[]> {
+  const key = targetId(c.id, db);
+  if (!objCache.has(key))
+    objCache.set(
+      key,
+      meta.objectIndex(key).then(
+        (xs) => xs.map((x) => ({ connId: c.id, db, schema: x.schema, name: x.name, kind: x.kind })),
+        (e) => {
+          objCache.delete(key);
+          throw e;
+        },
+      ),
+    );
+  return objCache.get(key)!;
+}
+function columnsOf(c: ConnectionView, db: string): Promise<DbObject[]> {
+  const key = targetId(c.id, db);
+  if (!colCache.has(key))
+    colCache.set(
+      key,
+      meta.completion(key).then(
+        (ts) => ts.flatMap((t) => t.columns.map(([name, type]) => ({ connId: c.id, db, schema: t.schema, name, kind: "column", table: t.name, type }))),
+        (e) => {
+          colCache.delete(key);
+          throw e;
+        },
+      ),
+    );
+  return colCache.get(key)!;
+}
+
+const KIND_ICON: Record<string, React.ReactNode> = {
+  schema: <SchemaIcon />,
+  table: <TableIcon />,
+  foreign: <TableIcon />,
+  view: <ViewIcon />,
+  matview: <ViewIcon />,
+  sequence: <SequenceIcon />,
+  function: <RoutineIcon />,
+  procedure: <RoutineIcon />,
+  column: <ColumnIcon />,
+};
+
+interface Props {
+  initialTab: SeTab;
+  conns: ConnectionView[];
+  /** Context Data Sources: 지금 작업 중인 접속 */
+  contextConnId?: string;
+  files: FileItem[];
+  actions: ActionItem[];
+  onClose: () => void;
+  onSelectInTree: (o: DbObject) => void;
+  onOpenData: (o: DbObject) => void;
+  onDdl: (o: DbObject) => void;
+  onQuickDoc: (o: DbObject) => void;
+  onOpenFile: (key: string) => void;
+}
+
+export function SearchEverywhere(p: Props) {
+  const [tab, setTab] = useState<SeTab>(p.initialTab);
+  const [q, setQ] = useState("");
+  const [sel, setSel] = useState(0);
+  const [onlyContext, setOnlyContext] = useState(false);
+  const [objects, setObjects] = useState<DbObject[]>([]);
+  const [columns, setColumns] = useState<DbObject[]>([]);
+  const [loading, setLoading] = useState(0);
+  const [errors, setErrors] = useState<string[]>([]);
+  const listRef = useRef<HTMLDivElement>(null);
+
+  const scopeConns = p.conns.filter((c) => c.connected && c.kind === "postgres" && (!onlyContext || c.id === p.contextConnId));
+  const scopeKey = scopeConns.map((c) => c.id).join(",");
+
+  // 대상 DB 인덱스 로드
+  useEffect(() => {
+    let alive = true;
+    const wantCols = tab === "symbols" || tab === "all";
+    setErrors([]);
+    (async () => {
+      const jobs: Promise<void>[] = [];
+      const objs: DbObject[][] = [];
+      const cols: DbObject[][] = [];
+      for (const c of scopeConns) {
+        for (const db of await targetsOf(c)) {
+          setLoading((n) => n + 1);
+          jobs.push(
+            objectsOf(c, db)
+              .then((xs) => void objs.push(xs))
+              .catch((e) => {
+                if (alive) setErrors((es) => [...es, `${c.name}/${db}: ${e}`]);
+              })
+              .finally(() => {
+                if (alive) setLoading((n) => n - 1);
+              }),
+          );
+          if (wantCols) jobs.push(columnsOf(c, db).then((xs) => void cols.push(xs)).catch(() => {}));
+        }
+      }
+      // 먼저 끝난 것부터 보여 준다
+      const flush = () => {
+        if (!alive) return;
+        setObjects(objs.flat());
+        setColumns(cols.flat());
+      };
+      jobs.forEach((j) => j.then(flush));
+      await Promise.allSettled(jobs);
+      flush();
+    })();
+    return () => {
+      alive = false;
+      setLoading(0);
+    };
+  }, [scopeKey, tab]);
+
+  const connName = (id: string) => p.conns.find((c) => c.id === id)?.name ?? "";
+  const rows: Row[] = useMemo(() => {
+    const query = q.trim();
+    const out: Row[] = [];
+    const matchDb = (o: DbObject) => {
+      const s1 = fuzzyScore(query, o.name);
+      const s2 = query.includes(".") ? fuzzyScore(query, `${o.table ? o.table : o.schema}.${o.name}`) : null;
+      const s = Math.max(s1 ?? -Infinity, s2 ?? -Infinity);
+      return s === -Infinity ? null : s;
+    };
+    if (tab === "all" || tab === "database") {
+      if (query || tab === "database")
+        for (const o of objects) {
+          const s = matchDb(o);
+          if (s !== null) out.push({ t: "db", o, score: s + (o.kind === "table" ? 3 : o.kind === "schema" ? 1 : 0) });
+        }
+    }
+    if (tab === "symbols" || (tab === "all" && query))
+      for (const o of tab === "symbols" ? [...columns, ...objects.filter((x) => x.kind !== "schema")] : columns) {
+        const s = matchDb(o);
+        if (s !== null) out.push({ t: "db", o, score: s - (tab === "all" ? 50 : 0) });
+      }
+    if (tab === "all" || tab === "files")
+      for (const f of p.files) {
+        const s = fuzzyScore(query, f.title);
+        if (s !== null) out.push({ t: "file", f, score: s + (query ? 0 : 1000) });
+      }
+    if (tab === "all" || tab === "actions") {
+      if (query || tab === "actions")
+        for (const a of p.actions) {
+          const s = fuzzyScore(query, a.name);
+          if (s !== null) out.push({ t: "action", a, score: s - (tab === "all" ? 20 : 0) });
+        }
+    }
+    // 같은 점수면 짧은 이름이 먼저 (안정 정렬)
+    return out.sort((a, b) => b.score - a.score).slice(0, 200);
+  }, [q, tab, objects, columns, p.files, p.actions]);
+
+  useEffect(() => setSel(0), [q, tab]);
+  useEffect(() => {
+    listRef.current?.querySelector(".se-row.sel")?.scrollIntoView({ block: "nearest" });
+  }, [sel]);
+
+  const cur = rows[Math.min(sel, rows.length - 1)];
+  const run = (r: Row | undefined, how: "enter" | "data" | "ddl" | "doc" | "select" = "enter") => {
+    if (!r) return;
+    if (r.t === "action") {
+      if (r.a.disabled) return;
+      p.onClose();
+      return r.a.run();
+    }
+    if (r.t === "file") {
+      p.onClose();
+      return p.onOpenFile(r.f.key);
+    }
+    const o = r.o.kind === "column" ? { ...r.o, kind: "table", name: r.o.table!, table: undefined } : r.o;
+    if (how === "doc") return p.onQuickDoc(o);
+    p.onClose();
+    const relation = ["table", "view", "matview", "foreign"].includes(o.kind);
+    if (how === "data" && relation) return p.onOpenData(o);
+    if (how === "ddl" && o.kind !== "schema") return p.onDdl(o);
+    p.onSelectInTree(o);
+  };
+
+  const onKey = (e: React.KeyboardEvent) => {
+    e.stopPropagation();
+    const mod = e.metaKey || e.ctrlKey;
+    const go = (fn: () => void) => {
+      e.preventDefault();
+      fn();
+    };
+    if (e.key === "Escape") return go(p.onClose);
+    if (e.key === "Tab") return go(() => setTab(TABS[(TABS.findIndex((t) => t.id === tab) + (e.shiftKey ? -1 : 1) + TABS.length) % TABS.length].id));
+    if (e.key === "ArrowDown" && !mod) return go(() => setSel((x) => Math.min(x + 1, rows.length - 1)));
+    if (e.key === "ArrowUp") return go(() => setSel((x) => Math.max(x - 1, 0)));
+    if (e.key === "PageDown") return go(() => setSel((x) => Math.min(x + 10, rows.length - 1)));
+    if (e.key === "PageUp") return go(() => setSel((x) => Math.max(x - 10, 0)));
+    if (e.key === "ArrowDown" && mod) return go(() => run(cur, "data"));
+    if (e.key === "Enter") return go(() => run(cur));
+    if (mod && e.key.toLowerCase() === "b") return go(() => run(cur, "ddl"));
+    if (e.key === "F1" && e.altKey) return go(() => run(cur, "select"));
+    if (e.key === "F1") return go(() => run(cur, "doc"));
+  };
+
+  const label = (r: Row) => {
+    if (r.t === "action")
+      return (
+        <>
+          <span className="se-icon">⚡</span>
+          <span className={"se-name" + (r.a.disabled ? " dim" : "")}>{r.a.name}</span>
+          {r.a.group && <span className="se-loc">{r.a.group}</span>}
+          <span className="grow" />
+          {r.a.shortcut && <span className="se-kbd">{r.a.shortcut}</span>}
+        </>
+      );
+    if (r.t === "file")
+      return (
+        <>
+          <span className="se-icon">{r.f.icon}</span>
+          <span className={"se-name" + (r.f.open ? "" : " dim")}>{r.f.title}</span>
+          <span className="grow" />
+          <span className="se-loc">{r.f.hint}</span>
+        </>
+      );
+    const o = r.o;
+    return (
+      <>
+        <span className="se-icon">{KIND_ICON[o.kind] ?? "•"}</span>
+        <span className="se-name">{o.name}</span>
+        {o.kind === "column" && <span className="se-type">{o.type}</span>}
+        <span className="se-loc">
+          {o.kind === "schema" ? "" : o.kind === "column" ? `${o.schema}.${o.table}` : o.schema}
+        </span>
+        <span className="grow" />
+        <span className="se-loc">
+          {connName(o.connId)} · {o.db}
+        </span>
+      </>
+    );
+  };
+
+  const groupOf = (r: Row) => (r.t === "action" ? "Actions" : r.t === "file" ? "Files" : r.o.kind === "column" ? "Symbols" : "Database");
+
+  return (
+    <div className="modal-backdrop clear" onMouseDown={p.onClose}>
+      <div className="popup search-everywhere" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="se-head">
+          <div className="se-tabs">
+            {TABS.map((t) => (
+              <span key={t.id} className={tab === t.id ? "on" : ""} onClick={() => setTab(t.id)}>
+                {t.label}
+              </span>
+            ))}
+          </div>
+          <span className="grow" />
+          {(tab === "database" || tab === "symbols" || tab === "all") && (
+            <select className="se-scope" value={onlyContext ? "ctx" : "all"} onChange={(e) => setOnlyContext(e.target.value === "ctx")} title="Search scope">
+              <option value="all">All Places</option>
+              <option value="ctx" disabled={!p.contextConnId}>
+                Context Data Sources
+              </option>
+            </select>
+          )}
+        </div>
+        <div className="se-input">
+          <span className="se-glass">⌕</span>
+          <input autoFocus value={q} spellCheck={false} onChange={(e) => setQ(e.target.value)} onKeyDown={onKey} placeholder={tab === "actions" ? "Type action name" : "Type / to see commands"} />
+          {loading > 0 && <span className="se-spin" title="Loading database objects…">◌</span>}
+        </div>
+        <div className="se-list" ref={listRef}>
+          {rows.map((r, i) => {
+            const g = groupOf(r);
+            const showGroup = tab === "all" && (i === 0 || groupOf(rows[i - 1]) !== g);
+            return (
+              <div key={i}>
+                {showGroup && <div className="se-group">{g}</div>}
+                <div className={"se-row" + (i === sel ? " sel" : "")} onMouseEnter={() => setSel(i)} onClick={() => run(r)}>
+                  {label(r)}
+                </div>
+              </div>
+            );
+          })}
+          {!rows.length && (
+            <div className="popup-empty">
+              {loading > 0 ? "Loading…" : !scopeConns.length && tab !== "files" && tab !== "actions" ? "No connected data sources. Connect one to search database objects." : "Nothing found"}
+            </div>
+          )}
+          {errors.map((er) => (
+            <div key={er} className="se-err">
+              {er}
+            </div>
+          ))}
+        </div>
+        <div className="popup-foot">
+          {cur?.t === "db"
+            ? "↩ Select in Database Explorer   ⌘↓ Edit Data   ⌘B Go to DDL   F1 Quick Documentation   ⇥ Next tab"
+            : "↩ Open   ⇥ Next tab   ⇧⇧ Search Everywhere"}
+        </div>
+      </div>
+    </div>
+  );
+}

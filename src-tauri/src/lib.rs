@@ -1,0 +1,102 @@
+mod commands;
+// 엔진은 dbtool-core (TUI·MCP 와 공유)
+pub use dbtool_core::{app, db, error, meta, redisdb, secrets, store};
+
+use tauri::Manager;
+
+pub(crate) fn app_context<R: tauri::Runtime>() -> tauri::Context<R> {
+    tauri::generate_context!()
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
+        .setup(|app| {
+            // 기본 메뉴의 "Close Window(⌘W)"가 탭 닫기 단축키를 가로채지 않도록 메뉴를 직접 구성
+            use tauri::menu::{MenuBuilder, SubmenuBuilder};
+            let app_menu = SubmenuBuilder::new(app, "dbtool")
+                .about(None)
+                .separator()
+                .hide()
+                .hide_others()
+                .show_all()
+                .separator()
+                .quit()
+                .build()?;
+            let edit_menu = SubmenuBuilder::new(app, "Edit")
+                .undo()
+                .redo()
+                .separator()
+                .cut()
+                .copy()
+                .paste()
+                .select_all()
+                .build()?;
+            let window_menu = SubmenuBuilder::new(app, "Window").minimize().fullscreen().build()?;
+            // Help › Keymap Reference (단축키는 웹뷰에서 ⇧⌘/ 로 처리 — 메뉴 가속키를 달면 이중 실행)
+            let keymap = tauri::menu::MenuItemBuilder::with_id("keymap", "Keymap Reference").build(app)?;
+            let help_menu = SubmenuBuilder::new(app, "Help").item(&keymap).build()?;
+            app.set_menu(MenuBuilder::new(app).items(&[&app_menu, &edit_menu, &window_menu, &help_menu]).build()?)?;
+            app.on_menu_event(|app, ev| {
+                if ev.id() == "keymap" {
+                    use tauri::Emitter;
+                    let _ = app.emit("open-keymap", ());
+                }
+            });
+
+            let dir = app.path().app_config_dir()?;
+            let secret_file = secrets::SecretFile::open(&dir)?;
+            app.manage(app::AppState::new(store::Store::new(dir), secret_file));
+            // keep-alive / auto-disconnect
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                use tauri::Emitter;
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    let state = handle.state::<app::AppState>();
+                    for id in app::housekeeping(&state).await {
+                        eprintln!("[dbtool] auto-disconnect {id}");
+                        let _ = handle.emit("conn-disconnected", id);
+                    }
+                }
+            });
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            commands::list_connections,
+            commands::save_connection,
+            commands::delete_connection,
+            commands::test_connection,
+            commands::test_ssh,
+            commands::connect,
+            commands::disconnect,
+            commands::run_query,
+            commands::export_connections,
+            commands::import_connections,
+            commands::export_csv,
+            commands::write_text_file,
+            commands::list_databases,
+            commands::list_schemas,
+            commands::list_objects,
+            commands::table_detail,
+            commands::completion_meta,
+            commands::object_ddl,
+            commands::fetch_more,
+            commands::cancel_query,
+            commands::close_session,
+            commands::set_tx_mode,
+            commands::commit_tx,
+            commands::rollback_tx,
+            commands::execute_batch,
+            commands::object_index,
+            commands::full_text_search,
+            commands::redis_scan,
+            commands::redis_key,
+            commands::redis_exec,
+            commands::redis_exec_line,
+        ])
+        .run(app_context())
+        .expect("error while running tauri application");
+}

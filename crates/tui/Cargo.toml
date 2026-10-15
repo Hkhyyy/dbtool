@@ -1,0 +1,20 @@
+[package]
+name = "dbtool-tui"
+version = "0.1.0"
+edition = "2024"
+description = "dbtool terminal UI"
+
+[[bin]]
+name = "dbtool-tui"
+path = "src/main.rs"
+
+[dependencies]
+dbtool-core = { workspace = true }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+ratatui = "0.29"
+crossterm = { version = "0.28", features = ["event-stream"] }
+tui-textarea = "0.7"
+futures = "0.3"
+uuid = { version = "1", features = ["v4"] }
+unicode-width = "0.2"

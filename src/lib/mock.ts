@@ -1,0 +1,115 @@
+/** 개발용: 브라우저에서 ?mock 으로 열면 Tauri 백엔드 대신 가짜 데이터를 쓴다 (화면 확인용). */
+const conns = [
+  { id: "dev", name: "[DEV] shop_app", kind: "postgres", host: "dev-db.example.com", port: 5432, user: "app", database: "shop_app", color: "#5f5b24", hasPassword: true, connected: true },
+  { id: "prod", name: "[PROD] shop_app", kind: "postgres", host: "prod-db", port: 5432, user: "app", database: "shop_app", color: "#6e2a2a", hasPassword: true, connected: false,
+    ssh: { enabled: true, host: "bastion.example.com", port: 22, user: "ec2-user", auth: "key", keyPath: "~/.ssh/id_ed25519" } },
+  { id: "my", name: "[MySQL] shop", kind: "mysql", host: "127.0.0.1", port: 13306, user: "root", database: "shop", color: "#22524f", hasPassword: true, connected: true },
+  { id: "rd", name: "[Redis] cache", kind: "redis", host: "127.0.0.1", port: 16379, user: "", database: "0", color: "#6e2a2a", hasPassword: false, connected: true },
+  { id: "local", name: "[LOCAL] TestServer", kind: "postgres", host: "localhost", port: 5432, user: "dev", database: "", color: null, hasPassword: false, connected: false },
+];
+const result = {
+  columns: [
+    { name: "id", typeName: "INT8" },
+    { name: "user_name", typeName: "VARCHAR" },
+    { name: "amount", typeName: "NUMERIC" },
+    { name: "created_at", typeName: "TIMESTAMPTZ" },
+    { name: "memo", typeName: "TEXT" },
+  ],
+  rows: Array.from({ length: 500 }, (_, i) => [i + 1, `user_${i + 1}`, (i * 1234.5).toFixed(2), "2026-10-15 12:00:00.000 +09:00", i % 3 ? null : "note"]),
+  rowsAffected: 0,
+  truncated: true,
+  elapsedMs: 12,
+  hasResultSet: true,
+};
+const handlers: Record<string, (a: any) => unknown> = {
+  list_connections: () => conns,
+  list_databases: (a: any) => (a.id === "rd" ? ["db0", "db3"] : a.id === "my" ? ["information_schema", "mysql", "shop", "sys"] : ["postgres", "shop_app", "shop_app_test"]),
+  redis_scan: (a: any) => ({
+    cursor: "0",
+    keys: [
+      { key: "session:abc", type: "string", ttl: 3_540_000 },
+      { key: "user:1", type: "hash", ttl: -1 },
+      { key: "user:1:name", type: "string", ttl: -1 },
+      { key: "queue:mail", type: "list", ttl: -1 },
+      { key: "tags", type: "set", ttl: -1 },
+      { key: "rank", type: "zset", ttl: 86_400_000 },
+      { key: "events", type: "stream", ttl: -1 },
+    ].filter((k) => !a.typeFilter || k.type === a.typeFilter),
+  }),
+  redis_key: (a: any) =>
+    a.key === "user:1"
+      ? { type: "hash", ttl: -1, length: 3, memory: 96, encoding: "listpack", truncated: false, value: [["age", "30"], ["email", "a@b.c"], ["profile", '{"city":"Seoul","tags":["vip","beta"]}']] }
+      : a.key === "rank"
+      ? { type: "zset", ttl: 86400000, length: 2, memory: 72, encoding: "listpack", truncated: false, value: [["alice", "10"], ["bob", "20"]] }
+      : { type: "string", ttl: 3540000, length: 42, memory: 80, encoding: "embstr", truncated: false, value: '{"uid":1,"roles":["admin"],"exp":1760000000}' },
+  redis_exec: () => ({ status: "OK" }),
+  redis_exec_line: (a: any) => (/^hgetall/i.test(a.line) ? ["age", "30", "email", "a@b.c"] : /^incr/i.test(a.line) ? 7 : /^get/i.test(a.line) ? null : { status: "OK" }),
+  object_index: () => [
+    { schema: "public", name: "public", kind: "schema" },
+    { schema: "billing", name: "billing", kind: "schema" },
+    { schema: "public", name: "users", kind: "table" },
+    { schema: "public", name: "user_payment_history", kind: "table" },
+    { schema: "public", name: "payments", kind: "table" },
+    { schema: "public", name: "contracts", kind: "table" },
+    { schema: "public", name: "active_users", kind: "view" },
+    { schema: "public", name: "users_id_seq", kind: "sequence" },
+    { schema: "public", name: "calc_fee", kind: "function" },
+  ],
+  full_text_search: (a: any) => [
+    { schema: "public", table: "users", whereClause: `"user_name"::text ilike '%${a.req.text}%'`, result: { ...result, rows: result.rows.slice(0, 3), truncated: false } },
+  ],
+  list_schemas: (a: any) => (String(a.id).startsWith("rd") ? [{ name: String(a.id).split("::")[1] || "db0", isSystem: false }] : null) ?? (String(a.id).startsWith("my") ? [{ name: String(a.id).split("::")[1] || "shop", isSystem: false }] : null) ?? [{ name: "public", isSystem: false }, { name: "billing", isSystem: false }, { name: "pg_catalog", isSystem: true }],
+  list_objects: (a: any) => String(a.id).startsWith("rd") ? { relations: [["events", "stream"], ["rank", "zset"], ["session:abc", "string"], ["tags", "set"], ["user:1", "hash"]].map(([name, t]) => ({ name, kind: "key", comment: t, rowEstimate: null })), routines: [] } : ({
+    relations: [
+      { name: "contracts", kind: "table", comment: "계약", rowEstimate: 1200 },
+      { name: "payments", kind: "table", comment: null, rowEstimate: 50000 },
+      { name: "users", kind: "table", comment: "회원", rowEstimate: 3000 },
+      { name: "v_active_users", kind: "view", comment: null, rowEstimate: null },
+      { name: "users_id_seq", kind: "sequence", comment: null, rowEstimate: null },
+    ],
+    routines: [{ name: "calc_fee", args: "amount numeric", returns: "numeric", kind: "function" }],
+  }),
+  table_detail: () => ({
+    columns: [
+      { name: "id", dataType: "bigint", nullable: false, defaultValue: "nextval('users_id_seq'::regclass)", comment: null, isPk: true },
+      { name: "user_name", dataType: "character varying(50)", nullable: false, defaultValue: null, comment: "이름", isPk: false },
+      { name: "contract_id", dataType: "bigint", nullable: true, defaultValue: null, comment: null, isPk: false },
+      { name: "created_at", dataType: "timestamp with time zone", nullable: false, defaultValue: "now()", comment: null, isPk: false },
+    ],
+    indexes: [{ name: "users_pkey", definition: "CREATE UNIQUE INDEX users_pkey ON public.users USING btree (id)", isUnique: true, isPrimary: true }],
+    constraints: [
+      { name: "users_pkey", kind: "p", definition: "PRIMARY KEY (id)" },
+      { name: "users_contract_fk", kind: "f", definition: "FOREIGN KEY (contract_id) REFERENCES contracts(id)" },
+    ],
+  }),
+  completion_meta: () => [{ schema: "public", name: "users", columns: [["id", "bigint"], ["user_name", "varchar"]] }],
+  run_query: (a: any) =>
+    /^EXPLAIN/i.test(a.sql)
+      ? { ...result, columns: [{ name: "QUERY PLAN", typeName: "JSON" }], rows: [[JSON.stringify([{ Plan: { "Node Type": "Hash Join", "Join Type": "Inner", "Startup Cost": 1.5, "Total Cost": 45.2, "Plan Rows": 120, "Plan Width": 64, "Hash Cond": "(u.contract_id = c.id)", Plans: [{ "Node Type": "Seq Scan", "Relation Name": "users", Schema: "public", Alias: "u", "Startup Cost": 0, "Total Cost": 22.1, "Plan Rows": 1200, "Plan Width": 40 }, { "Node Type": "Hash", "Startup Cost": 1.2, "Total Cost": 1.2, "Plan Rows": 12, "Plan Width": 24, Plans: [{ "Node Type": "Index Scan", "Relation Name": "contracts", "Index Name": "contracts_pkey", "Startup Cost": 0.1, "Total Cost": 1.2, "Plan Rows": 12, "Plan Width": 24 }] }] } }])]], truncated: false }
+      : /^\s*(insert|update|delete)/i.test(a.sql)
+        ? { ...result, columns: [], rows: [], rowsAffected: 3, truncated: false, hasResultSet: false, inTransaction: (globalThis as any).__mockManual === true }
+        : { ...result, inTransaction: (globalThis as any).__mockManual === true },
+  set_tx_mode: (a: any) => { (globalThis as any).__mockManual = a.manual; return null; },
+  commit_tx: () => null,
+  rollback_tx: () => null,
+  object_ddl: (a: any) => `CREATE TABLE ${a.schema}.${a.name}\n(\n    id bigint DEFAULT nextval('users_id_seq'::regclass) NOT NULL,\n    user_name character varying(50) NOT NULL,\n    CONSTRAINT users_pkey PRIMARY KEY (id)\n);\n`,
+  test_connection: () => "PostgreSQL 16.11  (via SSH ec2-user@bastion.example.com)",
+  save_connection: (a: any) => {
+    const i = conns.findIndex((c: any) => c.id === a.config.id);
+    if (i >= 0) (conns as any)[i] = { ...conns[i], ...a.config };
+    return a.config;
+  },
+  fetch_more: () => ({ ...result, rows: result.rows.slice(0, 120).map((r) => [Number(r[0]) + 500, ...r.slice(1)]), truncated: false }),
+  cancel_query: () => true,
+  close_session: () => null,
+  execute_batch: (a: any) => a.statements.length,
+};
+(window as any).__TAURI_INTERNALS__ = {
+  invoke: async (cmd: string, args: unknown) => {
+    const h = handlers[cmd];
+    if (!h) throw `mock: ${cmd} not implemented`;
+    return h(args);
+  },
+  transformCallback: () => 0,
+};
+export {};

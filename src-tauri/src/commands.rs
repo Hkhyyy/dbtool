@@ -1,0 +1,232 @@
+//! 프론트엔드에서 호출하는 Tauri 커맨드. 실제 동작은 dbtool_core::app::AppState 에 있다.
+use crate::app::{AppState, ConnectionView, ImportResult};
+use crate::db::QueryResult;
+use crate::error::AppResult;
+use crate::store::ConnectionConfig;
+use tauri::State;
+
+#[tauri::command]
+pub async fn list_connections(state: State<'_, AppState>) -> AppResult<Vec<ConnectionView>> {
+    state.list_connections().await
+}
+
+/// `password`: None이면 기존 비밀번호 유지, 빈 문자열이면 삭제.
+#[tauri::command]
+pub async fn save_connection(state: State<'_, AppState>, config: ConnectionConfig, password: Option<String>, ssh_secret: Option<String>) -> AppResult<ConnectionConfig> {
+    state.save_connection(config, password, ssh_secret).await
+}
+
+#[tauri::command]
+pub async fn delete_connection(state: State<'_, AppState>, id: String) -> AppResult<()> {
+    state.delete_connection(id).await
+}
+
+/// 저장하지 않고 접속만 시험한다. `password`가 None이면 저장된 비밀번호를 쓴다.
+#[tauri::command]
+pub async fn test_connection(state: State<'_, AppState>, config: ConnectionConfig, password: Option<String>, ssh_secret: Option<String>) -> AppResult<String> {
+    state.test_connection(config, password, ssh_secret).await
+}
+
+/// SSH/SSL 탭의 Test Connection: SSH 로그인만 확인한다.
+#[tauri::command]
+pub async fn test_ssh(state: State<'_, AppState>, config: ConnectionConfig, ssh_secret: Option<String>) -> AppResult<String> {
+    state.test_ssh(config, ssh_secret).await
+}
+
+#[tauri::command]
+pub async fn connect(state: State<'_, AppState>, id: String) -> AppResult<String> {
+    state.connect(id).await
+}
+
+#[tauri::command]
+pub async fn disconnect(state: State<'_, AppState>, id: String) -> AppResult<()> {
+    state.disconnect(id).await
+}
+
+/// `tab_id`가 있으면 그 콘솔의 세션에서 실행한다 (커서·취소 지원).
+#[tauri::command]
+pub async fn run_query(state: State<'_, AppState>, id: String, sql: String, limit: Option<usize>, tab_id: Option<String>) -> AppResult<QueryResult> {
+    state.run_query(id, sql, limit, tab_id).await
+}
+
+#[tauri::command]
+pub async fn fetch_more(state: State<'_, AppState>, tab_id: String, limit: Option<usize>) -> AppResult<QueryResult> {
+    state.fetch_more(tab_id, limit).await
+}
+
+#[tauri::command]
+pub async fn cancel_query(state: State<'_, AppState>, tab_id: String) -> AppResult<bool> {
+    state.cancel_query(tab_id).await
+}
+
+/// Tx: Auto / Manual
+#[tauri::command]
+pub async fn set_tx_mode(state: State<'_, AppState>, id: String, tab_id: String, manual: bool) -> AppResult<()> {
+    state.set_tx_mode(id, tab_id, manual).await
+}
+
+#[tauri::command]
+pub async fn commit_tx(state: State<'_, AppState>, tab_id: String) -> AppResult<()> {
+    state.commit_tx(tab_id).await
+}
+
+#[tauri::command]
+pub async fn rollback_tx(state: State<'_, AppState>, tab_id: String) -> AppResult<()> {
+    state.rollback_tx(tab_id).await
+}
+
+#[tauri::command]
+pub async fn close_session(state: State<'_, AppState>, tab_id: String) -> AppResult<()> {
+    state.close_session(tab_id).await
+}
+
+#[tauri::command]
+pub async fn execute_batch(state: State<'_, AppState>, id: String, statements: Vec<String>) -> AppResult<u64> {
+    state.execute_batch(id, statements).await
+}
+
+#[tauri::command]
+pub async fn object_index(state: State<'_, AppState>, id: String) -> AppResult<Vec<crate::meta::IndexEntry>> {
+    state.object_index(id).await
+}
+
+#[tauri::command]
+pub async fn full_text_search(state: State<'_, AppState>, id: String, req: crate::meta::FtsRequest) -> AppResult<Vec<crate::meta::FtsHit>> {
+    state.full_text_search(id, req).await
+}
+
+#[tauri::command]
+pub async fn redis_scan(state: State<'_, AppState>, id: String, cursor: String, pattern: String, count: usize, type_filter: Option<String>) -> AppResult<crate::redisdb::ScanPage> {
+    state.redis_scan(id, cursor, pattern, count, type_filter).await
+}
+
+#[tauri::command]
+pub async fn redis_key(state: State<'_, AppState>, id: String, key: String, limit: Option<usize>) -> AppResult<crate::redisdb::KeyDetail> {
+    state.redis_key(id, key, limit).await
+}
+
+/// 터미널: redis-cli 처럼 한 줄을 그대로
+#[tauri::command]
+pub async fn redis_exec_line(state: State<'_, AppState>, id: String, line: String) -> AppResult<serde_json::Value> {
+    state.redis_exec_line(id, line).await
+}
+
+#[tauri::command]
+pub async fn redis_exec(state: State<'_, AppState>, id: String, args: Vec<String>) -> AppResult<serde_json::Value> {
+    state.redis_exec(id, args).await
+}
+
+#[tauri::command]
+pub async fn export_connections(state: State<'_, AppState>, path: String) -> AppResult<usize> {
+    state.export_connections(path).await
+}
+
+#[tauri::command]
+pub async fn import_connections(state: State<'_, AppState>, path: String) -> AppResult<ImportResult> {
+    state.import_connections(path).await
+}
+
+/// SQL Generator "Save to File"
+#[tauri::command]
+pub async fn write_text_file(path: String, text: String) -> AppResult<()> {
+    std::fs::write(path, text)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn export_csv(state: State<'_, AppState>, id: String, sql: String, path: String) -> AppResult<u64> {
+    state.export_csv(id, sql, path).await
+}
+
+#[tauri::command]
+pub async fn list_databases(state: State<'_, AppState>, id: String) -> AppResult<Vec<String>> {
+    state.list_databases(id).await
+}
+
+#[tauri::command]
+pub async fn list_schemas(state: State<'_, AppState>, id: String) -> AppResult<Vec<crate::meta::SchemaInfo>> {
+    state.list_schemas(id).await
+}
+
+#[tauri::command]
+pub async fn list_objects(state: State<'_, AppState>, id: String, schema: String) -> AppResult<crate::meta::SchemaObjects> {
+    state.list_objects(id, schema).await
+}
+
+#[tauri::command]
+pub async fn table_detail(state: State<'_, AppState>, id: String, schema: String, table: String) -> AppResult<crate::meta::TableDetail> {
+    state.table_detail(id, schema, table).await
+}
+
+#[tauri::command]
+pub async fn object_ddl(state: State<'_, AppState>, id: String, schema: String, name: String, kind: String) -> AppResult<String> {
+    state.object_ddl(id, schema, name, kind).await
+}
+
+#[tauri::command]
+pub async fn completion_meta(state: State<'_, AppState>, id: String) -> AppResult<Vec<crate::meta::CompletionTable>> {
+    state.completion_meta(id).await
+}
+
+#[cfg(test)]
+mod ipc_tests {
+    use super::*;
+    use crate::store::Store;
+    use tauri::ipc::{CallbackFn, InvokeBody};
+    use tauri::test::{get_ipc_response, INVOKE_KEY};
+    use tauri::webview::InvokeRequest;
+
+    fn req(cmd: &str, body: serde_json::Value) -> InvokeRequest {
+        InvokeRequest {
+            cmd: cmd.into(),
+            callback: CallbackFn(0),
+            error: CallbackFn(1),
+            url: "tauri://localhost".parse().unwrap(),
+            body: InvokeBody::Json(body),
+            headers: Default::default(),
+            invoke_key: INVOKE_KEY.to_string(),
+        }
+    }
+
+    /// 프론트엔드가 보내는 것과 같은 JSON으로 커맨드를 호출해 본다.
+    #[test]
+    fn save_and_list_via_ipc() {
+        let dir = std::env::temp_dir().join(format!("dbtool-ipc-{}", uuid::Uuid::new_v4()));
+        let app = tauri::test::mock_builder()
+            .manage(AppState::new(Store::new(dir.clone()), crate::secrets::SecretFile::open(&dir).unwrap()))
+            .invoke_handler(tauri::generate_handler![save_connection, list_connections, test_connection, list_databases, list_schemas, run_query])
+            .build(crate::app_context())
+            .unwrap();
+        let wv = tauri::WebviewWindowBuilder::new(&app, "main", Default::default()).build().unwrap();
+
+        let config = serde_json::json!({
+            "id": "", "name": "", "kind": "postgres", "host": "localhost", "port": 5432,
+            "user": std::env::var("USER").unwrap(), "database": "postgres", "color": null, "ssh": null, "passwordSaved": false
+        });
+        let t = get_ipc_response(&wv, req("test_connection", serde_json::json!({ "config": config, "password": null })));
+        println!("test_connection: {:?}", t.as_ref().map(|b| b.clone().deserialize::<serde_json::Value>().unwrap()));
+        let r = get_ipc_response(&wv, req("save_connection", serde_json::json!({ "config": config, "password": null })));
+        println!("save_connection: {:?}", r.as_ref().map(|b| b.clone().deserialize::<serde_json::Value>().unwrap()));
+        let l = get_ipc_response(&wv, req("list_connections", serde_json::json!({})));
+        println!("list_connections: {:?}", l.as_ref().map(|b| b.clone().deserialize::<serde_json::Value>().unwrap()));
+        assert!(r.is_ok() && l.is_ok());
+
+        // DB 목록과 "id::db" 대상으로 스키마 조회
+        let id = r.as_ref().unwrap().clone().deserialize::<serde_json::Value>().unwrap()["id"].as_str().unwrap().to_string();
+        let dbs = get_ipc_response(&wv, req("list_databases", serde_json::json!({ "id": id })))
+            .map(|b| b.deserialize::<Vec<String>>().unwrap())
+            .expect("list_databases");
+        println!("databases: {dbs:?}");
+        let target = format!("{id}::{}", dbs.iter().find(|d| d.as_str() != "postgres").unwrap_or(&dbs[0]));
+        let sch = get_ipc_response(&wv, req("list_schemas", serde_json::json!({ "id": target })))
+            .map(|b| b.deserialize::<serde_json::Value>().unwrap())
+            .expect("list_schemas on target db");
+        println!("schemas in {target}: {}", sch.as_array().unwrap().len());
+        let q = get_ipc_response(&wv, req("run_query", serde_json::json!({ "id": target, "sql": "select current_database()", "limit": 5, "tabId": null })))
+            .map(|b| b.deserialize::<serde_json::Value>().unwrap())
+            .expect("run_query");
+        println!("current_database on target: {}", q["rows"][0][0]);
+        assert_eq!(q["rows"][0][0].as_str().unwrap(), target.split("::").nth(1).unwrap());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
