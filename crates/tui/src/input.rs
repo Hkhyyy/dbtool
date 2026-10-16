@@ -1,5 +1,5 @@
 //! 키 입력 → 동작 (DataGrip 키맵을 터미널에 맞게)
-use crate::app::{Action, App, FieldKind, Focus, Popup, TabKind};
+use crate::app::{Action, App, Drag, DropTarget, FieldKind, Focus, Popup, SplitDir, TabKind};
 use crate::tree::NodeKind;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::layout::Rect;
@@ -40,6 +40,145 @@ fn scroll_at(app: &mut App, x: u16, y: u16, d: isize) {
     scroll(app, d);
 }
 
+/// 가로 스크롤 (트랙패드 좌우·Shift+휠): 트리는 옆으로 밀고, 그리드는 열을 옮긴다
+fn hscroll_at(app: &mut App, x: u16, y: u16, d: isize) {
+    if app.popup.is_some() {
+        return;
+    }
+    if inside(app.hits.tree, x, y) {
+        app.tree.hoff = (app.tree.hoff as isize + d).max(0) as usize;
+    } else if inside(app.hits.results, x, y) || inside(app.hits.redis_value, x, y) {
+        if let Some(g) = app.grid_mut() {
+            g.hscroll(d.signum());
+        }
+    }
+}
+
+/// 포인터가 그리드 헤더나 가로 스크롤바 위인지
+fn over_hbar(app: &mut App, x: u16, y: u16) -> bool {
+    app.popup.is_none() && app.grid_mut().is_some_and(|g| inside(g.header, x, y) || inside(g.hbar, x, y))
+}
+
+/// 끌고 있는 탭을 (x, y) 에 놓으면 어디로 가는지
+pub fn drop_target(app: &App, id: u64, x: u16, y: u16) -> Option<DropTarget> {
+    let from = app.tab_index(id).map(|i| app.tabs[i].group)?;
+    for &(g, bar, body) in &app.hits.groups {
+        if inside(bar, x, y) {
+            let before = app.hits.tabs.iter().find(|(_, x0, x1, ty)| *ty == y && x >= *x0 && x < *x1).map(|t| t.0);
+            return Some(DropTarget::Group(g, before));
+        }
+        if inside(body, x, y) {
+            if app.split.is_some() {
+                return (g != from).then_some(DropTarget::Group(g, None));
+            }
+            // 나뉘지 않은 화면: 오른쪽 / 아래쪽 가장자리에 놓으면 나눈다
+            if x >= body.x + body.width * 2 / 3 {
+                return Some(DropTarget::NewSplit(SplitDir::Right));
+            }
+            if y >= body.y + body.height * 2 / 3 {
+                return Some(DropTarget::NewSplit(SplitDir::Down));
+            }
+            return None;
+        }
+    }
+    None
+}
+
+fn mouse_down(app: &mut App, x: u16, y: u16) {
+    if app.popup.is_none() {
+        if inside(app.hits.divider, x, y) {
+            app.drag = Some(Drag::Console);
+            return;
+        }
+        if inside(app.hits.split_divider, x, y) {
+            app.drag = Some(Drag::Split);
+            return;
+        }
+        if inside(app.hits.explorer_divider, x, y) {
+            app.drag = Some(Drag::Explorer);
+            return;
+        }
+        if let Some(g) = app.grid_mut().filter(|g| inside(g.hbar, x, y)) {
+            g.hscroll_to(x);
+            app.drag = Some(Drag::HBar);
+            return;
+        }
+        // 탭: 누르면 고르고, 끌면 옮긴다
+        if let Some(&(id, ..)) = app.hits.tabs.iter().find(|(_, x0, x1, ty)| *ty == y && x >= *x0 && x < *x1) {
+            if let Some(i) = app.tab_index(id) {
+                app.activate(i);
+            }
+            app.drag = Some(Drag::Tab { id, moved: false });
+            app.drag_pos = (x, y);
+            return;
+        }
+        // 상하 분할: 아래 칸 탭 바의 빈 곳도 경계선처럼 잡을 수 있다 (테두리 한 줄만으로는 맞히기 어렵다)
+        if app.split.is_some_and(|sp| sp.dir == SplitDir::Down) && app.hits.groups.iter().any(|(g, bar, _)| *g == 1 && inside(*bar, x, y)) {
+            app.drag = Some(Drag::Split);
+            return;
+        }
+        // 포커스 없는 칸을 누르면 그 칸으로
+        let focused = app.focused_group();
+        if let Some(&(g, ..)) = app.hits.groups.iter().find(|(g, bar, body)| *g != focused && (inside(*bar, x, y) || inside(*body, x, y))) {
+            if let Some(i) = app.group_tab(g) {
+                app.activate(i);
+            }
+            return;
+        }
+    }
+    click(app, x, y);
+}
+
+fn mouse_drag(app: &mut App, x: u16, y: u16) {
+    match app.drag {
+        Some(Drag::Console) => {
+            let c = app.hits.console;
+            if c.height > 0 {
+                app.console_pct = ((y.saturating_sub(c.y) as u32 * 100 / c.height as u32) as u16).clamp(10, 90);
+            }
+        }
+        Some(Drag::Split) => {
+            let a = app.hits.split_area;
+            if let Some(sp) = &mut app.split {
+                let (p, start, len) = match sp.dir {
+                    SplitDir::Right => (x, a.x, a.width),
+                    SplitDir::Down => (y, a.y, a.height),
+                };
+                if len > 0 {
+                    sp.pct = ((p.saturating_sub(start) as u32 * 100 / len as u32) as u16).clamp(15, 85);
+                }
+            }
+        }
+        Some(Drag::Explorer) => {
+            let w = x.saturating_sub(app.hits.main.x) as i16 + 1;
+            app.set_explorer_width(w);
+        }
+        Some(Drag::HBar) => {
+            if let Some(g) = app.grid_mut() {
+                g.hscroll_to(x);
+            }
+        }
+        Some(Drag::Tab { id, moved }) => {
+            if moved || (x, y) != app.drag_pos {
+                app.drag = Some(Drag::Tab { id, moved: true });
+                app.status = "Drop on another tab bar or pane to move · on the right / bottom edge to split".into();
+            }
+            app.drag_pos = (x, y);
+        }
+        None => {}
+    }
+}
+
+fn mouse_up(app: &mut App, x: u16, y: u16) {
+    if let Some(Drag::Tab { id, moved: true }) = app.drag {
+        app.status.clear();
+        if let Some(t) = drop_target(app, id, x, y) {
+            app.drop_tab(id, t);
+        }
+    }
+    app.drag = None;
+}
+
 /// 같은 곳을 0.4초 안에 두 번 누르면 더블클릭
 fn double(app: &mut App, x: u16, y: u16) -> bool {
     let now = std::time::Instant::now();
@@ -64,21 +203,12 @@ fn click(app: &mut App, x: u16, y: u16) {
         }
         return;
     }
-    // 탭 바
-    if y == app.hits.tab_bar_y && !app.hits.tabs.is_empty() {
-        if let Some(&(id, ..)) = app.hits.tabs.iter().find(|(_, x0, x1)| x >= *x0 && x < *x1) {
-            if let Some(i) = app.tab_index(id) {
-                app.activate(i);
-            }
-        }
-        return;
-    }
     // 트리
     if inside(app.hits.tree, x, y) {
         app.focus = Focus::Tree;
         let i = app.tree.offset + (y - app.hits.tree.y) as usize;
-        let vis: Vec<(usize, crate::tree::Node)> = app.tree.visible().into_iter().map(|(d, n)| (d, n.clone())).collect();
-        let Some((depth, node)) = vis.get(i).cloned() else { return };
+        // 누른 줄 하나만 복사한다
+        let Some((depth, node)) = app.tree.visible().get(i).map(|(d, n)| (*d, (*n).clone())) else { return };
         app.tree.sel = i;
         // ▸ 위를 누르면 펼치기/접기
         let chev = app.hits.tree.x + (depth * 2) as u16;
@@ -141,9 +271,20 @@ pub fn on_event(app: &mut App, ev: Event) {
             }
         }
         Event::Mouse(m) => match m.kind {
+            // Shift+휠 = 가로 스크롤
+            MouseEventKind::ScrollDown if m.modifiers.contains(KeyModifiers::SHIFT) => hscroll_at(app, m.column, m.row, 3),
+            MouseEventKind::ScrollUp if m.modifiers.contains(KeyModifiers::SHIFT) => hscroll_at(app, m.column, m.row, -3),
+            // ⌥+휠, 또는 그리드 헤더·스크롤바 위에서 휠 = 가로 스크롤 (가로 휠을 안 넘기는 터미널용)
+            MouseEventKind::ScrollDown | MouseEventKind::ScrollUp if m.modifiers.contains(KeyModifiers::ALT) || over_hbar(app, m.column, m.row) => {
+                hscroll_at(app, m.column, m.row, if m.kind == MouseEventKind::ScrollDown { 1 } else { -1 })
+            }
             MouseEventKind::ScrollDown => scroll_at(app, m.column, m.row, 3),
             MouseEventKind::ScrollUp => scroll_at(app, m.column, m.row, -3),
-            MouseEventKind::Down(MouseButton::Left) => click(app, m.column, m.row),
+            MouseEventKind::ScrollRight => hscroll_at(app, m.column, m.row, 3),
+            MouseEventKind::ScrollLeft => hscroll_at(app, m.column, m.row, -3),
+            MouseEventKind::Down(MouseButton::Left) => mouse_down(app, m.column, m.row),
+            MouseEventKind::Drag(MouseButton::Left) => mouse_drag(app, m.column, m.row),
+            MouseEventKind::Up(MouseButton::Left) => mouse_up(app, m.column, m.row),
             _ => {}
         },
         _ => {}
@@ -165,80 +306,17 @@ fn scroll(app: &mut App, d: isize) {
     }
 }
 
-fn ctrl(k: &KeyEvent, c: char) -> bool {
-    k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char(c)
-}
-fn alt(k: &KeyEvent, c: char) -> bool {
-    k.modifiers.contains(KeyModifiers::ALT) && k.code == KeyCode::Char(c)
-}
-
 pub fn on_key(app: &mut App, k: KeyEvent) {
     if app.popup.is_some() {
         return popup_key(app, k);
     }
-    // ── 전역 ──
-    let global = if ctrl(&k, 'q') {
-        Some(Action::Quit)
-    } else if ctrl(&k, 'o') {
-        Some(Action::GoToObject)
-    } else if ctrl(&k, 'e') {
-        Some(Action::RecentTabs)
-    } else if ctrl(&k, 'w') {
-        Some(Action::CloseTab)
-    } else if ctrl(&k, 'l') {
-        Some(Action::NewConsole)
-    } else if k.code == KeyCode::F(1) {
-        Some(Action::Help)
-    } else if alt(&k, '1') {
-        Some(Action::ToggleExplorer)
-    } else if (k.modifiers.contains(KeyModifiers::ALT) && k.code == KeyCode::Right) || (k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::PageDown) {
-        Some(Action::NextTab)
-    } else if (k.modifiers.contains(KeyModifiers::ALT) && k.code == KeyCode::Left) || (k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::PageUp) {
-        Some(Action::PrevTab)
-    } else if k.code == KeyCode::F(5) || (k.code == KeyCode::Enter && k.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)) {
-        Some(Action::Execute)
-    } else if alt(&k, 'e') {
-        Some(Action::Explain)
-    } else if alt(&k, 't') {
-        Some(Action::TxToggle)
-    } else if alt(&k, 'c') {
-        Some(Action::Commit)
-    } else if alt(&k, 'r') {
-        Some(Action::Rollback)
-    } else if alt(&k, 'o') {
-        Some(Action::ToggleOutput)
-    } else if ctrl(&k, 's') {
-        Some(Action::Submit)
-    } else if ctrl(&k, 'c') {
-        Some(Action::Cancel)
-    } else if k.code == KeyCode::F(2) && k.modifiers.contains(KeyModifiers::CONTROL) {
-        Some(Action::Disconnect)
-    } else {
-        None
-    };
-    if ctrl(&k, 'k') {
-        return app.palette_actions();
-    }
-    if let Some(a) = global {
-        // 테이블이 아닌 곳에서 F5 = 새로 고침
+    // ── 전역 명령 (키맵: keys.rs, 바꾸기: F1) ──
+    if let Some(a) = app.keys.lookup(&k) {
+        // 탐색기에서 실행 키 = 새로 고침
         if a == Action::Execute && app.focus == Focus::Tree {
             return app.run_action(Action::Refresh);
         }
         return app.run_action(a);
-    }
-    if k.code == KeyCode::F(6) {
-        app.focus = match app.focus {
-            Focus::Tree if !app.tabs.is_empty() => match app.tabs[app.active].kind {
-                TabKind::Console(_) => Focus::Editor,
-                _ => Focus::Grid,
-            },
-            Focus::Editor => Focus::Grid,
-            _ => Focus::Tree,
-        };
-        if app.focus == Focus::Tree {
-            app.explorer = true;
-        }
-        return;
     }
     match app.focus {
         Focus::Tree => tree_key(app, k),
@@ -282,6 +360,8 @@ fn tree_key(app: &mut App, k: KeyEvent) {
         KeyCode::PageUp => app.tree.sel = app.tree.sel.saturating_sub(20),
         KeyCode::Home => app.tree.sel = 0,
         KeyCode::End => app.tree.sel = n.saturating_sub(1),
+        KeyCode::Right if k.modifiers.contains(KeyModifiers::SHIFT) => app.tree.hoff += 4,
+        KeyCode::Left if k.modifiers.contains(KeyModifiers::SHIFT) => app.tree.hoff = app.tree.hoff.saturating_sub(4),
         KeyCode::Right | KeyCode::Char('l') => {
             if let Some(nd) = sel {
                 if nd.expandable && !app.tree.expanded.contains(&nd.key) {
@@ -366,6 +446,20 @@ fn editor_key(app: &mut App, k: KeyEvent) {
         app.focus = Focus::Grid;
         return grid_key(app, k);
     };
+    // 자동완성 목록이 열려 있을 때
+    if let Some(cmp) = &mut c.complete {
+        let n = cmp.items.len();
+        match k.code {
+            KeyCode::Up => return cmp.sel = (cmp.sel + n - 1) % n,
+            KeyCode::Down => return cmp.sel = (cmp.sel + 1) % n,
+            KeyCode::PageUp => return cmp.sel = cmp.sel.saturating_sub(10),
+            KeyCode::PageDown => return cmp.sel = (cmp.sel + 10).min(n - 1),
+            KeyCode::Enter | KeyCode::Tab => return app.accept_completion(),
+            KeyCode::Esc => return c.complete = None,
+            _ => {}
+        }
+    }
+    let open = c.complete.is_some();
     match k.code {
         // Esc: 탐색기로, Tab(빈 곳 아님)은 들여쓰기이므로 결과로 가는 건 Shift+Tab/F6
         KeyCode::Esc => {
@@ -376,6 +470,15 @@ fn editor_key(app: &mut App, k: KeyEvent) {
         _ => {
             c.editor.input(k);
         }
+    }
+    // 단어나 '.' 을 치면 열고(GUI 처럼), 열린 채로 지우면 다시 거른다. 그 밖의 키는 닫는다
+    // (macOS 는 Ctrl+Space 가 입력 소스 전환이라 타이핑으로 여는 게 기본)
+    let plain = !k.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+    let typed = plain && matches!(k.code, KeyCode::Char(ch) if ch.is_ascii_alphanumeric() || ch == '_' || ch == '.');
+    if typed || (open && k.code == KeyCode::Backspace) {
+        app.update_completion(false);
+    } else if let Some(TabKind::Console(c)) = app.tabs.get_mut(app.active).map(|t| &mut t.kind) {
+        c.complete = None;
     }
 }
 
@@ -477,6 +580,8 @@ fn nav(app: &mut App, k: KeyEvent) {
     let Some(g) = app.grid_mut() else { return };
     let page = g.page as isize;
     match k.code {
+        KeyCode::Right if k.modifiers.contains(KeyModifiers::SHIFT) => g.hscroll(1),
+        KeyCode::Left if k.modifiers.contains(KeyModifiers::SHIFT) => g.hscroll(-1),
         KeyCode::Down | KeyCode::Char('j') => g.move_by(1, 0),
         KeyCode::Up | KeyCode::Char('k') => g.move_by(-1, 0),
         KeyCode::Right | KeyCode::Char('l') => g.move_by(0, 1),
@@ -682,17 +787,58 @@ fn redis_key(app: &mut App, id: u64, k: KeyEvent) {
 fn popup_key(app: &mut App, k: KeyEvent) {
     let popup = app.popup.take().unwrap();
     match popup {
-        Popup::Help { scroll } => {
-            let s = match k.code {
-                KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') | KeyCode::F(1) => return,
-                KeyCode::Down | KeyCode::Char('j') => scroll.saturating_add(1),
-                KeyCode::Up | KeyCode::Char('k') => scroll.saturating_sub(1),
-                KeyCode::PageDown | KeyCode::Char(' ') => scroll.saturating_add(15),
-                KeyCode::PageUp => scroll.saturating_sub(15),
-                KeyCode::Home | KeyCode::Char('g') => 0,
-                _ => scroll,
+        Popup::Help { mut sel, scroll, record: Some(add), .. } => {
+            // 새 키 녹화 중: Esc = 취소
+            let message = if k.code == KeyCode::Esc {
+                None
+            } else {
+                let a = crate::keys::DEFAULT_KEYS[sel].0;
+                match crate::keys::spec(&k).filter(|s| crate::keys::bindable(s)) {
+                    None => Some(format!("{} can't be a command key — use a Ctrl/Alt combination or an F key", crate::keys::spec(&k).unwrap_or_else(|| "That key".into()))),
+                    Some(key) => {
+                        let taken = app.keys.bind(a, key.clone(), add);
+                        let mut m = format!("{} → {}", name_of(a), app.keys.label(a));
+                        if let Some(t) = taken {
+                            m += &format!(" · removed {key} from {}", name_of(t));
+                        }
+                        if let Err(e) = app.save_keys() {
+                            m = format!("Save failed: {e}");
+                        }
+                        Some(m)
+                    }
+                }
             };
-            app.popup = Some(Popup::Help { scroll: s });
+            sel = sel.min(crate::keys::DEFAULT_KEYS.len() - 1);
+            app.popup = Some(Popup::Help { sel, scroll, record: None, message });
+        }
+        Popup::Help { sel, scroll, message, .. } => {
+            let n = crate::keys::DEFAULT_KEYS.len();
+            let last = n + crate::help::HELP.iter().map(|s| s.1.len()).sum::<usize>() - 1;
+            let (mut sel, mut record) = (sel, None);
+            let mut message = message;
+            let fixed = || Some("Fixed key — only the Commands at the top can be changed".to_string());
+            match k.code {
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::F(1) => return,
+                KeyCode::Down | KeyCode::Char('j') => sel = (sel + 1).min(last),
+                KeyCode::Up | KeyCode::Char('k') => sel = sel.saturating_sub(1),
+                KeyCode::PageDown | KeyCode::Char(' ') => sel = (sel + 15).min(last),
+                KeyCode::PageUp => sel = sel.saturating_sub(15),
+                KeyCode::Home | KeyCode::Char('g') => sel = 0,
+                KeyCode::End | KeyCode::Char('G') => sel = last,
+                KeyCode::Enter if sel < n => record = Some(false),
+                KeyCode::Char('a') if sel < n => record = Some(true),
+                KeyCode::Enter | KeyCode::Char('a') | KeyCode::Delete | KeyCode::Backspace if sel >= n => message = fixed(),
+                KeyCode::Delete | KeyCode::Backspace => {
+                    let a = crate::keys::DEFAULT_KEYS[sel].0;
+                    app.keys.reset(a);
+                    message = Some(match app.save_keys() {
+                        Ok(()) => format!("{} reset to {}", name_of(a), app.keys.label(a)),
+                        Err(e) => format!("Save failed: {e}"),
+                    });
+                }
+                _ => {}
+            }
+            app.popup = Some(Popup::Help { sel, scroll, record, message });
         }
         Popup::Message { .. } => {
             if !matches!(k.code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') | KeyCode::F(1)) {
@@ -831,4 +977,9 @@ fn save_form(app: &mut App, mut form: crate::app::ConnForm) {
             app.popup = Some(Popup::ConnForm(form));
         }
     }
+}
+
+/// 팔레트·키맵에 보이는 명령 이름
+pub fn name_of(a: Action) -> &'static str {
+    crate::app::ACTIONS.iter().find(|x| x.0 == a).map(|x| x.1).unwrap_or("?")
 }

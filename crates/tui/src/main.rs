@@ -1,8 +1,10 @@
 //! dbtool TUI — DataGrip 식 터미널 클라이언트. GUI 와 같은 엔진(dbtool-core)·같은 Data Source 를 쓴다.
 mod app;
+mod complete;
 mod grid;
 mod help;
 mod input;
+mod keys;
 mod tree;
 mod ui;
 
@@ -65,6 +67,7 @@ async fn run(term: &mut Terminal<CrosstermBackend<std::io::Stdout>>, state: Arc<
                 let dropped = dbtool_core::app::housekeeping(&st).await;
                 if !dropped.is_empty() && tx.send(Box::new(move |a: &mut app::App| {
                     for id in &dropped {
+                        a.forget_completion(id);
                         a.tree.forget(id);
                         a.tree.expanded.retain(|k| !(k == id || k.starts_with(&format!("{id}|"))));
                     }
