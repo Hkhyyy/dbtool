@@ -87,6 +87,12 @@ pub async fn execute_batch(state: State<'_, AppState>, id: String, statements: V
     state.execute_batch(id, statements, exact_one.unwrap_or(false)).await
 }
 
+/// 접속하면 검색 캐시를 채운다 (프론트는 기다리지 않는다)
+#[tauri::command]
+pub async fn warm_search_cache(state: State<'_, AppState>, id: String) -> AppResult<()> {
+    state.warm_search_cache(id).await
+}
+
 /// 접속하지 않은 Data Source 도 Search Everywhere 에서 찾도록 저장해 둔 객체·컬럼 목록
 #[tauri::command]
 pub fn cached_index(state: State<'_, AppState>) -> AppResult<Vec<dbtool_core::search_cache::CachedIndex>> {

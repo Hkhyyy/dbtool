@@ -330,20 +330,6 @@ fn column_items(conn: &str, name: &str, db: &str, ts: Vec<dbtool_core::meta::Com
         .collect()
 }
 
-/// 트리에 보이는 DB (GUI 와 같은 표시 범위: Data Source › Schemas 탭, 시스템 DB 숨김)
-fn visible_dbs(cfg: &ConnectionConfig, dbs: Vec<String>, def: &str) -> Vec<String> {
-    let hidden: &[&str] = match cfg.kind {
-        DbKind::Postgres => &["template0", "template1", "rdsadmin"],
-        DbKind::Mysql => &dbtool_core::mysql::SYSTEM_DBS,
-        DbKind::Redis => &[],
-    };
-    let scoped = cfg.scope.databases.as_ref().map(|d| !d.is_empty()).unwrap_or(false);
-    dbs.into_iter()
-        .filter(|d| scoped || d == def || !hidden.contains(&d.as_str()))
-        .filter(|d| !cfg.options.single_db || d == def)
-        .filter(|d| cfg.options.single_db || cfg.scope.db_visible(d, def))
-        .collect()
-}
 
 /// 마지막으로 그린 화면 영역 (마우스 클릭 판정)
 #[derive(Default)]
@@ -580,11 +566,14 @@ impl App {
                 self.spawn(
                     async move {
                         let dbs = st.list_databases(conn.clone()).await.map_err(err)?;
+                        // 접속됨: 다음에 접속하지 않고도 찾도록 검색 캐시를 백그라운드로 채운다
+                        let st2 = st.clone();
+                        tokio::spawn(async move { st2.warm_search_cache(conn).await });
                         Ok::<_, String>((dbs, def))
                     },
                     move |a, r: Result<(Vec<String>, String), String>| {
                         let r = r.map(|(dbs, def)| {
-                            visible_dbs(&cfg, dbs, &def)
+                            dbtool_core::app::visible_dbs(&cfg, dbs, &def)
                                 .into_iter()
                                 .map(|d| Node {
                                     key: format!("{}|{d}", cfg.id),
@@ -1766,7 +1755,7 @@ impl App {
             let st = self.state.clone();
             let id = cfg.id.clone();
             self.spawn(async move { st.list_databases(id).await.map_err(err) }, move |a, r: Result<Vec<String>, String>| {
-                let mut dbs = r.map(|dbs| visible_dbs(&cfg, dbs, &def)).unwrap_or_default();
+                let mut dbs = r.map(|dbs| dbtool_core::app::visible_dbs(&cfg, dbs, &def)).unwrap_or_default();
                 // 기본 DB 먼저 (DB 목록을 못 읽어도 기본 DB 는 찾는다)
                 dbs.retain(|d| d != &def);
                 dbs.insert(0, def);

@@ -163,6 +163,7 @@ export const meta = {
   objectIndex: (id: string) => invoke<IndexEntry[]>("object_index", { id }),
   /** 접속하지 않은 Data Source 의 지난 객체·컬럼 목록 (접속해서 읽을 때마다 저장된다) */
   cachedIndex: () => invoke<CachedIndex[]>("cached_index"),
+  warmSearchCache: (id: string) => invoke<void>("warm_search_cache", { id }),
   fullTextSearch: (id: string, req: FtsRequest) => invoke<FtsHit[]>("full_text_search", { id, req }),
 };
 /** Redis 기본 DB 이름: "" / "3" / "db3" → "db3" */

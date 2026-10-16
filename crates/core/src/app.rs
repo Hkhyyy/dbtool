@@ -66,6 +66,21 @@ pub struct ConnectionView {
     pub connected: bool,
 }
 
+/// 트리에 보이는 DB (Data Source › Schemas 탭의 범위, 시스템 DB 숨김). GUI·TUI·검색 캐시 공용
+pub fn visible_dbs(cfg: &ConnectionConfig, dbs: Vec<String>, def: &str) -> Vec<String> {
+    let hidden: &[&str] = match cfg.kind {
+        store::DbKind::Postgres => &["template0", "template1", "rdsadmin"],
+        store::DbKind::Mysql => &crate::mysql::SYSTEM_DBS,
+        store::DbKind::Redis => &[],
+    };
+    let scoped = cfg.scope.databases.as_ref().map(|d| !d.is_empty()).unwrap_or(false);
+    dbs.into_iter()
+        .filter(|d| scoped || d == def || !hidden.contains(&d.as_str()))
+        .filter(|d| !cfg.options.single_db || d == def)
+        .filter(|d| cfg.options.single_db || cfg.scope.db_visible(d, def))
+        .collect()
+}
+
 /// 접속 대상 id: "<data source id>" 또는 "<data source id>::<database>"
 pub fn split_target(id: &str) -> (&str, Option<&str>) {
     match id.split_once("::") {
@@ -559,6 +574,31 @@ impl AppState {
             crate::search_cache::save_objects(&self.store.dir(), &id, &r);
         }
         Ok(r)
+    }
+
+    /// 접속하면 바로 (백그라운드로) 보이는 DB 의 객체·컬럼 목록을 읽어 검색 캐시를 채운다.
+    /// 그래야 다음에 접속하지 않고도 Search Everywhere 에서 찾는다. 10분 안에 채운 DB 는 건너뛴다
+    pub async fn warm_search_cache(&self, conn: String) -> AppResult<()> {
+        let cfg = self.store.get(&conn)?.ok_or_else(|| AppError::Msg("Data source not found".into()))?;
+        if cfg.kind == store::DbKind::Redis {
+            return Ok(());
+        }
+        let def = crate::sql::default_db(&cfg);
+        let mut dbs = if cfg.options.single_db { vec![] } else { visible_dbs(&cfg, self.list_databases(conn.clone()).await.unwrap_or_default(), &def) };
+        dbs.retain(|d| d != &def);
+        dbs.insert(0, def);
+        dbs.retain(|d| !d.is_empty());
+        dbs.truncate(8);
+        let base = self.store.dir();
+        for db in dbs {
+            let t = crate::sql::target_id(&conn, Some(&db));
+            if crate::search_cache::is_fresh(&base, &t, std::time::Duration::from_secs(600)) {
+                continue;
+            }
+            let _ = self.object_index(t.clone()).await;
+            let _ = self.completion_meta(t).await;
+        }
+        Ok(())
     }
 
     /// 접속하지 않은 Data Source 도 찾을 수 있게 저장해 둔 객체·컬럼 목록

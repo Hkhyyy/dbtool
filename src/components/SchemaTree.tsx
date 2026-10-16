@@ -152,6 +152,8 @@ export function SchemaTree({ conn, filter, showSystem, onActivate, onMenu, onSco
     meta.databases(conn.id).then(
       (data) => {
         setDbs({ state: "ok", data });
+        // 접속됨: 다음에 접속하지 않고도 Search Everywhere 에서 찾도록 검색 캐시를 채운다
+        if (conn.kind !== "redis") meta.warmSearchCache(conn.id).catch(() => {});
         const others = data.filter((d) => !["postgres", "rdsadmin", "template0", "template1"].includes(d));
         const auto = conn.database ? defaultDb : others.length === 1 ? others[0] : others.length === 0 ? defaultDb : null;
         if (auto) setOpenDbs((s) => new Set(s).add(auto));

@@ -45,6 +45,11 @@ pub fn save_columns(base: &Path, target: &str, v: &[CompletionTable]) {
     save(base, target, "columns", &v);
 }
 
+/// 객체 목록을 age 안에 저장했는지
+pub fn is_fresh(base: &Path, target: &str, age: std::time::Duration) -> bool {
+    std::fs::metadata(file(base, target, "objects")).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|e| e < age)
+}
+
 fn read<T: for<'de> Deserialize<'de>>(p: &Path) -> Vec<T> {
     std::fs::read(p).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
 }
