@@ -22,6 +22,8 @@ export interface DbObject {
   /** column 일 때 소속 테이블 */
   table?: string;
   type?: string;
+  /** 접속하지 않은 Data Source: 저장해 둔 목록에서 */
+  cached?: boolean;
 }
 export interface FileItem {
   key: string;
@@ -128,7 +130,9 @@ export function SearchEverywhere(p: Props) {
   const listRef = useRef<HTMLDivElement>(null);
 
   const scopeConns = p.conns.filter((c) => c.connected && c.kind === "postgres" && (!onlyContext || c.id === p.contextConnId));
-  const scopeKey = scopeConns.map((c) => c.id).join(",");
+  // 접속하지 않은 Data Source 는 지난번에 읽어 둔 목록으로 찾는다 (고르면 그때 접속)
+  const cachedConns = p.conns.filter((c) => !c.connected && c.kind === "postgres" && (!onlyContext || c.id === p.contextConnId));
+  const scopeKey = [...scopeConns, ...cachedConns].map((c) => c.id + (c.connected ? "+" : "")).join(",");
 
   // 대상 DB 인덱스 로드
   useEffect(() => {
@@ -139,6 +143,16 @@ export function SearchEverywhere(p: Props) {
       const jobs: Promise<void>[] = [];
       const objs: DbObject[][] = [];
       const cols: DbObject[][] = [];
+      if (cachedConns.length) {
+        const all = await meta.cachedIndex().catch(() => []);
+        for (const ci of all) {
+          const i = ci.target.indexOf("::");
+          const [cid, db] = i < 0 ? [ci.target, ""] : [ci.target.slice(0, i), ci.target.slice(i + 2)];
+          if (!cachedConns.some((c) => c.id === cid)) continue;
+          objs.push(ci.objects.map((x) => ({ connId: cid, db, schema: x.schema, name: x.name, kind: x.kind, cached: true })));
+          if (wantCols) cols.push(ci.columns.flatMap((t) => t.columns.map(([name, type]) => ({ connId: cid, db, schema: t.schema, name, kind: "column", table: t.name, type, cached: true }))));
+        }
+      }
       for (const c of scopeConns) {
         for (const db of await targetsOf(c)) {
           setLoading((n) => n + 1);
@@ -285,8 +299,9 @@ export function SearchEverywhere(p: Props) {
           {o.kind === "schema" ? "" : o.kind === "column" ? `${o.schema}.${o.table}` : o.schema}
         </span>
         <span className="grow" />
-        <span className="se-loc">
+        <span className="se-loc" title={o.cached ? "Not connected — from the last time it was loaded. Opening it connects." : undefined}>
           {connName(o.connId)} · {o.db}
+          {o.cached && " (cached)"}
         </span>
       </>
     );
@@ -335,7 +350,7 @@ export function SearchEverywhere(p: Props) {
           })}
           {!rows.length && (
             <div className="popup-empty">
-              {loading > 0 ? "Loading…" : !scopeConns.length && tab !== "files" && tab !== "actions" ? "No connected data sources. Connect one to search database objects." : "Nothing found"}
+              {loading > 0 ? "Loading…" : !scopeConns.length && !objects.length && tab !== "files" && tab !== "actions" ? "No connected data sources. Connect one to search database objects." : "Nothing found"}
             </div>
           )}
           {errors.map((er) => (

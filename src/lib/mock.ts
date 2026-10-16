@@ -44,6 +44,9 @@ const handlers: Record<string, (a: any) => unknown> = {
       : { type: "string", ttl: 3540000, length: 42, memory: 80, encoding: "embstr", truncated: false, value: '{"uid":1,"roles":["admin"],"exp":1760000000}' },
   redis_exec: () => ({ status: "OK" }),
   redis_exec_line: (a: any) => (/^hgetall/i.test(a.line) ? ["age", "30", "email", "a@b.c"] : /^incr/i.test(a.line) ? 7 : /^get/i.test(a.line) ? null : { status: "OK" }),
+  cached_index: () => [
+    { target: "prod::shop_app", objects: [{ schema: "public", name: "payments", kind: "table" }, { schema: "public", name: "refunds", kind: "table" }], columns: [{ schema: "public", name: "refunds", columns: [["payment_id", "bigint"]] }] },
+  ],
   object_index: () => [
     { schema: "public", name: "public", kind: "schema" },
     { schema: "billing", name: "billing", kind: "schema" },

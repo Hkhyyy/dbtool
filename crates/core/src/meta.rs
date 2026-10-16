@@ -74,7 +74,7 @@ pub struct TableDetail {
     pub constraints: Vec<ConstraintMeta>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CompletionTable {
     pub schema: String,
@@ -353,7 +353,7 @@ pub async fn completion_meta(pool: &Pool) -> AppResult<Vec<CompletionTable>> {
 }
 
 /// Go to Database Object / Search Everywhere 용 객체 목록
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IndexEntry {
     pub schema: String,

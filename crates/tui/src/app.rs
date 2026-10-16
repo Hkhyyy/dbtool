@@ -267,7 +267,7 @@ pub const ACTIONS: &[(Action, &str, &str)] = &[
     (Action::TxToggle, "Toggle Transaction Mode (Auto/Manual)", ""),
     (Action::Commit, "Commit", ""),
     (Action::Rollback, "Roll Back", ""),
-    (Action::SearchEverywhere, "Search Everywhere (objects · tabs · actions)", ""),
+    (Action::SearchEverywhere, "Search Everywhere (objects · columns · tabs · actions)", ""),
     (Action::GoToObject, "Go to Database Object", ""),
     (Action::RecentTabs, "Recent Tabs / Switcher", ""),
     (Action::EditData, "Edit Data (open table)", "F4 / Enter"),
@@ -306,6 +306,29 @@ pub const ACTIONS: &[(Action, &str, &str)] = &[
     (Action::Help, "Keymap", ""),
     (Action::Quit, "Quit", ""),
 ];
+
+fn object_items(conn: &str, name: &str, db: &str, es: Vec<IndexEntry>, tag: &str) -> Vec<PItem> {
+    es.into_iter()
+        .map(|e| PItem {
+            label: e.name.clone(),
+            hint: format!("{} {} · {name}/{db}{tag}", e.kind, if e.kind == "schema" { String::new() } else { e.schema.clone() }),
+            action: PAction::Object { conn: conn.into(), db: db.into(), e: IndexEntryLite { schema: e.schema, name: e.name, kind: e.kind } },
+        })
+        .collect()
+}
+
+/// 컬럼 → 고르면 그 테이블을 연다 (Ctrl+B 는 그 테이블 DDL)
+fn column_items(conn: &str, name: &str, db: &str, ts: Vec<dbtool_core::meta::CompletionTable>, tag: &str) -> Vec<PItem> {
+    ts.into_iter()
+        .flat_map(|t| {
+            t.columns.into_iter().map(move |(col, ty)| PItem {
+                label: col,
+                hint: format!("column {ty} · {}.{} · {name}/{db}{tag}", t.schema, t.name),
+                action: PAction::Object { conn: conn.into(), db: db.into(), e: IndexEntryLite { schema: t.schema.clone(), name: t.name.clone(), kind: "table".into() } },
+            })
+        })
+        .collect()
+}
 
 /// 트리에 보이는 DB (GUI 와 같은 표시 범위: Data Source › Schemas 탭, 시스템 DB 숨김)
 fn visible_dbs(cfg: &ConnectionConfig, dbs: Vec<String>, def: &str) -> Vec<String> {
@@ -967,6 +990,12 @@ impl App {
                 (pk, r)
             },
             move |a, (pk, r)| {
+                // 검색 캐시에서 연 테이블이면 지금 막 접속한 것: 탐색기 표시를 맞춘다
+                let conn = a.tab_mut(id).map(|t| t.conn.clone()).unwrap_or_default();
+                let fresh = r.is_ok() && a.conn(&conn).is_some_and(|c| !c.connected);
+                if fresh {
+                    a.reload_conns();
+                }
                 let Some(t) = a.tab_mut(id) else { return };
                 let TabKind::Table(tt) = &mut t.kind else { return };
                 tt.running = false;
@@ -1711,9 +1740,22 @@ impl App {
     /// Redis 와 single DB 는 기본 DB 만
     pub fn palette_objects(&mut self, title: &str, items: Vec<PItem>) {
         let conns: Vec<ConnectionConfig> = self.conns.iter().filter(|c| c.connected).map(|c| c.config.clone()).collect();
+        // 접속하지 않은 Data Source 는 지난번에 읽어 둔 목록에서 (고르면 그때 접속한다)
+        let mut items = items;
+        let columns = title == "Search Everywhere";
+        for c in self.state.cached_index().unwrap_or_default() {
+            let (conn, db) = dbtool_core::app::split_target(&c.target);
+            let Some(cv) = self.conns.iter().find(|x| x.config.id == conn && !x.connected) else { continue };
+            let (name, db) = (cv.config.name.clone(), db.unwrap_or_default().to_string());
+            items.extend(object_items(conn, &name, &db, c.objects, " (cached)"));
+            if columns {
+                items.extend(column_items(conn, &name, &db, c.columns, " (cached)"));
+            }
+        }
+        let empty = conns.is_empty() && items.iter().all(|i| !matches!(i.action, PAction::Object { .. }));
         self.popup = Some(Popup::Palette(Palette { title: title.into(), input: TextArea::default(), items, sel: 0, loading: conns.len(), cache: Default::default() }));
-        if conns.is_empty() && title.starts_with("Go to") {
-            self.status = "Connect a data source first (Enter on it in the explorer)".into();
+        if empty {
+            self.status = "No connected data sources — connect one (Enter in the explorer) to search its objects".into();
         }
         for cfg in conns {
             let def = sql::default_db(&cfg);
@@ -1736,11 +1778,18 @@ impl App {
 
     /// 열린 팔레트에 DB 들의 객체를 더한다 (Data Source 하나 몫의 loading 을 DB 수로 바꾼다)
     fn index_into_palette(&mut self, cfg: &ConnectionConfig, dbs: Vec<String>) {
-        match &mut self.popup {
-            Some(Popup::Palette(p)) => p.loading = (p.loading + dbs.len()).saturating_sub(1),
+        // Search Everywhere 는 컬럼도 찾는다 (GUI 의 All / Symbols)
+        let columns = match &mut self.popup {
+            Some(Popup::Palette(p)) => {
+                p.loading = (p.loading + dbs.len()).saturating_sub(1);
+                p.title == "Search Everywhere" && cfg.kind != DbKind::Redis
+            }
             _ => return,
-        }
+        };
         for db in dbs {
+            if columns {
+                self.columns_into_palette(cfg, db.clone());
+            }
             let st = self.state.clone();
             let target = sql::target_id(&cfg.id, Some(&db));
             let (conn, name) = (cfg.id.clone(), cfg.name.clone());
@@ -1751,22 +1800,30 @@ impl App {
                 if let Some(Popup::Palette(p)) = &mut a.popup {
                     p.loading = p.loading.saturating_sub(1);
                     if let Ok(es) = r {
-                        p.items.extend(es.into_iter().map(|e| PItem {
-                            label: e.name.clone(),
-                            hint: format!("{} {} · {name}/{db}", e.kind, if e.kind == "schema" { String::new() } else { e.schema.clone() }),
-                            action: PAction::Object { conn: conn.clone(), db: db.clone(), e: IndexEntryLite { schema: e.schema, name: e.name, kind: e.kind } },
-                        }));
+                        p.items.extend(object_items(&conn, &name, &db, es, ""));
                     }
                 }
             });
         }
     }
 
+    /// 컬럼 → 고르면 그 테이블을 연다 (Ctrl+B 는 그 테이블 DDL)
+    fn columns_into_palette(&mut self, cfg: &ConnectionConfig, db: String) {
+        let st = self.state.clone();
+        let target = sql::target_id(&cfg.id, Some(&db));
+        let (conn, name) = (cfg.id.clone(), cfg.name.clone());
+        self.spawn(async move { st.completion_meta(target).await.map_err(err) }, move |a, r| {
+            let (Some(Popup::Palette(p)), Ok(ts)) = (&mut a.popup, r) else { return };
+            p.items.extend(column_items(&conn, &name, &db, ts, ""));
+        });
+    }
+
     pub fn palette_matches(p: &Palette) -> Vec<&PItem> {
         let q = p.input.lines().join("");
         let mut cache = p.cache.borrow_mut();
         if !cache.as_ref().is_some_and(|(cq, n, _)| *cq == q && *n == p.items.len()) {
-            let mut v: Vec<(i64, usize)> = p.items.iter().enumerate().filter_map(|(i, it)| fuzzy(&q, &it.label).map(|s| (s, i))).collect();
+            // 컬럼은 같은 이름의 테이블·액션보다 뒤로 (GUI 의 All 과 같게)
+            let mut v: Vec<(i64, usize)> = p.items.iter().enumerate().filter_map(|(i, it)| fuzzy(&q, &it.label).map(|s| (s - if it.hint.starts_with("column ") { 50 } else { 0 }, i))).collect();
             if !q.is_empty() {
                 v.sort_by(|a, b| b.0.cmp(&a.0));
             }

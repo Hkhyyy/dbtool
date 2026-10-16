@@ -376,6 +376,7 @@ impl AppState {
         drop_pool(self, &id).await;
         self.set_secret(&id, None)?;
         self.set_secret(&store::ssh_secret_key(&id), None)?;
+        crate::search_cache::remove_conn(&self.store.dir(), &id);
         self.store.delete(&id)
     }
 
@@ -550,8 +551,20 @@ impl AppState {
         }
     }
 
+    /// 읽을 때마다 검색 캐시에 저장한다 (Redis 키는 저장하지 않는다)
     pub async fn object_index(&self, id: String) -> AppResult<Vec<crate::meta::IndexEntry>> {
-        crate::meta::object_index(&ensure_pool(self, &id).await?).await
+        let pool = ensure_pool(self, &id).await?;
+        let r = crate::meta::object_index(&pool).await?;
+        if !matches!(pool, Pool::Redis(..)) {
+            crate::search_cache::save_objects(&self.store.dir(), &id, &r);
+        }
+        Ok(r)
+    }
+
+    /// 접속하지 않은 Data Source 도 찾을 수 있게 저장해 둔 객체·컬럼 목록
+    pub fn cached_index(&self) -> AppResult<Vec<crate::search_cache::CachedIndex>> {
+        let ids: Vec<String> = self.store.list()?.into_iter().map(|c| c.id).collect();
+        Ok(crate::search_cache::load_all(&self.store.dir(), |c| ids.iter().any(|i| i == c)))
     }
 
     pub async fn full_text_search(&self, id: String, req: crate::meta::FtsRequest) -> AppResult<Vec<crate::meta::FtsHit>> {
@@ -635,7 +648,12 @@ impl AppState {
     }
 
     pub async fn completion_meta(&self, id: String) -> AppResult<Vec<crate::meta::CompletionTable>> {
-        crate::meta::completion_meta(&ensure_pool(self, &id).await?).await
+        let pool = ensure_pool(self, &id).await?;
+        let r = crate::meta::completion_meta(&pool).await?;
+        if !matches!(pool, Pool::Redis(..)) {
+            crate::search_cache::save_columns(&self.store.dir(), &id, &r);
+        }
+        Ok(r)
     }
 }
 

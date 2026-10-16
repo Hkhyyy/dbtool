@@ -96,6 +96,7 @@ pub fn run() {
             commands::rollback_tx,
             commands::execute_batch,
             commands::object_index,
+            commands::cached_index,
             commands::full_text_search,
             commands::redis_scan,
             commands::redis_key,

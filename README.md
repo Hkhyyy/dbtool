@@ -90,7 +90,7 @@ Command shortcuts can be changed in **Settings › Keymap** (or **Edit Keymap…
 
 | macOS | Action |
 |---|---|
-| `⇧⇧` | Search Everywhere (All / Database / Files / Symbols / Actions, ⇥ switches tabs) |
+| `⇧⇧` | Search Everywhere (All / Database / Files / Symbols / Actions, ⇥ switches tabs). Data sources you are not connected to are searched from the list saved the last time they were loaded (marked *cached*, stored 0600 in the config folder's `search-cache/`); opening a result connects |
 | `⌘O` | Go to Database Object |
 | `⌥⌘O` | Go to Symbol (columns) |
 | `⇧⌘O` | Go to File (open and recent tabs) |
@@ -216,7 +216,7 @@ Ctrl+Enter is only distinguishable in terminals that support the kitty keyboard 
 | `Ctrl+Q` | Quit |
 | `F1` | Keymap |
 | `Ctrl+K` | Actions Palette |
-| `Ctrl+P` | Search Everywhere (objects · tabs · actions) |
+| `Ctrl+P` | Search Everywhere (objects · columns · tabs · actions; not-connected data sources from the saved list) |
 | `Ctrl+O` | Go to Database Object |
 | `Ctrl+B` | Go to DDL |
 | `Ctrl+E` | Recent Tabs / Switcher |
