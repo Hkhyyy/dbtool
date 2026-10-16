@@ -8,7 +8,9 @@ pub const DEFAULT_KEYS: &[(Action, &[&str])] = &[
     (Action::Quit, &["Ctrl+Q"]),
     (Action::Help, &["F1"]),
     (Action::Palette, &["Ctrl+K"]),
+    (Action::SearchEverywhere, &["Ctrl+P"]),
     (Action::GoToObject, &["Ctrl+O"]),
+    (Action::Ddl, &["Ctrl+B"]),
     (Action::RecentTabs, &["Ctrl+E"]),
     (Action::NewConsole, &["Ctrl+L"]),
     (Action::CloseTab, &["Ctrl+W"]),
@@ -31,8 +33,12 @@ pub const DEFAULT_KEYS: &[(Action, &[&str])] = &[
     (Action::Commit, &["Alt+C"]),
     (Action::Rollback, &["Alt+R"]),
     (Action::ToggleOutput, &["Alt+O"]),
-    (Action::ShrinkEditor, &["Alt+Up"]),
-    (Action::GrowEditor, &["Alt+Down"]),
+    (Action::PaneUp, &["Alt+Up"]),
+    (Action::PaneDown, &["Alt+Down"]),
+    (Action::PaneLeft, &["Ctrl+Alt+Left", "Ctrl+Shift+Left"]),
+    (Action::PaneRight, &["Ctrl+Alt+Right", "Ctrl+Shift+Right"]),
+    (Action::ShrinkEditor, &["Alt+Shift+Up"]),
+    (Action::GrowEditor, &["Alt+Shift+Down"]),
     (Action::Submit, &["Ctrl+S"]),
     (Action::Disconnect, &["Ctrl+F2"]),
 ];
@@ -102,6 +108,15 @@ pub fn spec(k: &KeyEvent) -> Option<String> {
     Some(s + &key)
 }
 
+/// 화면 표기: macOS 는 ⌃⌥⇧ 기호 (GUI 와 같게. 터미널의 Alt = Option). 저장 형식("Alt+X")은 그대로
+pub fn disp(s: &str) -> String {
+    if cfg!(target_os = "macos") {
+        s.replace("Ctrl+", "⌃").replace("Alt+", "⌥").replace("Shift+", "⇧")
+    } else {
+        s.to_string()
+    }
+}
+
 /// 명령 단축키로 쓸 수 있는지: Ctrl/Alt 조합이나 F 키만 (그 밖은 입력·이동 키와 겹친다)
 pub fn bindable(s: &str) -> bool {
     s.starts_with("Ctrl+") || s.starts_with("Alt+") || s.trim_start_matches("Shift+").strip_prefix('F').is_some_and(|n| n.parse::<u8>().is_ok())
@@ -153,7 +168,7 @@ impl Keymap {
     /// 화면 표시용 ("F5 / Ctrl+Enter")
     pub fn label(&self, a: Action) -> String {
         let k = self.keys(a);
-        if k.is_empty() { "—".into() } else { k.join(" / ") }
+        if k.is_empty() { "—".into() } else { disp(&k.join(" / ")) }
     }
 
     pub fn is_custom(&self, a: Action) -> bool {

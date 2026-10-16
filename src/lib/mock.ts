@@ -44,6 +44,10 @@ const handlers: Record<string, (a: any) => unknown> = {
       : { type: "string", ttl: 3540000, length: 42, memory: 80, encoding: "embstr", truncated: false, value: '{"uid":1,"roles":["admin"],"exp":1760000000}' },
   redis_exec: () => ({ status: "OK" }),
   redis_exec_line: (a: any) => (/^hgetall/i.test(a.line) ? ["age", "30", "email", "a@b.c"] : /^incr/i.test(a.line) ? 7 : /^get/i.test(a.line) ? null : { status: "OK" }),
+  warm_search_cache: () => null,
+  cached_index: () => [
+    { target: "prod::shop_app", objects: [{ schema: "public", name: "payments", kind: "table" }, { schema: "public", name: "refunds", kind: "table" }], columns: [{ schema: "public", name: "refunds", columns: [["payment_id", "bigint"]] }] },
+  ],
   object_index: () => [
     { schema: "public", name: "public", kind: "schema" },
     { schema: "billing", name: "billing", kind: "schema" },
@@ -104,6 +108,8 @@ const handlers: Record<string, (a: any) => unknown> = {
   close_session: () => null,
   execute_batch: (a: any) => a.statements.length,
   load_keymap: () => ({}),
+  load_workspace: () => JSON.parse(localStorage.getItem("mock-ws") ?? "null"),
+  save_workspace: (a: any) => (localStorage.setItem("mock-ws", JSON.stringify(a.ws)), null),
   tx_state: () => (globalThis as any).__mockManual === true,
   unsafe_reason: (a: any) => (/^\s*(delete|update)\b(?![\s\S]*\bwhere\b)/i.test(a.sql) ? "DELETE without WHERE changes every row" : /^\s*(drop|truncate)\b/i.test(a.sql) ? "DROP removes data" : null),
   trust_ssh_host: () => "Trusted",

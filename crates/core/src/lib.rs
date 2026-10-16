@@ -18,6 +18,7 @@ pub mod guard;
 pub mod meta;
 pub mod mysql;
 pub mod redisdb;
+pub mod search_cache;
 pub mod secrets;
 pub mod session;
 pub mod sql;

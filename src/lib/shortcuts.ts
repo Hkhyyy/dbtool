@@ -35,7 +35,7 @@ export const SHORTCUTS: Shortcut[] = [
   { id: "tab.reopen", title: "Reopen Closed Tab", scope: "global", keys: ["Mod+Shift+T"] },
   { id: "tab.next", title: "Next Tab", scope: "global", keys: ["Mod+Shift+]"] },
   { id: "tab.prev", title: "Previous Tab", scope: "global", keys: ["Mod+Shift+["] },
-  { id: "split.other", title: "Go to the Other Split", scope: "global", keys: ["Alt+Tab", "Alt+Shift+Tab"] },
+  { id: "split.other", title: "Go to the Next Split (⇧: previous)", scope: "global", keys: ["Alt+Tab", "Alt+Shift+Tab"] },
 
   { id: "tree.editData", title: "Edit Data / Open Console", scope: "tree", keys: ["Mod+Down", "F4"] },
   { id: "tree.jumpConsole", title: "Jump to Query Console", scope: "tree", keys: ["Mod+Shift+F10"] },

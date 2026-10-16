@@ -112,6 +112,9 @@ export const setUpdateCheckEnabled = (on: boolean) => {
 
 export const api = {
   checkUpdate: (force = false) => invoke<UpdateInfo>("check_update", { force }),
+  /** 열어 둔 탭·분할 (다시 켜면 그대로) */
+  loadWorkspace: () => invoke<unknown>("load_workspace"),
+  saveWorkspace: (ws: unknown) => invoke<void>("save_workspace", { ws }),
   listConnections: () => invoke<ConnectionView[]>("list_connections"),
   saveConnection: (config: ConnectionConfig, password?: string, sshSecret?: string) =>
     invoke<ConnectionConfig>("save_connection", { config, password: password ?? null, sshSecret: sshSecret ?? null }),
@@ -161,6 +164,9 @@ export const meta = {
   completion: (id: string) => invoke<CompletionTable[]>("completion_meta", { id }),
   ddl: (id: string, schema: string, name: string, kind: string) => invoke<string>("object_ddl", { id, schema, name, kind }),
   objectIndex: (id: string) => invoke<IndexEntry[]>("object_index", { id }),
+  /** 접속하지 않은 Data Source 의 지난 객체·컬럼 목록 (접속해서 읽을 때마다 저장된다) */
+  cachedIndex: () => invoke<CachedIndex[]>("cached_index"),
+  warmSearchCache: (id: string) => invoke<void>("warm_search_cache", { id }),
   fullTextSearch: (id: string, req: FtsRequest) => invoke<FtsHit[]>("full_text_search", { id, req }),
 };
 /** Redis 기본 DB 이름: "" / "3" / "db3" → "db3" */
@@ -176,6 +182,7 @@ export const redis = {
   execLine: (id: string, line: string) => invoke<RedisReply>("redis_exec_line", { id, line }),
 };
 export interface IndexEntry { schema: string; name: string; kind: string }
+export interface CachedIndex { target: string; objects: IndexEntry[]; columns: CompletionTable[] }
 export interface FtsRequest {
   text: string;
   mode: "contains" | "starts" | "ends" | "matches" | "like";

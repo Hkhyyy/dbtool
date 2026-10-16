@@ -5,6 +5,8 @@ mod grid;
 mod help;
 mod input;
 mod keys;
+mod panes;
+mod workspace;
 mod selfupdate;
 mod tree;
 mod ui;
@@ -87,6 +89,10 @@ async fn run(term: &mut Terminal<CrosstermBackend<std::io::Stdout>>, state: Arc<
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                // 열어 둔 탭·분할을 저장 (바뀌었을 때만. 터미널을 그냥 닫아도 거의 남는다)
+                if tx.send(Box::new(|a: &mut app::App| a.save_workspace())).is_err() {
+                    break;
+                }
                 let dropped = dbtool_core::app::housekeeping(&st).await;
                 if !dropped.is_empty() && tx.send(Box::new(move |a: &mut app::App| {
                     for id in &dropped {
@@ -122,5 +128,6 @@ async fn run(term: &mut Terminal<CrosstermBackend<std::io::Stdout>>, state: Arc<
             break;
         }
     }
+    app.save_workspace();
     Ok(())
 }

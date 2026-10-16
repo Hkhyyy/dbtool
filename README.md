@@ -90,7 +90,7 @@ Command shortcuts can be changed in **Settings › Keymap** (or **Edit Keymap…
 
 | macOS | Action |
 |---|---|
-| `⇧⇧` | Search Everywhere (All / Database / Files / Symbols / Actions, ⇥ switches tabs) |
+| `⇧⇧` | Search Everywhere (All / Database / Files / Symbols / Actions, ⇥ switches tabs). Data sources you are not connected to are searched from the list saved the last time they were loaded (marked *cached*, stored 0600 in the config folder's `search-cache/`); opening a result connects |
 | `⌘O` | Go to Database Object |
 | `⌥⌘O` | Go to Symbol (columns) |
 | `⇧⌘O` | Go to File (open and recent tabs) |
@@ -131,9 +131,9 @@ Command shortcuts can be changed in **Settings › Keymap** (or **Edit Keymap…
 | `⇧⌘T` | Reopen closed tab |
 | `⇧⌘]` | Next tab |
 | `⇧⌘[` | Previous tab |
-| `⌥⇥` | Go to the other split |
-| `right-click tab` | Pin, Split Right/Down, Move to Opposite Group, Close others… |
-| `drag tab` | Reorder, or drop on the right/bottom edge to split |
+| `⌥⇥` | Go to the next split (⇧ previous) |
+| `right-click tab` | Pin, Split Right/Down (up to 4 panes), Move to Next Group, Close others… |
+| `drag tab` | Reorder, or drop on a pane's right/bottom edge to split it (up to 4) |
 
 #### Database Explorer
 
@@ -216,7 +216,9 @@ Ctrl+Enter is only distinguishable in terminals that support the kitty keyboard 
 | `Ctrl+Q` | Quit |
 | `F1` | Keymap |
 | `Ctrl+K` | Actions Palette |
+| `Ctrl+P` | Search Everywhere (objects · columns · tabs · actions; not-connected data sources from the saved list) |
 | `Ctrl+O` | Go to Database Object |
+| `Ctrl+B` | Go to DDL |
 | `Ctrl+E` | Recent Tabs / Switcher |
 | `Ctrl+L` | New Query Console |
 | `Ctrl+W` | Close Tab |
@@ -224,9 +226,9 @@ Ctrl+Enter is only distinguishable in terminals that support the kitty keyboard 
 | `Alt+Left / Ctrl+PgUp` | Previous Tab |
 | `Alt+1` | Database Explorer |
 | `F6` | Cycle Focus (explorer → editor → results) |
-| `Alt+\` | Split Right |
-| `Alt+-` | Split Down |
-| `Alt+Tab` | Go to the Other Split |
+| `Alt+\` | Split Right (focused pane, up to 4) |
+| `Alt+-` | Split Down (focused pane, up to 4) |
+| `Alt+Tab` | Go to the Next Split |
 | `Alt+Shift+Left` | Move Split Divider Left / Up |
 | `Alt+Shift+Right` | Move Split Divider Right / Down |
 | `Alt+[` | Database Explorer Narrower |
@@ -239,8 +241,12 @@ Ctrl+Enter is only distinguishable in terminals that support the kitty keyboard 
 | `Alt+C` | Commit |
 | `Alt+R` | Roll Back |
 | `Alt+O` | Toggle Output / Result |
-| `Alt+Up` | Shrink Editor (console) |
-| `Alt+Down` | Grow Editor (console) |
+| `Alt+Up` | Go to the Split Above |
+| `Alt+Down` | Go to the Split Below |
+| `Ctrl+Alt+Left / Ctrl+Shift+Left` | Go to the Split on the Left |
+| `Ctrl+Alt+Right / Ctrl+Shift+Right` | Go to the Split on the Right |
+| `Alt+Shift+Up` | Shrink Editor (console) |
+| `Alt+Shift+Down` | Grow Editor (console) |
 | `Ctrl+S` | Submit Changes |
 | `Ctrl+F2` | Disconnect |
 
@@ -252,7 +258,6 @@ Ctrl+Enter is only distinguishable in terminals that support the kitty keyboard 
 | `→ / ←  (l h)` | Expand / collapse (← on a child jumps to its parent) |
 | `Enter / double-click` | Expand / collapse (connects) · open table data · open a Redis key · show DDL of routines |
 | `F4 / Ctrl+↓` | Open a query console for the data source / database (Redis: the key browser) |
-| `Ctrl+B` | Go to DDL |
 | `/` | Filter loaded nodes (/ again edits it · empty or Esc clears) |
 | `n / e / D` | New / edit / remove data source |
 | `c / X` | Connect / disconnect |
@@ -274,8 +279,8 @@ Ctrl+Enter is only distinguishable in terminals that support the kitty keyboard 
 
 | Key | Action |
 |---|---|
-| `drag a tab` | Onto the right / bottom edge = split · onto the other pane or tab bar = move · within a bar = reorder |
-| `drag the border` | Resize the Database Explorer (its right border) or the two panes (the border between them; in a top/bottom split also the empty part of the lower tab bar) |
+| `drag a tab` | Onto a pane's right / bottom edge = split it (up to 4 panes) · onto another pane or tab bar = move · within a bar = reorder |
+| `drag the border` | Resize the Database Explorer (its right border) or the panes (the border between them; in a top/bottom split also the empty part of the lower tab bar) |
 | `click a pane` | Focus it |
 | `Shift+wheel / trackpad` | Scroll the grid and the explorer sideways (Shift+← / Shift+→ in the explorer) |
 
@@ -292,6 +297,7 @@ Ctrl+Enter is only distinguishable in terminals that support the kitty keyboard 
 | `a / Insert` | Add row |
 | `d / Delete` | Mark row deleted (again = undo) |
 | `Ctrl+Z` | Revert pending changes |
+| `s` | Sort by the selected column: ▲ → ▼ → off (table data: ORDER BY · results: loaded rows) |
 | `w / o` | Edit WHERE / ORDER BY |
 | `r` | Reload |
 | `x` | Export to CSV |
@@ -333,7 +339,7 @@ Ctrl+Enter is only distinguishable in terminals that support the kitty keyboard 
 
 | Key | Action |
 |---|---|
-| `Ctrl+B` | Go to DDL (in Go to Database Object) |
+| `Ctrl+B` | Go to DDL (in Search Everywhere / Go to Database Object) |
 | `type` | Filter (palettes) |
 | `↑ ↓ / PgUp PgDn` | Move / scroll |
 | `Enter` | Run / confirm |

@@ -6,7 +6,6 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
         ("→ / ←  (l h)", "Expand / collapse (← on a child jumps to its parent)"),
         ("Enter / double-click", "Expand / collapse (connects) · open table data · open a Redis key · show DDL of routines"),
         ("F4 / Ctrl+↓", "Open a query console for the data source / database (Redis: the key browser)"),
-        ("Ctrl+B", "Go to DDL"),
         ("/", "Filter loaded nodes (/ again edits it · empty or Esc clears)"),
         ("n / e / D", "New / edit / remove data source"),
         ("c / X", "Connect / disconnect"),
@@ -22,8 +21,8 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
         ("mouse drag", "Drag the editor/result border to resize"),
     ]),
     ("Tabs & split (mouse)", &[
-        ("drag a tab", "Onto the right / bottom edge = split · onto the other pane or tab bar = move · within a bar = reorder"),
-        ("drag the border", "Resize the Database Explorer (its right border) or the two panes (the border between them; in a top/bottom split also the empty part of the lower tab bar)"),
+        ("drag a tab", "Onto a pane's right / bottom edge = split it (up to 4 panes) · onto another pane or tab bar = move · within a bar = reorder"),
+        ("drag the border", "Resize the Database Explorer (its right border) or the panes (the border between them; in a top/bottom split also the empty part of the lower tab bar)"),
         ("click a pane", "Focus it"),
         ("Shift+wheel / trackpad", "Scroll the grid and the explorer sideways (Shift+← / Shift+→ in the explorer)"),
     ]),
@@ -37,6 +36,7 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
         ("a / Insert", "Add row"),
         ("d / Delete", "Mark row deleted (again = undo)"),
         ("Ctrl+Z", "Revert pending changes"),
+        ("s", "Sort by the selected column: ▲ → ▼ → off (table data: ORDER BY · results: loaded rows)"),
         ("w / o", "Edit WHERE / ORDER BY"),
         ("r", "Reload"),
         ("x", "Export to CSV"),
@@ -69,7 +69,7 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
         ("Esc", "Cancel"),
     ]),
     ("Popups", &[
-        ("Ctrl+B", "Go to DDL (in Go to Database Object)"),
+        ("Ctrl+B", "Go to DDL (in Search Everywhere / Go to Database Object)"),
         ("type", "Filter (palettes)"),
         ("↑ ↓ / PgUp PgDn", "Move / scroll"),
         ("Enter", "Run / confirm"),
@@ -82,12 +82,12 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
 pub fn text() -> String {
     let mut s = String::from("\nCommands (change them with F1)\n");
     for (a, keys) in crate::keys::DEFAULT_KEYS {
-        s.push_str(&format!("  {:<30} {}\n", keys.join(" / "), crate::input::name_of(*a)));
+        s.push_str(&format!("  {:<30} {}\n", crate::keys::disp(&keys.join(" / ")), crate::input::name_of(*a)));
     }
     for (title, rows) in HELP {
         s.push_str(&format!("\n{title}\n"));
         for (k, d) in *rows {
-            s.push_str(&format!("  {k:<30} {d}\n"));
+            s.push_str(&format!("  {:<30} {}\n", crate::keys::disp(k), crate::keys::disp(d)));
         }
     }
     s

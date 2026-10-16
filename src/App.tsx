@@ -22,10 +22,12 @@ import { invalidateCompletion } from "./lib/completion";
 import { useStatusWidgets } from "./lib/statusbar";
 import type { FtsRequest } from "./lib/api";
 import { isRelation, NodeInfo, revealInTree } from "./components/SchemaTree";
+import { leaf, leaves, MAX_PANES, Pane, prunePanes, splitPane } from "./lib/panes";
 import { connBg, getThemePref, setThemePref, THEME_LABEL, ThemePref, useTheme } from "./lib/theme";
 import "./App.css";
 
-type Group = 0 | 1;
+/** 칸 id (0~3). 칸 배치는 Pane 트리 */
+type Group = number;
 
 interface Tab {
   id: string;
@@ -62,6 +64,8 @@ interface Tab {
   pinned?: boolean;
   /** Redis 브라우저: 처음 선택할 키 */
   redisKey?: string;
+  /** 다시 켤 때 되살린 탭: 아직 불러오지 않았다 (처음 보일 때 불러온다) */
+  stale?: boolean;
 }
 
 /** 닫은 탭 / 최근 파일 (Reopen Closed Tab, ⌘E Recent Files) */
@@ -111,6 +115,7 @@ export default function App() {
         getCurrentWindow().onCloseRequested((e) => {
           const n = tabsRef.current.filter((t) => t.inTx).length;
           if (n && !confirm(`${n} console(s) have uncommitted changes. Quit and roll them back?`)) e.preventDefault();
+          else saveWs();
         }),
       )
       .then((u) => (off = u))
@@ -129,11 +134,18 @@ export default function App() {
   }, []);
   const [conns, setConns] = useState<ConnectionView[]>([]);
   const [tabs, setTabs] = useState<Tab[]>([]);
-  const [activeIds, setActiveIds] = useState<[string | null, string | null]>([null, null]);
+  /** 칸마다 보이는 탭 */
+  const [activeIds, setActiveIds] = useState<(string | null)[]>([null, null, null, null]);
   const activeIdsRef = useRef(activeIds);
   activeIdsRef.current = activeIds;
-  const [split, setSplit] = useState<null | "right" | "down">(null);
+  // 화면 분할 (최대 4칸)
+  const [panes, setPanes] = useState<Pane>(leaf(0));
+  const panesRef = useRef(panes);
+  panesRef.current = panes;
+  const split = panes.t === "split";
   const [focused, setFocused] = useState<Group>(0);
+  const focusedRef = useRef(focused);
+  focusedRef.current = focused;
   const [dialog, setDialog] = useState<{ edit?: ConnectionView } | null>(null);
   const [status, setStatus] = useState("Ready");
   const [treeSel, setTreeSel] = useState<NodeInfo | null>(null);
@@ -196,7 +208,7 @@ export default function App() {
   }, []);
 
   const groupActive = (g: Group) => tabs.find((t) => t.id === activeIds[g] && t.group === g) ?? null;
-  const active = groupActive(focused) ?? groupActive(focused === 0 ? 1 : 0);
+  const active = groupActive(focused) ?? leaves(panes).map(groupActive).find(Boolean) ?? null;
   const activeConn = conns.find((c) => c.id === active?.connId);
   const patch = (id: string, p: Partial<Tab>) => setTabs((ts) => ts.map((t) => (t.id === id ? { ...t, ...p } : t)));
   const mru = useRef<string[]>([]);
@@ -221,8 +233,10 @@ export default function App() {
     recent.current = [snap, ...recent.current.filter((r) => r.key !== snap.key)].slice(0, 50);
   };
   const activate = (t: Tab) => {
+    const cur = tabsRef.current.find((x) => x.id === t.id);
+    if (cur?.stale) loadStale(cur);
     setFocused(t.group);
-    setActiveIds((a) => (t.group === 0 ? [t.id, a[1]] : [a[0], t.id]));
+    setActiveIds((a) => a.map((x, g) => (g === t.group ? t.id : x)));
     mru.current = [t.id, ...mru.current.filter((x) => x !== t.id)];
     remember(t);
   };
@@ -236,31 +250,9 @@ export default function App() {
     const database = opts.database && opts.database !== (c.database || "postgres") ? opts.database : undefined;
     const base = database ? `${c.name}/${database}` : c.name;
     const n = tabsRef.current.filter((t) => t.kind === "console" && t.connId === c.id && t.database === database).length;
-    const group: Group = opts.group ?? (split ? focused : 0);
-    const tab: Tab = {
-      id: crypto.randomUUID(),
-      kind,
-      group,
-      connId: c.id,
-      database,
-      target: targetId(c.id, database),
-      title: opts.title ?? (n === 0 ? `console [${base}]` : `console_${n + 1} [${base}]`),
-      sql: opts.sql ?? "",
-      running: false,
-      result: null,
-      error: null,
-      lastSql: null,
-      loadingMore: false,
-      where: opts.where ?? "",
-      orderBy: opts.orderBy ?? "",
-      tableSql: opts.tableSql,
-      edit: opts.edit,
-      results: [],
-      activeResult: "output",
-      output: [],
-      txManual: kind === "console" && !!c.options?.txManual,
-      inTx: false,
-    };
+    const ls = leaves(panesRef.current);
+    const group: Group = opts.group ?? (ls.includes(focused) ? focused : ls[0]);
+    const tab = buildTab(c, kind, opts, group, opts.title ?? (n === 0 ? `console [${base}]` : `console_${n + 1} [${base}]`));
     // Transaction control: Manual 이 기본이면 세션도 Manual 로 연다
     if (tab.txManual) api.setTxMode(tab.target, tab.id, true).catch((e) => setStatus(String(e)));
     setTabs((ts) => [...ts, tab]);
@@ -279,6 +271,143 @@ export default function App() {
     });
     return tab;
   };
+
+  /** 탭 하나 (상태만. 열기·실행은 하지 않는다) */
+  const buildTab = (
+    c: ConnectionView,
+    kind: Tab["kind"],
+    opts: { sql?: string; database?: string; tableSql?: string; edit?: EditTarget; where?: string; orderBy?: string },
+    group: Group,
+    title: string,
+  ): Tab => {
+    const database = opts.database && opts.database !== (c.database || "postgres") ? opts.database : undefined;
+    return {
+      id: crypto.randomUUID(),
+      kind,
+      group,
+      connId: c.id,
+      database,
+      target: targetId(c.id, database),
+      title,
+      sql: opts.sql ?? "",
+      running: false,
+      result: null,
+      error: null,
+      lastSql: null,
+      loadingMore: false,
+      where: opts.where ?? "",
+      orderBy: opts.orderBy ?? "",
+      tableSql: opts.tableSql,
+      edit: opts.edit,
+      results: [],
+      activeResult: "output",
+      output: [],
+      txManual: kind === "console" && !!c.options?.txManual,
+      inTx: false,
+    };
+  };
+
+  // ───────── 다시 켤 때 되살리기 (workspace-gui.json) ─────────
+  const restored = useRef(false);
+  const savedWs = useRef("");
+  /** 저장할 내용: 탭(콘솔 SQL·테이블 WHERE/ORDER BY·DDL·Redis)과 분할·칸마다 보이는 탭·포커스 */
+  const wsJson = () => {
+    const ts = tabsRef.current;
+    return JSON.stringify({
+      version: 1,
+      tabs: ts.map((t) => ({
+        kind: t.kind,
+        title: t.title,
+        connId: t.connId,
+        database: t.database,
+        group: t.group,
+        sql: t.kind === "console" || t.kind === "ddl" ? sqlOf(t) : "",
+        where: t.where,
+        orderBy: t.orderBy,
+        edit: t.edit ? { schema: t.edit.schema, table: t.edit.table } : undefined,
+        pinned: t.pinned,
+        redisKey: t.redisKey,
+      })),
+      panes: panesRef.current,
+      activeIds: activeIdsRef.current.map((id) => ts.findIndex((t) => t.id === id)),
+      focused: focusedRef.current,
+    });
+  };
+  const saveWs = () => {
+    if (!restored.current) return;
+    const j = wsJson();
+    if (j === savedWs.current) return;
+    savedWs.current = j;
+    api.saveWorkspace(JSON.parse(j)).catch(() => {});
+  };
+  /** 되살린 탭을 처음 볼 때: 테이블은 데이터를 불러오고, 콘솔은 트랜잭션 모드를 맞춘다 (Redis 는 화면이 스스로 불러온다) */
+  const loadStale = async (t: Tab) => {
+    patch(t.id, { stale: false });
+    if (t.kind === "console" && t.txManual) api.setTxMode(t.target, t.id, true).catch((e) => setStatus(String(e)));
+    if (t.kind === "table" && t.edit && t.tableSql) {
+      try {
+        const d = await meta.table(t.target, t.edit.schema, t.edit.table);
+        patch(t.id, { edit: { ...t.edit, pk: d.columns.filter((x) => x.isPk).map((x) => x.name) } });
+      } catch {
+        /* 메타 조회 실패 시 읽기 전용 */
+      }
+      run(t, t.tableSql);
+    }
+  };
+  const restoreWs = (ws: any) => {
+    if (!ws || !Array.isArray(ws.tabs)) return;
+    const okPane = (p: any): boolean => p && (p.t === "leaf" ? Number.isInteger(p.g) && p.g >= 0 && p.g < MAX_PANES : p.t === "split" && okPane(p.a) && okPane(p.b));
+    const pane0: Pane = okPane(ws.panes) ? ws.panes : leaf(0);
+    const ls0 = leaves(pane0);
+    const built: (Tab | null)[] = ws.tabs.map((x: any) => {
+      const c = conns.find((cc) => cc.id === x.connId);
+      if (!c || !["console", "table", "ddl", "redis"].includes(x.kind)) return null;
+      const group = ls0.includes(x.group) ? x.group : ls0[0];
+      let tableSql: string | undefined;
+      if (x.kind === "table" && x.edit) {
+        const { q } = dialectOf(c.kind);
+        tableSql = `SELECT * FROM ${q(x.edit.schema)}.${q(x.edit.table)}${x.where ? ` WHERE ${x.where}` : ""}${x.orderBy ? ` ORDER BY ${x.orderBy}` : ""};`;
+      }
+      const t = buildTab(c, x.kind, { sql: x.kind === "table" ? tableSql : x.sql, database: x.database, tableSql, edit: x.edit ? { ...x.edit, pk: [] } : undefined, where: x.where, orderBy: x.orderBy }, group, x.title);
+      return { ...t, pinned: x.pinned, redisKey: x.redisKey, stale: x.kind !== "ddl" };
+    });
+    const ts = built.filter((t): t is Tab => !!t);
+    if (!ts.length) return;
+    const pane = prunePanes(pane0, new Set(ts.map((t) => t.group)));
+    const ls = leaves(pane);
+    const act = [0, 1, 2, 3].map((g) => {
+      if (!ls.includes(g)) return null;
+      const want = built[ws.activeIds?.[g]];
+      return want && want.group === g ? want.id : ts.find((t) => t.group === g)?.id ?? null;
+    });
+    setTabs(ts);
+    setPanes(pane);
+    setActiveIds(act);
+    setFocused(ls.includes(ws.focused) ? ws.focused : ls[0]);
+    mru.current = act.filter((x): x is string => !!x);
+    // 칸마다 보이는 탭만 불러온다 (나머지는 고를 때)
+    for (const id of act) {
+      const t = ts.find((x) => x.id === id);
+      if (t?.stale) loadStale(t);
+    }
+  };
+  useEffect(() => {
+    if (restored.current || !conns.length) return;
+    restored.current = true;
+    api
+      .loadWorkspace()
+      .then(restoreWs)
+      .catch(() => {});
+  }, [conns]);
+  // 바뀌면 저장 (콘솔에 친 SQL 은 상태가 아니라 주기적으로도 본다)
+  useEffect(() => {
+    const h = setTimeout(saveWs, 800);
+    return () => clearTimeout(h);
+  }, [tabs, panes, activeIds, focused]);
+  useEffect(() => {
+    const h = setInterval(saveWs, 5000);
+    return () => clearInterval(h);
+  }, []);
 
   const openConsole = (c: ConnectionView, db?: string, sql?: string) => addTab(c, "console", { database: db, sql });
 
@@ -785,39 +914,45 @@ export default function App() {
       api.closeSession(id).catch(() => {});
     }
     setTabs((ts) => {
-      let rest = ts.filter((t) => !ids.includes(t.id));
-      const leftEmpty = !rest.some((t) => t.group === 0) && rest.some((t) => t.group === 1);
-      if (leftEmpty) rest = rest.map((t) => ({ ...t, group: 0 as Group }));
-      setActiveIds((a) => {
-        const byMru = (g: Group) => mru.current.find((id) => rest.some((t) => t.id === id && t.group === g)) ?? last(rest.filter((t) => t.group === g))?.id ?? null;
-        if (leftEmpty) return [a[1] && rest.some((t) => t.id === a[1]) ? a[1] : byMru(0), null];
-        const pick = (g: Group) => (a[g] && rest.some((t) => t.id === a[g]) ? a[g] : byMru(g));
-        return [pick(0), pick(1)];
-      });
-      // 오른쪽(아래) 그룹이 비면 분할 해제
-      if (!rest.some((t) => t.group === 1)) {
-        setSplit(null);
-        setFocused(0);
-      }
+      const rest = ts.filter((t) => !ids.includes(t.id));
+      settle(rest, panesRef.current);
       return rest;
     });
   };
 
-  const moveTo = (id: string, g: Group, dir?: "right" | "down") => {
-    if (dir) setSplit(dir);
+  /** 탭이 바뀐 뒤: 빈 칸을 없애고 (옆 칸이 채운다) 칸마다 보이는 탭과 포커스를 맞춘다. show = 그 칸에 그 탭을 보인다 */
+  const settle = (next: Tab[], pane: Pane, show?: { g: Group; id: string }) => {
+    const p = prunePanes(pane, new Set(next.map((t) => t.group)));
+    const ls = leaves(p);
+    setPanes(p);
+    setActiveIds((a) =>
+      a.map((cur, g) => {
+        if (!ls.includes(g)) return null;
+        if (show?.g === g) return show.id;
+        if (cur && next.some((t) => t.id === cur && t.group === g)) return cur;
+        return mru.current.find((id) => next.some((t) => t.id === id && t.group === g)) ?? last(next.filter((t) => t.group === g))?.id ?? null;
+      }),
+    );
+    setFocused((f) => (show && ls.includes(show.g) ? show.g : ls.includes(f) ? f : ls[0]));
+  };
+
+  /** 탭을 다른 칸으로 */
+  const moveTo = (id: string, g: Group) =>
     setTabs((ts) => {
       const next = ts.map((t) => (t.id === id ? { ...t, group: g } : t));
-      setActiveIds((a) => {
-        const r: [string | null, string | null] = [a[0], a[1]];
-        r[g] = id;
-        const other: Group = g === 0 ? 1 : 0;
-        if (r[other] === id) r[other] = last(next.filter((t) => t.group === other))?.id ?? null;
-        return r;
-      });
-      if (!next.some((t) => t.group === 1)) setSplit(null);
+      settle(next, panesRef.current, { g, id });
       return next;
     });
-    setFocused(g);
+
+  /** 탭이 있는 칸을 나누고 탭을 새 칸으로 (Split and Move Right / Down) */
+  const splitAndMove = (t: Tab, dir: "right" | "down") => {
+    const r = splitPane(panesRef.current, t.group, dir);
+    if (!r) return setStatus(`Up to ${MAX_PANES} panes`);
+    setTabs((ts) => {
+      const next = ts.map((x) => (x.id === t.id ? { ...x, group: r.g } : x));
+      settle(next, r.pane, { g: r.g, id: t.id });
+      return next;
+    });
   };
 
   // ───────── 탭 드래그 앤 드롭 (DataGrip: 순서 변경 / 다른 그룹으로 이동 / 가장자리로 끌어 분할) ─────────
@@ -825,7 +960,14 @@ export default function App() {
   const [dropHint, setDropHint] = useState<{ g: Group; zone: "tabs" | "center" | "right" | "down"; beforeId: string | null } | null>(null);
 
   const dropTab = (id: string, g: Group, beforeId: string | null, dir?: "right" | "down") => {
-    if (dir) setSplit(dir);
+    // 가장자리에 놓으면 그 칸을 나눠 새 칸으로
+    let pane = panesRef.current;
+    if (dir) {
+      const r = splitPane(pane, g, dir);
+      if (!r) return setStatus(`Up to ${MAX_PANES} panes`);
+      pane = r.pane;
+      g = r.g;
+    }
     setTabs((ts) => {
       const t = ts.find((x) => x.id === id);
       if (!t || beforeId === id) return ts;
@@ -835,21 +977,8 @@ export default function App() {
         const lastIdx = rest.map((x) => x.group).lastIndexOf(g);
         idx = lastIdx < 0 ? rest.length : lastIdx + 1;
       }
-      let next = [...rest.slice(0, idx), { ...t, group: g }, ...rest.slice(idx)];
-      // 왼쪽(위) 그룹이 비면 오른쪽 그룹을 왼쪽으로 당기고 분할 해제
-      if (!next.some((x) => x.group === 0)) next = next.map((x) => ({ ...x, group: 0 as Group }));
-      const splitAlive = next.some((x) => x.group === 1);
-      if (!splitAlive) setSplit(null);
-      const target: Group = splitAlive ? g : 0;
-      setActiveIds((a) => {
-        const r: [string | null, string | null] = splitAlive ? [a[0], a[1]] : [a[0], null];
-        r[target] = id;
-        const other: Group = target === 0 ? 1 : 0;
-        if (r[other] === id || (r[other] && !next.some((x) => x.id === r[other] && x.group === other)))
-          r[other] = last(next.filter((x) => x.group === other))?.id ?? null;
-        return r;
-      });
-      setFocused(target);
+      const next = [...rest.slice(0, idx), { ...t, group: g }, ...rest.slice(idx)];
+      settle(next, pane, { g, id });
       return next;
     });
   };
@@ -861,9 +990,9 @@ export default function App() {
 
   const unsplit = () => {
     setTabs((ts) => ts.map((t) => ({ ...t, group: 0 })));
-    setSplit(null);
+    setPanes(leaf(0));
     setFocused(0);
-    setActiveIds((a) => [a[focused] ?? a[0], null]);
+    setActiveIds((a) => [a[focused] ?? a.find(Boolean) ?? null, null, null, null]);
   };
 
   /** Reopen Closed Tab / Recent Files 에서 다시 열기 */
@@ -881,13 +1010,15 @@ export default function App() {
     if (snap) reopen(snap);
   };
 
-  /** Split Right / Down: 같은 대상을 독립된 탭으로 복제해서 오른쪽(아래) 그룹에 연다 */
+  /** Split Right / Down: 같은 대상을 독립된 탭으로 복제해서 그 탭의 칸을 나눈 오른쪽(아래) 칸에 연다 (최대 4칸) */
   const splitClone = (t: Tab, dir: "right" | "down") => {
     const c = conns.find((x) => x.id === t.connId);
     if (!c) return;
-    setSplit(dir);
-    if (t.kind === "table" && t.edit) openTableTab(c, t.edit.schema, t.edit.table, t.database, 1, t.where, t.orderBy);
-    else addTab(c, t.kind, { title: t.kind === "console" ? `${t.title} (copy)` : t.title, sql: sqlOf(t), database: t.database, group: 1 });
+    const r = splitPane(panesRef.current, t.group, dir);
+    if (!r) return setStatus(`Up to ${MAX_PANES} panes`);
+    setPanes(r.pane);
+    if (t.kind === "table" && t.edit) openTableTab(c, t.edit.schema, t.edit.table, t.database, r.g, t.where, t.orderBy);
+    else addTab(c, t.kind, { title: t.kind === "console" ? `${t.title} (copy)` : t.title, sql: sqlOf(t), database: t.database, group: r.g });
   };
 
   const togglePin = (t: Tab) => {
@@ -904,7 +1035,9 @@ export default function App() {
     activate(t);
     const sameGroup = tabs.filter((x) => x.group === t.group);
     const idx = sameGroup.findIndex((x) => x.id === t.id);
-    const other: Group = t.group === 0 ? 1 : 0;
+    const ls = leaves(panes);
+    const other: Group = ls[(ls.indexOf(t.group) + 1) % ls.length];
+    const canSplit = ls.length < MAX_PANES;
     const c = conns.find((x) => x.id === t.connId);
     const items: MenuItem[] = [
       { label: "Close", shortcut: sk("tab.close"), action: () => closeTabs([t.id]) },
@@ -924,18 +1057,17 @@ export default function App() {
         ],
       },
       { separator: true },
+      { label: "Split Right", action: () => splitClone(t, "right"), disabled: !canSplit },
+      { label: "Split Down", action: () => splitClone(t, "down"), disabled: !canSplit },
+      { label: "Split and Move Right", action: () => splitAndMove(t, "right"), disabled: !canSplit || sameGroup.length < 2 },
+      { label: "Split and Move Down", action: () => splitAndMove(t, "down"), disabled: !canSplit || sameGroup.length < 2 },
       ...(split
         ? ([
-            { label: "Move To Opposite Group", action: () => moveTo(t.id, other) },
-            { label: "Open In Opposite Group", action: () => { const cc = c; if (!cc) return; if (t.kind === "table" && t.edit) openTableTab(cc, t.edit.schema, t.edit.table, t.database, other, t.where, t.orderBy); else addTab(cc, t.kind, { title: t.title, sql: sqlOf(t), database: t.database, group: other }); } },
+            { label: "Move To Next Group", action: () => moveTo(t.id, other) },
+            { label: "Open In Next Group", action: () => { const cc = c; if (!cc) return; if (t.kind === "table" && t.edit) openTableTab(cc, t.edit.schema, t.edit.table, t.database, other, t.where, t.orderBy); else addTab(cc, t.kind, { title: t.title, sql: sqlOf(t), database: t.database, group: other }); } },
             { label: "Unsplit All", action: unsplit },
           ] as MenuItem[])
-        : ([
-            { label: "Split Right", action: () => splitClone(t, "right") },
-            { label: "Split Down", action: () => splitClone(t, "down") },
-            { label: "Split and Move Right", action: () => moveTo(t.id, 1, "right"), disabled: sameGroup.length < 2 },
-            { label: "Split and Move Down", action: () => moveTo(t.id, 1, "down"), disabled: sameGroup.length < 2 },
-          ] as MenuItem[])),
+        : []),
     ];
     if (t.kind === "console" && c)
       items.push(
@@ -1258,7 +1390,9 @@ export default function App() {
       // 분할된 에디터 그룹 사이 이동 (Goto Next Splitter)
       if (is("split.other") && keyState.current.split) {
         e.preventDefault();
-        const g: Group = keyState.current.focused === 0 ? 1 : 0;
+        // 다음 칸으로 (⇧ 이면 이전 칸)
+        const ls = leaves(panesRef.current);
+        const g: Group = ls[(ls.indexOf(keyState.current.focused) + (e.shiftKey ? -1 : 1) + ls.length) % ls.length];
         const id = activeIdsRef.current[g];
         const t = tabs.find((x) => x.id === id);
         if (t) activate(t);
@@ -1326,6 +1460,17 @@ export default function App() {
   };
 
   // ───────── 에디터 그룹 렌더링 ─────────
+  /** 분할 트리: 가지는 나란히(좌우/상하), 잎은 칸. 맨 바깥 비율만 저장한다 */
+  const renderPanes = (p: Pane, path: string): React.ReactNode =>
+    p.t === "leaf" ? (
+      renderGroup(p.g)
+    ) : (
+      <PanelGroup key={path} direction={p.dir === "right" ? "horizontal" : "vertical"} autoSaveId={path === "" ? `dbtool-split-${p.dir}` : undefined}>
+        <Panel minSize={15}>{renderPanes(p.a, path + "a")}</Panel>
+        <PanelResizeHandle className={p.dir === "right" ? "resize-h" : "resize-v"} />
+        <Panel minSize={15}>{renderPanes(p.b, path + "b")}</Panel>
+      </PanelGroup>
+    );
   const renderGroup = (g: Group) => {
     const gTabs = tabs.filter((t) => t.group === g);
     const ga = groupActive(g);
@@ -1430,7 +1575,9 @@ export default function App() {
                 const r = e.currentTarget.getBoundingClientRect();
                 const fx = (e.clientX - r.left) / r.width;
                 const fy = (e.clientY - r.top) / r.height;
-                const zone = !split && fx > 0.7 ? "right" : !split && fy > 0.7 ? "down" : "center";
+                // 칸의 오른쪽 / 아래 가장자리 = 그 칸을 나눈다 (최대 4칸)
+                const canSplit = leaves(panes).length < MAX_PANES;
+                const zone = canSplit && fx > 0.7 ? "right" : canSplit && fy > 0.7 ? "down" : "center";
                 setDropHint({ g, zone, beforeId: null });
               }}
               onDragLeave={() => setDropHint((h) => (h && h.g === g && h.zone !== "tabs" ? null : h))}
@@ -1439,7 +1586,8 @@ export default function App() {
                 const h = dropHint;
                 if (h && h.g === g) {
                   if (h.zone === "right" || h.zone === "down") {
-                    if (gTabs.length > 1 || tabs.some((x) => x.group !== g)) dropTab(dragId, 1, null, h.zone);
+                    // 제 칸에 하나뿐인 탭은 나눠도 그대로라 무시
+                    if (!(gTabs.length === 1 && gTabs[0].id === dragId)) dropTab(dragId, g, null, h.zone);
                   } else dropTab(dragId, g, null);
                 }
                 endDrag();
@@ -1649,15 +1797,7 @@ export default function App() {
         )}
         {!maximized && !explorerHidden && <PanelResizeHandle className="resize-h" />}
         <Panel id="editors" order={2}>
-          {split ? (
-            <PanelGroup direction={split === "right" ? "horizontal" : "vertical"} autoSaveId={`dbtool-split-${split}`}>
-              <Panel minSize={15}>{renderGroup(0)}</Panel>
-              <PanelResizeHandle className={split === "right" ? "resize-h" : "resize-v"} />
-              <Panel minSize={15}>{renderGroup(1)}</Panel>
-            </PanelGroup>
-          ) : (
-            renderGroup(0)
-          )}
+          {renderPanes(panes, "")}
         </Panel>
       </PanelGroup>
       </Panel>

@@ -87,6 +87,18 @@ pub async fn execute_batch(state: State<'_, AppState>, id: String, statements: V
     state.execute_batch(id, statements, exact_one.unwrap_or(false)).await
 }
 
+/// 접속하면 검색 캐시를 채운다 (프론트는 기다리지 않는다)
+#[tauri::command]
+pub async fn warm_search_cache(state: State<'_, AppState>, id: String) -> AppResult<()> {
+    state.warm_search_cache(id).await
+}
+
+/// 접속하지 않은 Data Source 도 Search Everywhere 에서 찾도록 저장해 둔 객체·컬럼 목록
+#[tauri::command]
+pub fn cached_index(state: State<'_, AppState>) -> AppResult<Vec<dbtool_core::search_cache::CachedIndex>> {
+    state.cached_index()
+}
+
 #[tauri::command]
 pub async fn object_index(state: State<'_, AppState>, id: String) -> AppResult<Vec<crate::meta::IndexEntry>> {
     state.object_index(id).await
@@ -209,6 +221,17 @@ pub async fn object_ddl(state: State<'_, AppState>, id: String, schema: String, 
 #[tauri::command]
 pub async fn completion_meta(state: State<'_, AppState>, id: String) -> AppResult<Vec<crate::meta::CompletionTable>> {
     state.completion_meta(id).await
+}
+
+/// 열어 둔 탭·화면 분할 (workspace-gui.json). 다시 켜면 그대로
+#[tauri::command]
+pub fn load_workspace(state: State<'_, AppState>) -> Option<serde_json::Value> {
+    state.store.workspace("gui")
+}
+
+#[tauri::command]
+pub fn save_workspace(state: State<'_, AppState>, ws: serde_json::Value) -> AppResult<()> {
+    state.store.save_workspace("gui", &ws)
 }
 
 /// 단축키 사용자 설정 (keymap.json 의 "gui" 구역)

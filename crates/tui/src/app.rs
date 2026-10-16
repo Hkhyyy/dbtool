@@ -64,20 +64,14 @@ pub enum SplitDir {
     Right,
     Down,
 }
-#[derive(Clone, Copy, Debug)]
-pub struct Split {
-    pub dir: SplitDir,
-    /// 첫 번째 칸(왼쪽/위)이 차지하는 비율(%)
-    pub pct: u16,
-}
 
 /// 마우스로 끄는 것
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Drag {
     /// 콘솔 에디터/결과 경계선
     Console,
-    /// 분할된 두 칸 사이 경계선
-    Split,
+    /// 칸 사이 경계선 (Hits.splits 의 순번)
+    Split(usize),
     /// 그리드 가로 스크롤바
     HBar,
     /// Database Explorer 오른쪽 경계선
@@ -91,13 +85,15 @@ pub enum Drag {
 pub enum DropTarget {
     /// 그 칸으로 옮긴다 (before = 그 탭 앞에 끼운다)
     Group(usize, Option<u64>),
-    /// 화면을 나누고 새 칸으로
-    NewSplit(SplitDir),
+    /// 그 칸을 나누고 새 칸으로
+    NewSplit(usize, SplitDir),
 }
 
 pub struct TableTab {
     pub schema: String,
     pub table: String,
+    /// table / view / matview / foreign (Ctrl+B DDL 용)
+    pub kind: String,
     pub where_: String,
     pub order: String,
     pub session: String,
@@ -143,8 +139,10 @@ pub struct Tab {
     pub db: String,
     pub target: String,
     pub kind: TabKind,
-    /// 분할된 화면에서 속한 칸 (0 = 왼쪽/위, 1 = 오른쪽/아래)
+    /// 분할된 화면에서 속한 칸 (panes 의 잎)
     pub group: usize,
+    /// 되살린 탭: 아직 불러오지 않았다 (처음 보일 때 불러온다)
+    pub stale: bool,
 }
 
 // ───────── 팝업 ─────────
@@ -226,6 +224,7 @@ pub enum Action {
     NextTab,
     PrevTab,
     GoToObject,
+    SearchEverywhere,
     RecentTabs,
     Ddl,
     EditData,
@@ -247,6 +246,10 @@ pub enum Action {
     CycleFocus,
     ShrinkEditor,
     GrowEditor,
+    PaneUp,
+    PaneDown,
+    PaneLeft,
+    PaneRight,
     SplitShrink,
     SplitGrow,
     ExplorerNarrower,
@@ -264,10 +267,11 @@ pub const ACTIONS: &[(Action, &str, &str)] = &[
     (Action::TxToggle, "Toggle Transaction Mode (Auto/Manual)", ""),
     (Action::Commit, "Commit", ""),
     (Action::Rollback, "Roll Back", ""),
+    (Action::SearchEverywhere, "Search Everywhere (objects · columns · tabs · actions)", ""),
     (Action::GoToObject, "Go to Database Object", ""),
     (Action::RecentTabs, "Recent Tabs / Switcher", ""),
     (Action::EditData, "Edit Data (open table)", "F4 / Enter"),
-    (Action::Ddl, "Go to DDL", "Ctrl+B"),
+    (Action::Ddl, "Go to DDL", ""),
     (Action::Submit, "Submit Changes", ""),
     (Action::Revert, "Revert Changes", "Ctrl+Z (grid)"),
     (Action::AddRow, "Add Row", "Insert / a"),
@@ -286,22 +290,50 @@ pub const ACTIONS: &[(Action, &str, &str)] = &[
     (Action::ToggleExplorer, "Database Explorer", ""),
     (Action::ToggleOutput, "Toggle Output / Result", ""),
     (Action::Complete, "Code Completion", ""),
-    (Action::SplitRight, "Split Right", ""),
-    (Action::SplitDown, "Split Down", ""),
-    (Action::Unsplit, "Unsplit", "split key again"),
-    (Action::OtherSplit, "Go to the Other Split", ""),
+    (Action::SplitRight, "Split Right (focused pane, up to 4)", ""),
+    (Action::SplitDown, "Split Down (focused pane, up to 4)", ""),
+    (Action::Unsplit, "Unsplit All", ""),
+    (Action::OtherSplit, "Go to the Next Split", ""),
     (Action::SplitShrink, "Move Split Divider Left / Up", ""),
     (Action::SplitGrow, "Move Split Divider Right / Down", ""),
     (Action::ExplorerNarrower, "Database Explorer Narrower", ""),
     (Action::ExplorerWider, "Database Explorer Wider", ""),
     (Action::ShrinkEditor, "Shrink Editor (console)", ""),
     (Action::GrowEditor, "Grow Editor (console)", ""),
+    (Action::PaneUp, "Go to the Split Above", ""),
+    (Action::PaneDown, "Go to the Split Below", ""),
+    (Action::PaneLeft, "Go to the Split on the Left", ""),
+    (Action::PaneRight, "Go to the Split on the Right", ""),
     (Action::CycleFocus, "Cycle Focus (explorer → editor → results)", ""),
     (Action::Palette, "Actions Palette", ""),
     (Action::TrustSshHost, "Trust SSH Host Key (after checking its fingerprint)", ""),
     (Action::Help, "Keymap", ""),
     (Action::Quit, "Quit", ""),
 ];
+
+fn object_items(conn: &str, name: &str, db: &str, es: Vec<IndexEntry>, tag: &str) -> Vec<PItem> {
+    es.into_iter()
+        .map(|e| PItem {
+            label: e.name.clone(),
+            hint: format!("{} {} · {name}/{db}{tag}", e.kind, if e.kind == "schema" { String::new() } else { e.schema.clone() }),
+            action: PAction::Object { conn: conn.into(), db: db.into(), e: IndexEntryLite { schema: e.schema, name: e.name, kind: e.kind } },
+        })
+        .collect()
+}
+
+/// 컬럼 → 고르면 그 테이블을 연다 (Ctrl+B 는 그 테이블 DDL)
+fn column_items(conn: &str, name: &str, db: &str, ts: Vec<dbtool_core::meta::CompletionTable>, tag: &str) -> Vec<PItem> {
+    ts.into_iter()
+        .flat_map(|t| {
+            t.columns.into_iter().map(move |(col, ty)| PItem {
+                label: col,
+                hint: format!("column {ty} · {}.{} · {name}/{db}{tag}", t.schema, t.name),
+                action: PAction::Object { conn: conn.into(), db: db.into(), e: IndexEntryLite { schema: t.schema.clone(), name: t.name.clone(), kind: "table".into() } },
+            })
+        })
+        .collect()
+}
+
 
 /// 마지막으로 그린 화면 영역 (마우스 클릭 판정)
 #[derive(Default)]
@@ -311,9 +343,8 @@ pub struct Hits {
     pub tabs: Vec<(u64, u16, u16, u16)>,
     /// 칸마다: (칸, 탭 바, 본문)
     pub groups: Vec<(usize, ratatui::layout::Rect, ratatui::layout::Rect)>,
-    /// 분할된 영역 전체와 두 칸 사이 경계선
-    pub split_area: ratatui::layout::Rect,
-    pub split_divider: ratatui::layout::Rect,
+    /// 나눈 곳마다: (가지 위치, 나눈 영역, 경계선, 방향). 위아래로 나눈 곳은 아래 첫 칸 탭 바의 빈 곳도 경계선으로 잡는다 (grab)
+    pub splits: Vec<(crate::panes::Path, ratatui::layout::Rect, ratatui::layout::Rect, ratatui::layout::Rect, SplitDir)>,
     /// Database Explorer 오른쪽 경계선과 화면 본문 (끌어서 폭 조절)
     pub explorer_divider: ratatui::layout::Rect,
     pub main: ratatui::layout::Rect,
@@ -344,9 +375,10 @@ pub struct App {
     pub popup: Option<Popup>,
     pub status: String,
     pub quit: bool,
-    pub split: Option<Split>,
+    /// 화면 분할 (최대 4칸)
+    pub panes: crate::panes::Pane,
     /// 칸마다 보이는 탭
-    pub group_active: [Option<u64>; 2],
+    pub group_active: [Option<u64>; crate::panes::MAX],
     /// 콘솔에서 에디터가 차지하는 비율(%)
     pub console_pct: u16,
     /// Database Explorer 폭 (None = 화면 폭에 맞춰 자동)
@@ -362,6 +394,9 @@ pub struct App {
     /// 새 버전이 있으면 그 버전 (상태줄에 알린다)
     pub update: Option<String>,
     next_id: u64,
+    /// 지난번 탭을 되살렸는지 (Data Source 목록을 처음 읽은 뒤 한 번), 마지막으로 저장한 내용
+    restored: bool,
+    saved_ws: String,
 }
 
 pub fn fuzzy(q: &str, text: &str) -> Option<i64> {
@@ -425,8 +460,8 @@ impl App {
             popup: None,
             status: "Ready — F1 keymap · Ctrl+K actions · Ctrl+O go to object".into(),
             quit: false,
-            split: None,
-            group_active: [None, None],
+            panes: crate::panes::Pane::Leaf(0),
+            group_active: [None; crate::panes::MAX],
             console_pct: 42,
             explorer_w: None,
             drag: None,
@@ -435,6 +470,8 @@ impl App {
             completion_loading: HashSet::new(),
             keys: crate::keys::Keymap::new(&user_keys),
             update: None,
+            restored: false,
+            saved_ws: String::new(),
             next_id: 1,
         };
         if let Some(e) = keys_err {
@@ -484,6 +521,13 @@ impl App {
                     .collect();
                 a.conns = cs;
                 a.tree.clamp();
+                if !a.restored {
+                    a.restored = true;
+                    if let Some(v) = a.state.store.workspace("tui") {
+                        crate::workspace::restore(a, &v);
+                    }
+                    a.saved_ws = crate::workspace::to_json(a).to_string();
+                }
             }
             Err(e) => a.status = format!("Failed to load data sources: {e}"),
         });
@@ -538,21 +582,15 @@ impl App {
                 self.spawn(
                     async move {
                         let dbs = st.list_databases(conn.clone()).await.map_err(err)?;
+                        // 접속됨: 다음에 접속하지 않고도 찾도록 검색 캐시를 백그라운드로 채운다
+                        let st2 = st.clone();
+                        tokio::spawn(async move { st2.warm_search_cache(conn).await });
                         Ok::<_, String>((dbs, def))
                     },
                     move |a, r: Result<(Vec<String>, String), String>| {
                         let r = r.map(|(dbs, def)| {
-                            let hidden: &[&str] = match cfg.kind {
-                                DbKind::Postgres => &["template0", "template1", "rdsadmin"],
-                                DbKind::Mysql => &dbtool_core::mysql::SYSTEM_DBS,
-                                DbKind::Redis => &[],
-                            };
-                            // GUI 와 같은 표시 범위 (Data Source › Schemas 탭)
-                            let scoped = cfg.scope.databases.as_ref().map(|d| !d.is_empty()).unwrap_or(false);
-                            dbs.into_iter()
-                                .filter(|d| scoped || d == &def || !hidden.contains(&d.as_str()))
-                                .filter(|d| !cfg.options.single_db || d == &def)
-                                .filter(|d| cfg.options.single_db || cfg.scope.db_visible(d, &def))
+                            dbtool_core::app::visible_dbs(&cfg, dbs, &def)
+                                .into_iter()
                                 .map(|d| Node {
                                     key: format!("{}|{d}", cfg.id),
                                     label: d.clone(),
@@ -729,7 +767,7 @@ impl App {
             }
             NodeKind::Conn | NodeKind::Db if f4 => self.open_console(&n.conn, n.db.clone()),
             NodeKind::Object(k) if k == "key" => self.open_redis(&n.conn, n.db.clone().unwrap(), n.name.clone()),
-            NodeKind::Object(_) if n.is_relation() => self.open_table(&n.conn, n.db.clone().unwrap(), n.schema.clone().unwrap(), n.name.clone().unwrap()),
+            NodeKind::Object(k) if n.is_relation() => self.open_table(&n.conn, n.db.clone().unwrap(), n.schema.clone().unwrap(), n.name.clone().unwrap(), k.clone()),
             NodeKind::Object(k) => {
                 let k = if k == "function" || k == "procedure" { "routine".to_string() } else { k.clone() };
                 self.open_ddl(&n.conn, n.db.clone().unwrap(), n.schema.clone().unwrap(), n.name.clone().unwrap(), k)
@@ -747,17 +785,14 @@ impl App {
         let target = sql::target_id(conn, Some(&db));
         // 새 탭은 포커스가 있는 칸에 연다
         let group = self.focused_group();
-        self.tabs.push(Tab { id, title, conn: conn.into(), db, target, kind, group });
+        self.tabs.push(Tab { id, title, conn: conn.into(), db, target, kind, group, stale: false });
         self.activate(self.tabs.len() - 1);
         id
     }
 
     /// 포커스가 있는 칸
     pub fn focused_group(&self) -> usize {
-        if self.split.is_none() {
-            return 0;
-        }
-        self.tabs.get(self.active).map(|t| t.group).unwrap_or(0)
+        self.tabs.get(self.active).map(|t| t.group).unwrap_or_else(|| self.panes.leaves()[0])
     }
 
     /// 칸에 보이는 탭 (index)
@@ -781,6 +816,80 @@ impl App {
             TabKind::Console(_) => Focus::Editor,
             _ => Focus::Grid,
         };
+        if std::mem::take(&mut self.tabs[i].stale) {
+            self.load_restored(i);
+        }
+    }
+
+    /// 되살린 탭을 처음 볼 때: 테이블은 데이터, Redis 는 키 목록, 콘솔은 자동완성·트랜잭션 모드
+    fn load_restored(&mut self, i: usize) {
+        let (id, target) = (self.tabs[i].id, self.tabs[i].target.clone());
+        match &self.tabs[i].kind {
+            TabKind::Table(_) => self.reload_table(id),
+            TabKind::Redis(_) => self.redis_scan(id, true),
+            TabKind::Console(c) => {
+                let (manual, session) = (c.tx_manual, c.session.clone());
+                self.load_completion(target.clone());
+                if manual {
+                    let st = self.state.clone();
+                    self.spawn(async move { st.set_tx_mode(target, session, true).await.map_err(err) }, |a, r| {
+                        if let Err(e) = r {
+                            a.status = e;
+                        }
+                    });
+                }
+            }
+            TabKind::Text(_) => {}
+        }
+    }
+
+    // ───────── 다시 켤 때 되살리기 (workspace.rs) ─────────
+
+    /// 바뀌었으면 저장 (주기적으로·끝낼 때)
+    pub fn save_workspace(&mut self) {
+        if !self.restored {
+            return;
+        }
+        let s = crate::workspace::to_json(self).to_string();
+        if s != self.saved_ws {
+            if let Ok(v) = serde_json::from_str(&s) {
+                if self.state.store.save_workspace("tui", &v).is_ok() {
+                    self.saved_ws = s;
+                }
+            }
+        }
+    }
+
+    fn restored_tab(&mut self, conn: &str, db: String, title: String, kind: TabKind) -> Option<u64> {
+        let id = self.next_id;
+        self.next_id += 1;
+        let target = sql::target_id(conn, Some(&db));
+        self.tabs.push(Tab { id, title, conn: conn.into(), db, target, kind, group: 0, stale: true });
+        Some(id)
+    }
+
+    pub fn restore_console(&mut self, conn: &str, db: String, title: String, sql: &str) -> Option<u64> {
+        let mut editor = TextArea::new(sql.lines().map(String::from).collect());
+        editor.set_cursor_line_style(ratatui::style::Style::default());
+        let manual = self.conn(conn).map(|c| c.config.options.tx_manual).unwrap_or(false);
+        let c = Console { editor, session: uuid::Uuid::new_v4().to_string(), grid: None, result_title: String::new(), output: vec![], show_output: true, running: false, tx_manual: manual, in_tx: false, complete: None };
+        self.restored_tab(conn, db, title, TabKind::Console(c))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn restore_table(&mut self, conn: &str, db: String, schema: String, table: String, kind: String, where_: String, order: String) -> Option<u64> {
+        let title = table.clone();
+        let tt = TableTab { schema, table, kind, where_, order, session: uuid::Uuid::new_v4().to_string(), grid: None, running: false, pk: vec![], error: None };
+        self.restored_tab(conn, db, title, TabKind::Table(tt))
+    }
+
+    pub fn restore_text(&mut self, conn: &str, db: String, title: String, text: &str) -> Option<u64> {
+        self.restored_tab(conn, db, title, TabKind::Text(TextTab { text: text.into(), scroll: 0 }))
+    }
+
+    pub fn restore_redis(&mut self, conn: &str, db: String, title: String, pattern: &str) -> Option<u64> {
+        let r = RedisTab { pattern: pattern.into(), keys: vec![], cursor: "0".into(), sel: 0, off: 0, detail: None, text: None, value: None, focus_value: false, scanning: false, want: None };
+        self.restored_tab(conn, db, title, TabKind::Redis(r))
     }
 
     pub fn tab_index(&self, id: u64) -> Option<usize> {
@@ -835,11 +944,11 @@ impl App {
         if self.tabs.is_empty() {
             self.active = 0;
             self.focus = Focus::Tree;
-            self.split = None;
-            self.group_active = [None, None];
+            self.panes = crate::panes::Pane::Leaf(0);
+            self.group_active = [None; crate::panes::MAX];
             return;
         }
-        // 칸이 비면 분할을 푼다
+        // 칸이 비면 그 칸을 없앤다
         let emptied = !self.tabs.iter().any(|x| x.group == t.group);
         // 같은 칸에서 최근에 쓴 탭으로
         let next = self
@@ -851,7 +960,7 @@ impl App {
             .unwrap_or(0);
         self.activate(next);
         if emptied {
-            self.unsplit();
+            self.panes.remove(t.group);
         }
     }
 
@@ -860,8 +969,9 @@ impl App {
         for t in &mut self.tabs {
             t.group = 0;
         }
-        self.split = None;
-        self.group_active = [self.tabs.get(self.active).map(|t| t.id), None];
+        self.panes = crate::panes::Pane::Leaf(0);
+        self.group_active = [None; crate::panes::MAX];
+        self.group_active[0] = self.tabs.get(self.active).map(|t| t.id);
     }
 
     /// 탭을 다른 칸으로 옮기거나 (before 앞으로) 순서를 바꾸고, 새로 나눠 그 칸으로 보낸다
@@ -869,14 +979,19 @@ impl App {
         let Some(i) = self.tab_index(id) else { return };
         let from = self.tabs[i].group;
         let (g, before) = match target {
-            DropTarget::NewSplit(dir) => {
+            DropTarget::NewSplit(g, dir) => {
                 if self.tabs.len() < 2 {
                     // 탭이 하나면 새 콘솔을 만들어 나눈다
                     self.activate(i);
-                    return self.split_toggle(dir);
+                    return self.split_focused(dir);
                 }
-                self.split = Some(Split { dir, pct: 50 });
-                (1, None)
+                match self.panes.split(g, dir) {
+                    Some(new) => (new, None),
+                    None => {
+                        self.status = format!("Up to {} panes", crate::panes::MAX);
+                        return;
+                    }
+                }
             }
             DropTarget::Group(g, before) => (g, before),
         };
@@ -892,8 +1007,8 @@ impl App {
             self.group_active[from] = self.mru.iter().copied().find(|x| *x != id && self.tab_index(*x).is_some_and(|j| self.tabs[j].group == from));
         }
         self.activate(at);
-        if self.split.is_some() && !self.tabs.iter().any(|x| x.group == from) {
-            self.unsplit();
+        if !self.tabs.iter().any(|x| x.group == from) {
+            self.panes.remove(from);
         }
     }
 
@@ -920,12 +1035,27 @@ impl App {
         }
     }
 
-    pub fn open_table(&mut self, conn: &str, db: String, schema: String, table: String) {
+    pub fn open_table(&mut self, conn: &str, db: String, schema: String, table: String, kind: String) {
         if let Some(i) = self.tabs.iter().position(|t| t.conn == conn && t.db == db && matches!(&t.kind, TabKind::Table(tt) if tt.schema == schema && tt.table == table)) {
             return self.activate(i);
         }
-        let id = self.push_tab(conn, db, table.clone(), TabKind::Table(TableTab { schema, table, where_: String::new(), order: String::new(), session: uuid::Uuid::new_v4().to_string(), grid: None, running: false, pk: vec![], error: None }));
+        let id = self.push_tab(conn, db, table.clone(), TabKind::Table(TableTab { schema, table, kind, where_: String::new(), order: String::new(), session: uuid::Uuid::new_v4().to_string(), grid: None, running: false, pk: vec![], error: None }));
         self.reload_table(id);
+    }
+
+    /// 다시 불러오기 전에: 저장 안 한 편집이 있으면 버릴지 묻는다 (그냥 불러오면 말없이 사라진다)
+    pub fn reload_table_checked(&mut self, id: u64) {
+        let n = match self.tab_mut(id).map(|t| &t.kind) {
+            Some(TabKind::Table(tt)) => tt.grid.as_ref().filter(|g| g.dirty()).map(|g| g.edits.len() + g.deleted.len() + g.added).unwrap_or(0),
+            _ => 0,
+        };
+        if n == 0 {
+            return self.reload_table(id);
+        }
+        self.popup = Some(Popup::Confirm {
+            text: format!("{n} pending change(s) are not saved to the database (⌃S submits them). Discard them and reload?"),
+            on_yes: Box::new(move |a| a.reload_table(id)),
+        });
     }
 
     pub fn reload_table(&mut self, id: u64) {
@@ -947,6 +1077,7 @@ impl App {
         }
         tt.running = true;
         tt.error = None;
+        let order = tt.order.trim().to_string();
         let (session, schema, table) = (tt.session.clone(), tt.schema.clone(), tt.table.clone());
         let st = self.state.clone();
         self.spawn(
@@ -956,6 +1087,12 @@ impl App {
                 (pk, r)
             },
             move |a, (pk, r)| {
+                // 검색 캐시에서 연 테이블이면 지금 막 접속한 것: 탐색기 표시를 맞춘다
+                let conn = a.tab_mut(id).map(|t| t.conn.clone()).unwrap_or_default();
+                let fresh = r.is_ok() && a.conn(&conn).is_some_and(|c| !c.connected);
+                if fresh {
+                    a.reload_conns();
+                }
                 let Some(t) = a.tab_mut(id) else { return };
                 let TabKind::Table(tt) = &mut t.kind else { return };
                 tt.running = false;
@@ -969,6 +1106,11 @@ impl App {
                         g.more_session = Some(tt.session.clone());
                         g.row = row.min(n.saturating_sub(1));
                         g.col = col.min(g.cols().saturating_sub(1));
+                        // ORDER BY 가 한 열 ASC/DESC 면 헤더에 표시
+                        g.sort = g.result.columns.iter().enumerate().find_map(|(i, c)| {
+                            let q = sql::quote_ident(kind, &c.name);
+                            if order == format!("{q} ASC") { Some((i, false)) } else if order == format!("{q} DESC") { Some((i, true)) } else { None }
+                        });
                         tt.grid = Some(g);
                         a.status = format!("{n}{} rows", if more { "+" } else { "" });
                     }
@@ -979,6 +1121,30 @@ impl App {
                 }
             },
         );
+    }
+
+    /// 테이블 탭 헤더 정렬: 선택 열로 ORDER BY ↑ → ↓ → 해제 (GUI 의 Sort via ORDER BY)
+    pub fn sort_table(&mut self, id: u64) {
+        let Some(conn) = self.tab_mut(id).map(|t| t.conn.clone()) else { return };
+        let kind = self.kind_of(&conn);
+        let Some(TabKind::Table(tt)) = self.tab_mut(id).map(|t| &mut t.kind) else { return };
+        let Some(g) = &tt.grid else { return };
+        if g.cols() == 0 {
+            return;
+        }
+        if g.dirty() {
+            self.status = "Save (Ctrl+S) or revert (Ctrl+Z) pending changes before sorting".into();
+            return;
+        }
+        let q = sql::quote_ident(kind, &g.result.columns[g.col].name);
+        tt.order = if tt.order == format!("{q} ASC") {
+            format!("{q} DESC")
+        } else if tt.order == format!("{q} DESC") {
+            String::new()
+        } else {
+            format!("{q} ASC")
+        };
+        self.reload_table(id);
     }
 
     pub fn open_ddl(&mut self, conn: &str, db: String, schema: String, name: String, kind: String) {
@@ -1145,7 +1311,7 @@ impl App {
         let t = &mut self.tabs[self.active];
         let TabKind::Console(c) = &mut t.kind else {
             if let TabKind::Table(_) = t.kind {
-                self.reload_table(id);
+                self.reload_table_checked(id);
             }
             return;
         };
@@ -1656,26 +1822,74 @@ impl App {
         self.popup = Some(Popup::Palette(Palette { title: "Recent Tabs".into(), input: TextArea::default(), items, sel: 1, loading: 0, cache: Default::default() }));
     }
 
+    /// Search Everywhere (GUI 의 ⇧⇧): 최근 탭 + 액션 + DB 객체를 한 목록에서
+    pub fn palette_everywhere(&mut self) {
+        let mut items: Vec<PItem> = self.mru.iter().filter_map(|id| self.tabs.iter().find(|t| t.id == *id)).map(|t| PItem { label: t.title.clone(), hint: format!("tab · {}", t.db), action: PAction::Tab(t.id) }).collect();
+        items.extend(ACTIONS.iter().filter(|(a, ..)| *a != Action::SearchEverywhere).map(|(a, n, k)| {
+            let key = if k.is_empty() { self.keys.label(*a) } else { k.to_string() };
+            PItem { label: n.to_string(), hint: format!("action · {key}"), action: PAction::Act(*a) }
+        }));
+        self.palette_objects("Search Everywhere", items);
+    }
+
     /// Go to Database Object: 연결된 Data Source 의 기본 DB + 펼친 DB
-    pub fn palette_objects(&mut self) {
-        let mut targets: Vec<(String, String)> = vec![];
-        for c in self.conns.iter().filter(|c| c.connected) {
-            targets.push((c.config.id.clone(), sql::default_db(&c.config)));
-        }
-        for k in &self.tree.expanded {
-            let parts: Vec<&str> = k.split('|').collect();
-            if parts.len() == 2 && !targets.iter().any(|(c, d)| c == parts[0] && d == parts[1]) {
-                targets.push((parts[0].into(), parts[1].into()));
+    /// Go to Database Object / Search Everywhere: GUI 처럼 연결된 Data Source 마다 보이는 DB (최대 8개) 의 객체.
+    /// Redis 와 single DB 는 기본 DB 만
+    pub fn palette_objects(&mut self, title: &str, items: Vec<PItem>) {
+        let conns: Vec<ConnectionConfig> = self.conns.iter().filter(|c| c.connected).map(|c| c.config.clone()).collect();
+        // 접속하지 않은 Data Source 는 지난번에 읽어 둔 목록에서 (고르면 그때 접속한다)
+        let mut items = items;
+        let columns = title == "Search Everywhere";
+        for c in self.state.cached_index().unwrap_or_default() {
+            let (conn, db) = dbtool_core::app::split_target(&c.target);
+            let Some(cv) = self.conns.iter().find(|x| x.config.id == conn && !x.connected) else { continue };
+            let (name, db) = (cv.config.name.clone(), db.unwrap_or_default().to_string());
+            items.extend(object_items(conn, &name, &db, c.objects, " (cached)"));
+            if columns {
+                items.extend(column_items(conn, &name, &db, c.columns, " (cached)"));
             }
         }
-        self.popup = Some(Popup::Palette(Palette { title: "Go to Database Object".into(), input: TextArea::default(), items: vec![], sel: 0, loading: targets.len(), cache: Default::default() }));
-        if targets.is_empty() {
-            self.status = "Connect a data source first (Enter on it in the explorer)".into();
+        let empty = conns.is_empty() && items.iter().all(|i| !matches!(i.action, PAction::Object { .. }));
+        self.popup = Some(Popup::Palette(Palette { title: title.into(), input: TextArea::default(), items, sel: 0, loading: conns.len(), cache: Default::default() }));
+        if empty {
+            self.status = "No connected data sources — connect one (Enter in the explorer) to search its objects".into();
         }
-        for (conn, db) in targets {
+        for cfg in conns {
+            let def = sql::default_db(&cfg);
+            if cfg.kind == DbKind::Redis || cfg.options.single_db {
+                self.index_into_palette(&cfg, vec![def]);
+                continue;
+            }
             let st = self.state.clone();
-            let target = sql::target_id(&conn, Some(&db));
-            let name = self.conn(&conn).map(|c| c.config.name.clone()).unwrap_or_default();
+            let id = cfg.id.clone();
+            self.spawn(async move { st.list_databases(id).await.map_err(err) }, move |a, r: Result<Vec<String>, String>| {
+                let mut dbs = r.map(|dbs| dbtool_core::app::visible_dbs(&cfg, dbs, &def)).unwrap_or_default();
+                // 기본 DB 먼저 (DB 목록을 못 읽어도 기본 DB 는 찾는다)
+                dbs.retain(|d| d != &def);
+                dbs.insert(0, def);
+                dbs.truncate(8);
+                a.index_into_palette(&cfg, dbs);
+            });
+        }
+    }
+
+    /// 열린 팔레트에 DB 들의 객체를 더한다 (Data Source 하나 몫의 loading 을 DB 수로 바꾼다)
+    fn index_into_palette(&mut self, cfg: &ConnectionConfig, dbs: Vec<String>) {
+        // Search Everywhere 는 컬럼도 찾는다 (GUI 의 All / Symbols)
+        let columns = match &mut self.popup {
+            Some(Popup::Palette(p)) => {
+                p.loading = (p.loading + dbs.len()).saturating_sub(1);
+                p.title == "Search Everywhere" && cfg.kind != DbKind::Redis
+            }
+            _ => return,
+        };
+        for db in dbs {
+            if columns {
+                self.columns_into_palette(cfg, db.clone());
+            }
+            let st = self.state.clone();
+            let target = sql::target_id(&cfg.id, Some(&db));
+            let (conn, name) = (cfg.id.clone(), cfg.name.clone());
             self.spawn(async move { st.object_index(target).await.map_err(err) }, move |a, r: Result<Vec<IndexEntry>, String>| {
                 if let Err(e) = &r {
                     a.status = format!("{name}/{db}: {e}");
@@ -1683,22 +1897,30 @@ impl App {
                 if let Some(Popup::Palette(p)) = &mut a.popup {
                     p.loading = p.loading.saturating_sub(1);
                     if let Ok(es) = r {
-                        p.items.extend(es.into_iter().map(|e| PItem {
-                            label: e.name.clone(),
-                            hint: format!("{} {} · {name}/{db}", e.kind, if e.kind == "schema" { String::new() } else { e.schema.clone() }),
-                            action: PAction::Object { conn: conn.clone(), db: db.clone(), e: IndexEntryLite { schema: e.schema, name: e.name, kind: e.kind } },
-                        }));
+                        p.items.extend(object_items(&conn, &name, &db, es, ""));
                     }
                 }
             });
         }
     }
 
+    /// 컬럼 → 고르면 그 테이블을 연다 (Ctrl+B 는 그 테이블 DDL)
+    fn columns_into_palette(&mut self, cfg: &ConnectionConfig, db: String) {
+        let st = self.state.clone();
+        let target = sql::target_id(&cfg.id, Some(&db));
+        let (conn, name) = (cfg.id.clone(), cfg.name.clone());
+        self.spawn(async move { st.completion_meta(target).await.map_err(err) }, move |a, r| {
+            let (Some(Popup::Palette(p)), Ok(ts)) = (&mut a.popup, r) else { return };
+            p.items.extend(column_items(&conn, &name, &db, ts, ""));
+        });
+    }
+
     pub fn palette_matches(p: &Palette) -> Vec<&PItem> {
         let q = p.input.lines().join("");
         let mut cache = p.cache.borrow_mut();
         if !cache.as_ref().is_some_and(|(cq, n, _)| *cq == q && *n == p.items.len()) {
-            let mut v: Vec<(i64, usize)> = p.items.iter().enumerate().filter_map(|(i, it)| fuzzy(&q, &it.label).map(|s| (s, i))).collect();
+            // 컬럼은 같은 이름의 테이블·액션보다 뒤로 (GUI 의 All 과 같게)
+            let mut v: Vec<(i64, usize)> = p.items.iter().enumerate().filter_map(|(i, it)| fuzzy(&q, &it.label).map(|s| (s - if it.hint.starts_with("column ") { 50 } else { 0 }, i))).collect();
             if !q.is_empty() {
                 v.sort_by(|a, b| b.0.cmp(&a.0));
             }
@@ -1725,7 +1947,7 @@ impl App {
                     return self.open_ddl(&conn, db, e.schema, e.name, kind);
                 }
                 match kind.as_str() {
-                    "table" | "view" | "matview" | "foreign" => self.open_table(&conn, db, e.schema, e.name),
+                    "table" | "view" | "matview" | "foreign" => self.open_table(&conn, db, e.schema, e.name, kind),
                     "key" => self.open_redis(&conn, db, Some(e.name)),
                     "schema" => {
                         self.explorer = true;
@@ -1798,7 +2020,7 @@ impl App {
                     if let Some(t) = self.tabs.get(self.active) {
                         let id = t.id;
                         match t.kind {
-                            TabKind::Table(_) => self.reload_table(id),
+                            TabKind::Table(_) => self.reload_table_checked(id),
                             TabKind::Redis(_) => self.redis_scan(id, true),
                             _ => {}
                         }
@@ -1812,9 +2034,18 @@ impl App {
             Action::CloseTab => self.close_tab(self.active),
             Action::NextTab => self.cycle_tab(1),
             Action::PrevTab => self.cycle_tab(-1),
-            Action::GoToObject => self.palette_objects(),
+            Action::GoToObject => self.palette_objects("Go to Database Object", vec![]),
+            Action::SearchEverywhere => self.palette_everywhere(),
             Action::RecentTabs => self.palette_tabs(),
             Action::Ddl => {
+                // 테이블 데이터 탭에서는 그 테이블의 DDL
+                if self.focus != Focus::Tree {
+                    if let Some(Tab { kind: TabKind::Table(tt), conn, db, .. }) = self.tabs.get(self.active) {
+                        return self.open_ddl(&conn.clone(), db.clone(), tt.schema.clone(), tt.table.clone(), tt.kind.clone());
+                    }
+                    self.status = "Go to DDL: select an object in the explorer or open a table".into();
+                    return;
+                }
                 if let Some(n) = sel.filter(|n| matches!(n.kind, NodeKind::Object(_))) {
                     let k = match &n.kind {
                         NodeKind::Object(k) if k == "function" || k == "procedure" => "routine".to_string(),
@@ -1883,12 +2114,15 @@ impl App {
                     c.show_output = !c.show_output;
                 }
             }
-            Action::SplitRight => self.split_toggle(SplitDir::Right),
-            Action::SplitDown => self.split_toggle(SplitDir::Down),
+            Action::SplitRight => self.split_focused(SplitDir::Right),
+            Action::SplitDown => self.split_focused(SplitDir::Down),
             Action::Unsplit => self.unsplit(),
             Action::OtherSplit => {
-                if self.split.is_some() {
-                    if let Some(i) = self.group_tab(1 - self.focused_group()) {
+                // 다음 칸으로 (왼쪽/위부터 차례로 돈다)
+                let ls = self.panes.leaves();
+                if ls.len() > 1 {
+                    let p = ls.iter().position(|&g| g == self.focused_group()).unwrap_or(0);
+                    if let Some(i) = self.group_tab(ls[(p + 1) % ls.len()]) {
                         self.activate(i);
                     }
                 }
@@ -1898,8 +2132,10 @@ impl App {
                 self.set_explorer_width(w);
             }
             Action::SplitShrink | Action::SplitGrow => {
-                if let Some(sp) = &mut self.split {
-                    sp.pct = (sp.pct as i16 + if a == Action::SplitGrow { 5 } else { -5 }).clamp(15, 85) as u16;
+                // 포커스 있는 칸 옆의 좌우 경계선을 옮긴다 (가장 가까운 것이 위아래 경계선이어도)
+                let path = self.panes.ancestor_with_dir(self.focused_group(), SplitDir::Right);
+                if let Some(pct) = path.and_then(|p| self.panes.pct_mut(&p)) {
+                    *pct = (*pct as i16 + if a == Action::SplitGrow { 5 } else { -5 }).clamp(15, 85) as u16;
                 }
             }
             Action::Complete => {
@@ -1924,6 +2160,10 @@ impl App {
             }
             Action::ShrinkEditor => self.resize_console(-5),
             Action::GrowEditor => self.resize_console(5),
+            Action::PaneUp => self.focus_pane(SplitDir::Down, true),
+            Action::PaneDown => self.focus_pane(SplitDir::Down, false),
+            Action::PaneLeft => self.focus_pane(SplitDir::Right, true),
+            Action::PaneRight => self.focus_pane(SplitDir::Right, false),
             Action::Help => self.popup = Some(Popup::Help { sel: 0, scroll: 0, record: None, message: None }),
             Action::Quit => {
                 let n = self.pending_tabs(None).len();
@@ -1952,24 +2192,21 @@ impl App {
         self.activate(idx[(p as isize + d).rem_euclid(n) as usize]);
     }
 
-    /// 같은 방향으로 다시 누르면 분할 해제. 지금 탭을 새 칸(오른쪽/아래)으로 옮긴다
-    fn split_toggle(&mut self, dir: SplitDir) {
-        if let Some(sp) = &mut self.split {
-            if sp.dir == dir {
-                self.unsplit();
-            } else {
-                sp.dir = dir;
-            }
-            return;
-        }
+    /// 포커스 있는 칸을 나눈다 (최대 4칸): 지금 탭을 새 칸(오른쪽/아래)으로 옮긴다
+    fn split_focused(&mut self, dir: SplitDir) {
         let Some(cur) = self.tabs.get(self.active).map(|t| t.id) else {
             self.status = "Open a tab to split".into();
             return;
         };
-        if self.tabs.len() >= 2 {
-            return self.drop_tab(cur, DropTarget::NewSplit(dir));
+        if self.panes.leaves().len() >= crate::panes::MAX {
+            self.status = format!("Up to {} panes — close or move a tab to merge one", crate::panes::MAX);
+            return;
         }
-        // 탭이 하나뿐이면 같은 DB 의 새 콘솔을 오른쪽/아래 칸에 연다
+        let g = self.focused_group();
+        if self.tabs.iter().filter(|t| t.group == g).count() >= 2 {
+            return self.drop_tab(cur, DropTarget::NewSplit(g, dir));
+        }
+        // 칸에 탭이 하나뿐이면 같은 DB 의 새 콘솔을 오른쪽/아래 칸에 연다
         let (conn, db) = (self.tabs[self.active].conn.clone(), self.tabs[self.active].db.clone());
         if self.kind_of(&conn) == DbKind::Redis {
             self.status = "Open another tab to split".into();
@@ -1977,7 +2214,7 @@ impl App {
         }
         self.open_console(&conn, Some(db));
         let id = self.tabs[self.active].id;
-        self.drop_tab(id, DropTarget::NewSplit(dir));
+        self.drop_tab(id, DropTarget::NewSplit(g, dir));
     }
 
     /// Database Explorer 폭: 정한 값이 없으면 화면 폭의 1/4 (26~48)
@@ -1992,6 +2229,43 @@ impl App {
     }
 
     /// 콘솔 에디터/결과 비율 조절
+    /// 옆 칸으로: axis = Down 이면 위(back)/아래, Right 면 왼쪽(back)/오른쪽.
+    /// 마지막으로 그린 칸 위치 기준으로, 그 방향에 있고 겹치는 칸 중 가장 가까운 것
+    fn focus_pane(&mut self, axis: SplitDir, back: bool) {
+        let cur = self.focused_group();
+        // (칸, 왼, 오른, 위, 아래)
+        let rect = |&(g, bar, body): &(usize, ratatui::layout::Rect, ratatui::layout::Rect)| (g, bar.x, bar.x + bar.width, bar.y, body.y + body.height);
+        let Some((_, x0, x1, top, bottom)) = self.hits.groups.iter().map(rect).find(|r| r.0 == cur) else { return };
+        let next = self
+            .hits
+            .groups
+            .iter()
+            .map(rect)
+            .filter_map(|(g, a0, a1, t, b)| {
+                // 경계선(테두리) 한 칸 정도는 겹쳐 그려질 수 있어 1 칸 여유
+                let gap = match (axis, back) {
+                    (SplitDir::Down, true) if a0 < x1 && x0 < a1 && b <= top + 1 => top.saturating_sub(b),
+                    (SplitDir::Down, false) if a0 < x1 && x0 < a1 && t + 1 >= bottom => t.saturating_sub(bottom),
+                    (SplitDir::Right, true) if t < bottom && top < b && a1 <= x0 + 1 => x0.saturating_sub(a1),
+                    (SplitDir::Right, false) if t < bottom && top < b && a0 + 1 >= x1 => a0.saturating_sub(x1),
+                    _ => return None,
+                };
+                (g != cur).then_some((gap, if axis == SplitDir::Down { a0.abs_diff(x0) } else { t.abs_diff(top) }, g))
+            })
+            .min()
+            .map(|r| r.2);
+        let side = match (axis, back) {
+            (SplitDir::Down, true) => "above",
+            (SplitDir::Down, false) => "below",
+            (SplitDir::Right, true) => "on the left",
+            (SplitDir::Right, false) => "on the right",
+        };
+        match next.and_then(|g| self.group_tab(g)) {
+            Some(i) => self.activate(i),
+            None => self.status = format!("No split {side}"),
+        }
+    }
+
     pub fn resize_console(&mut self, d: i16) {
         self.console_pct = (self.console_pct as i16 + d).clamp(10, 90) as u16;
     }

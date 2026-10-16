@@ -68,17 +68,17 @@ pub fn drop_target(app: &App, id: u64, x: u16, y: u16) -> Option<DropTarget> {
             return Some(DropTarget::Group(g, before));
         }
         if inside(body, x, y) {
-            if app.split.is_some() {
-                return (g != from).then_some(DropTarget::Group(g, None));
+            // 칸의 오른쪽 / 아래쪽 가장자리에 놓으면 그 칸을 나눈다 (최대 4칸. 제 칸에 하나뿐인 탭은 나눠도 그대로라 빼고)
+            let alone = g == from && app.tabs.iter().filter(|t| t.group == g).count() < 2;
+            if app.panes.leaves().len() < crate::panes::MAX && !alone {
+                if x >= body.x + body.width * 2 / 3 {
+                    return Some(DropTarget::NewSplit(g, SplitDir::Right));
+                }
+                if y >= body.y + body.height * 2 / 3 {
+                    return Some(DropTarget::NewSplit(g, SplitDir::Down));
+                }
             }
-            // 나뉘지 않은 화면: 오른쪽 / 아래쪽 가장자리에 놓으면 나눈다
-            if x >= body.x + body.width * 2 / 3 {
-                return Some(DropTarget::NewSplit(SplitDir::Right));
-            }
-            if y >= body.y + body.height * 2 / 3 {
-                return Some(DropTarget::NewSplit(SplitDir::Down));
-            }
-            return None;
+            return (g != from).then_some(DropTarget::Group(g, None));
         }
     }
     None
@@ -90,8 +90,8 @@ fn mouse_down(app: &mut App, x: u16, y: u16) {
             app.drag = Some(Drag::Console);
             return;
         }
-        if inside(app.hits.split_divider, x, y) {
-            app.drag = Some(Drag::Split);
+        if let Some(i) = app.hits.splits.iter().position(|s| inside(s.2, x, y)) {
+            app.drag = Some(Drag::Split(i));
             return;
         }
         if inside(app.hits.explorer_divider, x, y) {
@@ -113,8 +113,8 @@ fn mouse_down(app: &mut App, x: u16, y: u16) {
             return;
         }
         // 상하 분할: 아래 칸 탭 바의 빈 곳도 경계선처럼 잡을 수 있다 (테두리 한 줄만으로는 맞히기 어렵다)
-        if app.split.is_some_and(|sp| sp.dir == SplitDir::Down) && app.hits.groups.iter().any(|(g, bar, _)| *g == 1 && inside(*bar, x, y)) {
-            app.drag = Some(Drag::Split);
+        if let Some(i) = app.hits.splits.iter().position(|s| inside(s.3, x, y)) {
+            app.drag = Some(Drag::Split(i));
             return;
         }
         // 포커스 없는 칸을 누르면 그 칸으로
@@ -137,16 +137,14 @@ fn mouse_drag(app: &mut App, x: u16, y: u16) {
                 app.console_pct = ((y.saturating_sub(c.y) as u32 * 100 / c.height as u32) as u16).clamp(10, 90);
             }
         }
-        Some(Drag::Split) => {
-            let a = app.hits.split_area;
-            if let Some(sp) = &mut app.split {
-                let (p, start, len) = match sp.dir {
-                    SplitDir::Right => (x, a.x, a.width),
-                    SplitDir::Down => (y, a.y, a.height),
-                };
-                if len > 0 {
-                    sp.pct = ((p.saturating_sub(start) as u32 * 100 / len as u32) as u16).clamp(15, 85);
-                }
+        Some(Drag::Split(i)) => {
+            let Some((path, a, _, _, dir)) = app.hits.splits.get(i).cloned() else { return };
+            let (p, start, len) = match dir {
+                SplitDir::Right => (x, a.x, a.width),
+                SplitDir::Down => (y, a.y, a.height),
+            };
+            if let (Some(pct), true) = (app.panes.pct_mut(&path), len > 0) {
+                *pct = ((p.saturating_sub(start) as u32 * 100 / len as u32) as u16).clamp(15, 85);
             }
         }
         Some(Drag::Explorer) => {
@@ -263,13 +261,7 @@ fn click(app: &mut App, x: u16, y: u16) {
 pub fn on_event(app: &mut App, ev: Event) {
     match ev {
         Event::Key(k) if k.kind != KeyEventKind::Release => on_key(app, k),
-        Event::Paste(s) => {
-            if let Some(TabKind::Console(c)) = app.tabs.get_mut(app.active).map(|t| &mut t.kind) {
-                if app.focus == Focus::Editor && app.popup.is_none() {
-                    c.editor.insert_str(s);
-                }
-            }
-        }
+        Event::Paste(s) => paste(app, s),
         Event::Mouse(m) => match m.kind {
             // Shift+휠 = 가로 스크롤
             MouseEventKind::ScrollDown if m.modifiers.contains(KeyModifiers::SHIFT) => hscroll_at(app, m.column, m.row, 3),
@@ -288,6 +280,39 @@ pub fn on_event(app: &mut App, ev: Event) {
             _ => {}
         },
         _ => {}
+    }
+}
+
+/// ⌘V / 터미널 붙여넣기: 열린 입력칸(한 줄 입력·팔레트·Data Source 폼)이 있으면 거기로, 아니면 콘솔 에디터로
+fn paste(app: &mut App, s: String) {
+    // 한 줄 입력칸에는 줄바꿈을 공백으로
+    let one = || s.trim_end_matches(['\r', '\n']).replace("\r\n", " ").replace(['\r', '\n'], " ");
+    match &mut app.popup {
+        Some(Popup::Input { input, .. }) => {
+            input.insert_str(one());
+        }
+        Some(Popup::Palette(p)) => {
+            if p.input.insert_str(one()) {
+                p.sel = 0;
+            }
+        }
+        Some(Popup::ConnForm(form)) => {
+            let f = &mut form.fields[form.sel];
+            if matches!(f.kind, FieldKind::Text | FieldKind::Secret) {
+                if f.value == "<saved>" {
+                    f.value.clear();
+                }
+                f.value.push_str(&one());
+            }
+        }
+        Some(_) => {}
+        None => {
+            if let Some(TabKind::Console(c)) = app.tabs.get_mut(app.active).map(|t| &mut t.kind) {
+                if app.focus == Focus::Editor {
+                    c.editor.insert_str(s);
+                }
+            }
+        }
     }
 }
 
@@ -392,7 +417,6 @@ fn tree_key(app: &mut App, k: KeyEvent) {
                 app.activate_node(&nd, true)
             }
         }
-        KeyCode::Char('b') if k.modifiers.contains(KeyModifiers::CONTROL) => app.run_action(Action::Ddl),
         KeyCode::Char('n') => app.run_action(Action::NewDataSource),
         KeyCode::Char('e') => app.run_action(Action::EditDataSource),
         KeyCode::Char('D') => app.run_action(Action::DeleteDataSource),
@@ -522,7 +546,7 @@ fn grid_key(app: &mut App, k: KeyEvent) {
                         if let Some(TabKind::Table(tt)) = a.tab_mut(id).map(|t| &mut t.kind) {
                             tt.where_ = s;
                         }
-                        a.reload_table(id);
+                        a.reload_table_checked(id);
                     });
                 }
                 KeyCode::Char('o') => {
@@ -531,7 +555,7 @@ fn grid_key(app: &mut App, k: KeyEvent) {
                         if let Some(TabKind::Table(tt)) = a.tab_mut(id).map(|t| &mut t.kind) {
                             tt.order = s;
                         }
-                        a.reload_table(id);
+                        a.reload_table_checked(id);
                     });
                 }
                 KeyCode::Enter | KeyCode::F(2) => {
@@ -559,7 +583,8 @@ fn grid_key(app: &mut App, k: KeyEvent) {
                 KeyCode::Char('a') | KeyCode::Insert => app.run_action(Action::AddRow),
                 KeyCode::Char('d') | KeyCode::Delete => app.run_action(Action::DeleteRow),
                 KeyCode::Char('z') if k.modifiers.contains(KeyModifiers::CONTROL) => app.run_action(Action::Revert),
-                KeyCode::Char('r') => app.reload_table(id),
+                KeyCode::Char('r') => app.reload_table_checked(id),
+                KeyCode::Char('s') => app.sort_table(id),
                 KeyCode::Char('x') => app.run_action(Action::ExportCsv),
                 KeyCode::Char('/') => {
                     let w = tt.where_.clone();
@@ -567,7 +592,7 @@ fn grid_key(app: &mut App, k: KeyEvent) {
                         if let Some(TabKind::Table(tt)) = a.tab_mut(id).map(|t| &mut t.kind) {
                             tt.where_ = s;
                         }
-                        a.reload_table(id);
+                        a.reload_table_checked(id);
                     });
                 }
                 KeyCode::Esc => app.focus = Focus::Tree,
@@ -600,6 +625,13 @@ fn nav(app: &mut App, k: KeyEvent) {
             return;
         }
         KeyCode::Char('x') => return app.run_action(Action::ExportCsv),
+        KeyCode::Char('s') => {
+            g.toggle_local_sort();
+            if g.result.truncated {
+                app.status = "Sorted the loaded rows only".into();
+            }
+            return;
+        }
         _ => return,
     }
     app.fetch_more();
@@ -803,7 +835,7 @@ fn popup_key(app: &mut App, k: KeyEvent) {
             } else {
                 let a = crate::keys::DEFAULT_KEYS[sel].0;
                 match crate::keys::spec(&k).filter(|s| crate::keys::bindable(s)) {
-                    None => Some(format!("{} can't be a command key — use a Ctrl/Alt combination or an F key", crate::keys::spec(&k).unwrap_or_else(|| "That key".into()))),
+                    None => Some(format!("{} can't be a command key — use a {} combination or an F key", crate::keys::spec(&k).map(|s| crate::keys::disp(&s)).unwrap_or_else(|| "That key".into()), if cfg!(target_os = "macos") { "⌃/⌥" } else { "Ctrl/Alt" })),
                     Some(key) => {
                         let taken = app.keys.bind(a, key.clone(), add);
                         let mut m = format!("{} → {}", name_of(a), app.keys.label(a));
