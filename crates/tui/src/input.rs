@@ -330,9 +330,11 @@ fn tree_key(app: &mut App, k: KeyEvent) {
     // 스피드 서치 입력 중
     if !app.tree.filter.is_empty() || k.code == KeyCode::Char('/') {
         match k.code {
-            KeyCode::Char('/') if app.tree.filter.is_empty() => {
-                app.input("Speed search (filters loaded nodes)", "", |a, s| {
-                    a.tree.filter = s;
+            // 필터가 걸려 있으면 지금 필터를 채워서 연다 (비우고 Enter = 해제)
+            KeyCode::Char('/') => {
+                let cur = app.tree.filter.clone();
+                app.input("Speed search (filters loaded nodes · empty = clear)", &cur, |a, s| {
+                    a.tree.filter = s.trim().to_string();
                     a.tree.sel = 0;
                     a.tree.clamp();
                 });
