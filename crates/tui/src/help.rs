@@ -64,6 +64,7 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
         ("type / Backspace", "Edit text fields"),
         ("Space / ← →", "Toggle on/off · change choice (Type, Color, SSL mode, Redis mode…)"),
         ("Ctrl+T", "Test connection"),
+        ("Ctrl+Y", "Trust the SSH server's host key (after Ctrl+T showed its fingerprint)"),
         ("Enter / Ctrl+S", "Save"),
         ("Esc", "Cancel"),
     ]),

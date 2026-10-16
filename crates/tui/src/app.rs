@@ -242,6 +242,7 @@ pub enum Action {
     Unsplit,
     OtherSplit,
     Complete,
+    TrustSshHost,
     Palette,
     CycleFocus,
     ShrinkEditor,
@@ -297,6 +298,7 @@ pub const ACTIONS: &[(Action, &str, &str)] = &[
     (Action::GrowEditor, "Grow Editor (console)", ""),
     (Action::CycleFocus, "Cycle Focus (explorer → editor → results)", ""),
     (Action::Palette, "Actions Palette", ""),
+    (Action::TrustSshHost, "Trust SSH Host Key (after checking its fingerprint)", ""),
     (Action::Help, "Keymap", ""),
     (Action::Quit, "Quit", ""),
 ];
@@ -524,7 +526,7 @@ impl App {
                 }
                 Err(e) => {
                     a.tree.children.insert(key.clone(), vec![Node::info(&key, "", format!("⚠ {e}"))]);
-                    a.status = e;
+                    a.status = if e.contains(dbtool_core::tunnel::UNKNOWN_HOST) { format!("{e} — Ctrl+K › Trust SSH Host Key") } else { e };
                 }
             }
             a.tree.clamp();
@@ -788,7 +790,29 @@ impl App {
         self.tabs.iter_mut().find(|t| t.id == id)
     }
 
+    /// 커밋 안 한 변경이 있는 콘솔 탭들
+    fn pending_tabs(&self, conn: Option<&str>) -> Vec<u64> {
+        self.tabs.iter().filter(|t| conn.is_none_or(|c| t.conn == c) && matches!(&t.kind, TabKind::Console(c) if c.in_tx)).map(|t| t.id).collect()
+    }
+
+    /// 탭 닫기. 커밋 안 한 변경이 있으면 먼저 묻는다 (닫으면 롤백된다)
     pub fn close_tab(&mut self, i: usize) {
+        let Some(id) = self.tabs.get(i).map(|t| t.id) else { return };
+        if self.pending_tabs(None).contains(&id) {
+            self.popup = Some(Popup::Confirm {
+                text: "This console has uncommitted changes. Roll them back and close the tab?".into(),
+                on_yes: Box::new(move |a| {
+                    if let Some(i) = a.tab_index(id) {
+                        a.close_tab_now(i)
+                    }
+                }),
+            });
+            return;
+        }
+        self.close_tab_now(i);
+    }
+
+    pub fn close_tab_now(&mut self, i: usize) {
         if i >= self.tabs.len() {
             return;
         }
@@ -1108,6 +1132,11 @@ impl App {
     // ───────── 실행 ─────────
 
     pub fn execute(&mut self, explain: bool) {
+        self.execute_checked(explain, false)
+    }
+
+    /// confirmed = 위험 문장(WHERE 없는 UPDATE/DELETE, DROP, TRUNCATE) 확인을 받았는지
+    fn execute_checked(&mut self, explain: bool, confirmed: bool) {
         let Some(t) = self.tabs.get(self.active) else { return };
         let kind = self.kind_of(&t.conn);
         let id = t.id;
@@ -1133,6 +1162,14 @@ impl App {
             sql::statement_at(&text, off, kind).into_iter().collect()
         };
         if stmts.is_empty() {
+            return;
+        }
+        if !confirmed
+            && !explain
+            && let Some((why, s)) = stmts.iter().find_map(|s| dbtool_core::guard::unsafe_statement(s, kind).map(|w| (w, s.clone())))
+        {
+            let preview: String = s.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(80).collect();
+            self.popup = Some(Popup::Confirm { text: format!("{why}:\n  {preview}\nRun it anyway?"), on_yes: Box::new(move |a| a.execute_checked(explain, true)) });
             return;
         }
         c.running = true;
@@ -1169,6 +1206,9 @@ impl App {
                 c.running = false;
                 let mut status = String::new();
                 let n = out.len();
+                // Auto 모드에서 이미 확정된 변경 문장 수 (중간에 실패하면 알린다: 앞의 것들은 롤백되지 않는다)
+                let mut committed = 0;
+                let mut failed = false;
                 for (i, (s, r)) in out.into_iter().enumerate() {
                     // 실행한 문장은 한 줄로, 너무 길면 앞부분만
                     let echo: String = s.replace('\n', " ").chars().take(300).collect();
@@ -1176,6 +1216,9 @@ impl App {
                     match r {
                         Ok(res) => {
                             c.in_tx = res.in_transaction;
+                            if !res.in_transaction && !dbtool_core::guard::is_read(&s, kind) {
+                                committed += 1;
+                            }
                             if res.has_result_set {
                                 let msg = format!("{}{} row(s) retrieved in {} ms", res.rows.len(), if res.truncated { "+" } else { "" }, res.elapsed_ms);
                                 c.log(false, msg.clone());
@@ -1196,12 +1239,28 @@ impl App {
                         }
                         Err(e) => {
                             c.log(true, e.clone());
+                            if committed > 0 {
+                                c.log(true, format!("Note: {committed} earlier statement(s) of this run were already committed (Auto mode) and were not rolled back"));
+                            }
                             c.show_output = true;
+                            failed = true;
                             status = format!("Error: {}", e.lines().next().unwrap_or(""));
                         }
                     }
                 }
                 a.status = status;
+                // 오류가 나도 세션에는 트랜잭션이 열려 있을 수 있다 (Manual 첫 문장 실패 등) → Commit/Roll back 표시를 맞춘다
+                if failed {
+                    let st = a.state.clone();
+                    let session = a.tab_mut(id).and_then(|t| if let TabKind::Console(c) = &t.kind { Some(c.session.clone()) } else { None });
+                    if let Some(session) = session {
+                        a.spawn(async move { st.tx_state(session).await }, move |a, in_tx| {
+                            if let Some(TabKind::Console(c)) = a.tab_mut(id).map(|t| &mut t.kind) {
+                                c.in_tx = in_tx;
+                            }
+                        });
+                    }
+                }
             },
         );
     }
@@ -1381,7 +1440,7 @@ impl App {
         let n = stmts.len();
         let st = self.state.clone();
         self.status = format!("Submitting {n} statement(s)…");
-        self.spawn(async move { st.execute_batch(target, stmts).await.map_err(err) }, move |a, r| match r {
+        self.spawn(async move { st.execute_batch(target, stmts, true).await.map_err(err) }, move |a, r| match r {
             Ok(rows) => {
                 a.status = format!("{n} statement(s) submitted, {rows} row(s) affected");
                 a.reload_table(id);
@@ -1427,6 +1486,19 @@ impl App {
     }
 
     pub fn disconnect(&mut self, conn: &str) {
+        let n = self.pending_tabs(Some(conn)).len();
+        if n > 0 {
+            let c = conn.to_string();
+            self.popup = Some(Popup::Confirm {
+                text: format!("{n} console(s) on this data source have uncommitted changes. Roll them back and disconnect?"),
+                on_yes: Box::new(move |a| a.disconnect_now(&c)),
+            });
+            return;
+        }
+        self.disconnect_now(conn);
+    }
+
+    pub fn disconnect_now(&mut self, conn: &str) {
         let st = self.state.clone();
         let c = conn.to_string();
         self.spawn(async move { st.disconnect(c).await.map_err(err) }, {
@@ -1853,7 +1925,21 @@ impl App {
             Action::ShrinkEditor => self.resize_console(-5),
             Action::GrowEditor => self.resize_console(5),
             Action::Help => self.popup = Some(Popup::Help { sel: 0, scroll: 0, record: None, message: None }),
-            Action::Quit => self.quit = true,
+            Action::Quit => {
+                let n = self.pending_tabs(None).len();
+                if n > 0 {
+                    self.popup = Some(Popup::Confirm { text: format!("{n} console(s) have uncommitted changes. Roll them back and quit?"), on_yes: Box::new(|a| a.quit = true) });
+                } else {
+                    self.quit = true;
+                }
+            }
+            Action::TrustSshHost => {
+                let ssh = sel.as_ref().and_then(|n| self.conn(&n.conn)).and_then(|c| c.config.active_ssh().cloned());
+                match ssh {
+                    Some(s) => self.status = self.state.trust_ssh_host(s.host, s.port).unwrap_or_else(|e| e.to_string()),
+                    None => self.status = "Select a data source that uses an SSH tunnel".into(),
+                }
+            }
         }
     }
 

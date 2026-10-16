@@ -569,9 +569,13 @@ fn draw_popup(f: &mut Frame, app: &mut App) {
             f.render_widget(Paragraph::new(text.clone()).wrap(Wrap { trim: false }).block(block(format!(" {title} (Esc) "), true)), r);
         }
         Popup::Confirm { text, .. } => {
-            let r = centered(area, 70, 5);
+            // 여러 줄 (이유 · 문장 · 질문)
+            let mut lines: Vec<Line> = text.lines().map(|l| Line::raw(l.to_string())).collect();
+            lines.push(Line::raw(""));
+            lines.push(Line::styled("y = yes · n / Esc = no", Style::default().fg(DIM)));
+            let r = centered(area, 90, lines.len() as u16 + 2);
             f.render_widget(Clear, r);
-            f.render_widget(Paragraph::new(vec![Line::raw(text.clone()), Line::raw(""), Line::styled("y = yes · n / Esc = no", Style::default().fg(DIM))]).block(block(" Confirm ", true)), r);
+            f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).block(block(" Confirm ", true)), r);
         }
         Popup::Input { title, input, .. } => {
             let r = centered(area, 90, 3);
