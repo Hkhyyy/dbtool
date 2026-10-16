@@ -139,8 +139,10 @@ pub struct Tab {
     pub db: String,
     pub target: String,
     pub kind: TabKind,
-    /// 분할된 화면에서 속한 칸 (0 = 왼쪽/위, 1 = 오른쪽/아래)
+    /// 분할된 화면에서 속한 칸 (panes 의 잎)
     pub group: usize,
+    /// 되살린 탭: 아직 불러오지 않았다 (처음 보일 때 불러온다)
+    pub stale: bool,
 }
 
 // ───────── 팝업 ─────────
@@ -392,6 +394,9 @@ pub struct App {
     /// 새 버전이 있으면 그 버전 (상태줄에 알린다)
     pub update: Option<String>,
     next_id: u64,
+    /// 지난번 탭을 되살렸는지 (Data Source 목록을 처음 읽은 뒤 한 번), 마지막으로 저장한 내용
+    restored: bool,
+    saved_ws: String,
 }
 
 pub fn fuzzy(q: &str, text: &str) -> Option<i64> {
@@ -465,6 +470,8 @@ impl App {
             completion_loading: HashSet::new(),
             keys: crate::keys::Keymap::new(&user_keys),
             update: None,
+            restored: false,
+            saved_ws: String::new(),
             next_id: 1,
         };
         if let Some(e) = keys_err {
@@ -514,6 +521,13 @@ impl App {
                     .collect();
                 a.conns = cs;
                 a.tree.clamp();
+                if !a.restored {
+                    a.restored = true;
+                    if let Some(v) = a.state.store.workspace("tui") {
+                        crate::workspace::restore(a, &v);
+                    }
+                    a.saved_ws = crate::workspace::to_json(a).to_string();
+                }
             }
             Err(e) => a.status = format!("Failed to load data sources: {e}"),
         });
@@ -771,7 +785,7 @@ impl App {
         let target = sql::target_id(conn, Some(&db));
         // 새 탭은 포커스가 있는 칸에 연다
         let group = self.focused_group();
-        self.tabs.push(Tab { id, title, conn: conn.into(), db, target, kind, group });
+        self.tabs.push(Tab { id, title, conn: conn.into(), db, target, kind, group, stale: false });
         self.activate(self.tabs.len() - 1);
         id
     }
@@ -802,6 +816,80 @@ impl App {
             TabKind::Console(_) => Focus::Editor,
             _ => Focus::Grid,
         };
+        if std::mem::take(&mut self.tabs[i].stale) {
+            self.load_restored(i);
+        }
+    }
+
+    /// 되살린 탭을 처음 볼 때: 테이블은 데이터, Redis 는 키 목록, 콘솔은 자동완성·트랜잭션 모드
+    fn load_restored(&mut self, i: usize) {
+        let (id, target) = (self.tabs[i].id, self.tabs[i].target.clone());
+        match &self.tabs[i].kind {
+            TabKind::Table(_) => self.reload_table(id),
+            TabKind::Redis(_) => self.redis_scan(id, true),
+            TabKind::Console(c) => {
+                let (manual, session) = (c.tx_manual, c.session.clone());
+                self.load_completion(target.clone());
+                if manual {
+                    let st = self.state.clone();
+                    self.spawn(async move { st.set_tx_mode(target, session, true).await.map_err(err) }, |a, r| {
+                        if let Err(e) = r {
+                            a.status = e;
+                        }
+                    });
+                }
+            }
+            TabKind::Text(_) => {}
+        }
+    }
+
+    // ───────── 다시 켤 때 되살리기 (workspace.rs) ─────────
+
+    /// 바뀌었으면 저장 (주기적으로·끝낼 때)
+    pub fn save_workspace(&mut self) {
+        if !self.restored {
+            return;
+        }
+        let s = crate::workspace::to_json(self).to_string();
+        if s != self.saved_ws {
+            if let Ok(v) = serde_json::from_str(&s) {
+                if self.state.store.save_workspace("tui", &v).is_ok() {
+                    self.saved_ws = s;
+                }
+            }
+        }
+    }
+
+    fn restored_tab(&mut self, conn: &str, db: String, title: String, kind: TabKind) -> Option<u64> {
+        let id = self.next_id;
+        self.next_id += 1;
+        let target = sql::target_id(conn, Some(&db));
+        self.tabs.push(Tab { id, title, conn: conn.into(), db, target, kind, group: 0, stale: true });
+        Some(id)
+    }
+
+    pub fn restore_console(&mut self, conn: &str, db: String, title: String, sql: &str) -> Option<u64> {
+        let mut editor = TextArea::new(sql.lines().map(String::from).collect());
+        editor.set_cursor_line_style(ratatui::style::Style::default());
+        let manual = self.conn(conn).map(|c| c.config.options.tx_manual).unwrap_or(false);
+        let c = Console { editor, session: uuid::Uuid::new_v4().to_string(), grid: None, result_title: String::new(), output: vec![], show_output: true, running: false, tx_manual: manual, in_tx: false, complete: None };
+        self.restored_tab(conn, db, title, TabKind::Console(c))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn restore_table(&mut self, conn: &str, db: String, schema: String, table: String, kind: String, where_: String, order: String) -> Option<u64> {
+        let title = table.clone();
+        let tt = TableTab { schema, table, kind, where_, order, session: uuid::Uuid::new_v4().to_string(), grid: None, running: false, pk: vec![], error: None };
+        self.restored_tab(conn, db, title, TabKind::Table(tt))
+    }
+
+    pub fn restore_text(&mut self, conn: &str, db: String, title: String, text: &str) -> Option<u64> {
+        self.restored_tab(conn, db, title, TabKind::Text(TextTab { text: text.into(), scroll: 0 }))
+    }
+
+    pub fn restore_redis(&mut self, conn: &str, db: String, title: String, pattern: &str) -> Option<u64> {
+        let r = RedisTab { pattern: pattern.into(), keys: vec![], cursor: "0".into(), sel: 0, off: 0, detail: None, text: None, value: None, focus_value: false, scanning: false, want: None };
+        self.restored_tab(conn, db, title, TabKind::Redis(r))
     }
 
     pub fn tab_index(&self, id: u64) -> Option<usize> {

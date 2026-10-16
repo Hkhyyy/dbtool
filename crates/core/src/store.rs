@@ -352,6 +352,17 @@ impl Store {
         Ok(())
     }
 
+    /// 열어 둔 탭·화면 분할 (DataGrip 처럼 다시 켜면 그대로). client = "gui" / "tui", 파일을 따로 둔다 (동시에 써도 서로 덮지 않게).
+    /// 콘솔 SQL 이 들어가므로 0600. 내용은 클라이언트가 정한다
+    pub fn workspace(&self, client: &str) -> Option<serde_json::Value> {
+        let s = fs::read_to_string(self.path.with_file_name(format!("workspace-{client}.json"))).ok()?;
+        serde_json::from_str(&s).ok()
+    }
+
+    pub fn save_workspace(&self, client: &str, v: &serde_json::Value) -> AppResult<()> {
+        crate::secrets::write_private(&self.path.with_file_name(format!("workspace-{client}.json")), serde_json::to_string(v)?.as_bytes())
+    }
+
     fn write(&self, all: &[ConnectionConfig]) -> AppResult<()> {
         if let Some(dir) = self.path.parent() {
             fs::create_dir_all(dir)?;
