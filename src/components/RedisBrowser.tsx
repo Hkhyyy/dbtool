@@ -625,6 +625,9 @@ function Terminal({ target, prompt, onChanged }: { target: string; prompt: strin
     hi.current = -1;
     setInput("");
     if (line.toLowerCase() === "clear") return setLines([]);
+    // FLUSHALL·FLUSHDB·DEL 같은 지우는 명령은 한 번 더 묻는다
+    const why = await api.unsafeReason("redis", line).catch(() => null);
+    if (why && !confirm(`${why}:\n\n${line}\n\nRun it anyway?`)) return;
     // 출력은 최근 TERM_MAX 줄만 남긴다
     const push = (x: { kind: "in" | "out" | "err"; text: string }) => setLines((l) => [...l, x].slice(-TERM_MAX));
     push({ kind: "in", text: `${prompt} ${line}` });

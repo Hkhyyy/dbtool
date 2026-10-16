@@ -82,7 +82,36 @@ export interface QueryResult {
 }
 
 /** password: undefined → 기존 유지, "" → 삭제 */
+/** GitHub 의 최신 릴리스 (새 버전 확인) */
+export interface ReleaseInfo {
+  version: string;
+  url: string;
+  notes: string;
+  assets: { name: string; url: string }[];
+}
+export interface UpdateInfo {
+  current: string;
+  latest: ReleaseInfo | null;
+}
+/** 시작할 때 새 버전 확인 (Settings 에서 끈다) */
+const UPDATE_PREF = "dbtool.updateCheck";
+export const updateCheckEnabled = () => {
+  try {
+    return localStorage.getItem(UPDATE_PREF) !== "off";
+  } catch {
+    return true;
+  }
+};
+export const setUpdateCheckEnabled = (on: boolean) => {
+  try {
+    localStorage.setItem(UPDATE_PREF, on ? "on" : "off");
+  } catch {
+    /* 무시 */
+  }
+};
+
 export const api = {
+  checkUpdate: (force = false) => invoke<UpdateInfo>("check_update", { force }),
   listConnections: () => invoke<ConnectionView[]>("list_connections"),
   saveConnection: (config: ConnectionConfig, password?: string, sshSecret?: string) =>
     invoke<ConnectionConfig>("save_connection", { config, password: password ?? null, sshSecret: sshSecret ?? null }),
@@ -99,11 +128,19 @@ export const api = {
   commitTx: (tabId: string) => invoke<void>("commit_tx", { tabId }),
   rollbackTx: (tabId: string) => invoke<void>("rollback_tx", { tabId }),
   closeSession: (tabId: string) => invoke<void>("close_session", { tabId }),
-  executeBatch: (id: string, statements: string[]) => invoke<number>("execute_batch", { id, statements }),
-  exportConnections: (path: string) => invoke<number>("export_connections", { path }),
-  importConnections: (path: string) => invoke<{ added: number; updated: number }>("import_connections", { path }),
-  writeTextFile: (path: string, text: string) => invoke<void>("write_text_file", { path, text }),
-  exportCsv: (id: string, sql: string, path: string) => invoke<number>("export_csv", { id, sql, path }),
+  /** exactOne = 표 편집 저장 (UPDATE/DELETE 가 정확히 1행이 아니면 전부 롤백) */
+  executeBatch: (id: string, statements: string[], exactOne = false) => invoke<number>("execute_batch", { id, statements, exactOne }),
+  // 파일 쓰기는 백엔드가 저장 대화상자를 직접 연다 (웹뷰가 경로를 정하지 않는다). 취소하면 null
+  exportConnections: () => invoke<[number, string] | null>("export_connections"),
+  /** 가져올 파일 고르기 → 바뀌는 내용 미리보기. 확인하면 importPicked */
+  pickImportFile: () => invoke<string[] | null>("pick_import_file"),
+  importPicked: () => invoke<{ added: number; updated: number }>("import_picked"),
+  saveTextFile: (defaultName: string, text: string) => invoke<string | null>("save_text_file", { defaultName, text }),
+  exportCsv: (id: string, sql: string, defaultName: string) => invoke<[number, string] | null>("export_csv", { id, sql, defaultName }),
+  txState: (tabId: string) => invoke<boolean>("tx_state", { tabId }),
+  trustSshHost: (host: string, port: number) => invoke<string>("trust_ssh_host", { host, port }),
+  /** 실행 전 확인할 위험 문장이면 이유 (WHERE 없는 UPDATE/DELETE, DROP, TRUNCATE, Redis FLUSH*·DEL) */
+  unsafeReason: (kind: DbKind, sql: string) => invoke<string | null>("unsafe_reason", { kind, sql }),
 };
 
 export interface SchemaInfo { name: string; isSystem: boolean }
@@ -150,7 +187,16 @@ export interface FtsRequest {
 }
 export interface FtsHit { schema: string; table: string; whereClause: string; result: QueryResult }
 
-export const quoteIdent = (s: string) => (/^[a-z_][a-z0-9_]*$/.test(s) ? s : `"${s.replace(/"/g, '""')}"`);
+/** 따옴표 없이 쓰면 문법이 깨지는 예약어 (core sql.rs RESERVED 와 같은 목록) */
+const RESERVED = new Set(
+  ("all analyse analyze and any array as asc asymmetric between both by case cast change check collate column condition constraint create cross " +
+    "current_date current_role current_time current_timestamp current_user database default deferrable delete desc distinct do drop else end except " +
+    "exists false fetch for foreign from full grant group having in index initially inner insert interval intersect into is join key keys lateral " +
+    "leading left like limit localtime localtimestamp match natural not null offset on only or order outer placing primary range rank read references " +
+    "returning right row rows select session_user set some symmetric table then to trailing true union unique update usage user using values variadic " +
+    "when where window with write").split(" "),
+);
+export const quoteIdent = (s: string) => (/^[a-z_][a-z0-9_]*$/.test(s) && !RESERVED.has(s) ? s : `"${s.replace(/"/g, '""')}"`);
 
 /** DataGrip처럼 접속을 구분하는 색 (어두운 배경용) */
 export const COLOR_PRESETS: { name: string; value: string | null }[] = [
@@ -182,7 +228,7 @@ export interface Dialect {
 }
 const PG: Dialect = { q: quoteIdent, lit: sqlLiteral, text: (e) => `${e}::text`, monaco: "pgsql" };
 const MY: Dialect = {
-  q: (s) => (/^[A-Za-z_][A-Za-z0-9_]*$/.test(s) ? s : "`" + s.replace(/`/g, "``") + "`"),
+  q: (s) => (/^[A-Za-z_][A-Za-z0-9_]*$/.test(s) && !RESERVED.has(s.toLowerCase()) ? s : "`" + s.replace(/`/g, "``") + "`"),
   // MySQL 문자열에서는 백슬래시도 이스케이프 문자
   lit: (v) => (v === null ? "NULL" : `'${String(v).replace(/\\/g, "\\\\").replace(/'/g, "''")}'`),
   text: (e) => `CAST(${e} AS CHAR)`,

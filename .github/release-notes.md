@@ -26,6 +26,7 @@ mkdir -p ~/.local/bin && mv dbtool-tui dbtool-mcp ~/.local/bin/
 dbtool-tui                            # F1 = keymap
 claude mcp add dbtool -- dbtool-mcp   # register with Claude Code (read-only by default)
 ```
+Already installed? `dbtool-tui --update` downloads and installs this release (the GUI shows a Download button in its status bar).
 
 See the [README](https://github.com/Hkhyyy/dbtool#readme) for all features and shortcuts.
 

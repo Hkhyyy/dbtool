@@ -5,6 +5,7 @@ mod grid;
 mod help;
 mod input;
 mod keys;
+mod selfupdate;
 mod tree;
 mod ui;
 
@@ -19,10 +20,23 @@ use std::sync::Arc;
 async fn main() -> std::io::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "-h" || a == "--help") {
-        println!("dbtool-tui [--config-dir DIR]\n\nTerminal UI for dbtool (PostgreSQL / MySQL / Redis). Shares data sources with the dbtool app.\nPress F1 inside for this keymap.\n{}", help::text());
+        println!(
+            "dbtool-tui {} [--config-dir DIR] [--no-update-check]\n       dbtool-tui --update     download and install the latest release\n\nTerminal UI for dbtool (PostgreSQL / MySQL / Redis). Shares data sources with the dbtool app.\nA new version is checked once a day (off: --no-update-check or DBTOOL_NO_UPDATE_CHECK=1).\nPress F1 inside for this keymap.\n{}",
+            env!("CARGO_PKG_VERSION"),
+            help::text()
+        );
         return Ok(());
     }
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        println!("dbtool-tui {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+    if args.iter().any(|a| a == "--update") {
+        return selfupdate::run_update().await;
+    }
+    let check_update = !args.iter().any(|a| a == "--no-update-check") && !dbtool_core::update::disabled() && !selfupdate::current_exe().is_some_and(|e| selfupdate::from_source(&e));
     let dir = args.iter().position(|a| a == "--config-dir").and_then(|i| args.get(i + 1)).map(std::path::PathBuf::from);
+    let cfg_dir = dir.clone().unwrap_or_else(dbtool_core::config_dir);
     // 엔진 로그가 화면을 깨지 않도록
     dbtool_core::QUIET.store(true, std::sync::atomic::Ordering::Relaxed);
     let state = Arc::new(dbtool_core::open_state(dir).map_err(|e| std::io::Error::other(e.to_string()))?);
@@ -41,7 +55,7 @@ async fn main() -> std::io::Result<()> {
         hook(p);
     }));
     let mut term = Terminal::new(CrosstermBackend::new(std::io::stdout()))?;
-    let res = run(&mut term, state).await;
+    let res = run(&mut term, state, check_update.then_some(cfg_dir)).await;
     if enhanced {
         let _ = execute!(std::io::stdout(), PopKeyboardEnhancementFlags);
     }
@@ -54,9 +68,18 @@ fn restore() -> std::io::Result<()> {
     execute!(std::io::stdout(), LeaveAlternateScreen, DisableMouseCapture, DisableBracketedPaste)
 }
 
-async fn run(term: &mut Terminal<CrosstermBackend<std::io::Stdout>>, state: Arc<dbtool_core::app::AppState>) -> std::io::Result<()> {
+async fn run(term: &mut Terminal<CrosstermBackend<std::io::Stdout>>, state: Arc<dbtool_core::app::AppState>, update_dir: Option<std::path::PathBuf>) -> std::io::Result<()> {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<app::Apply>();
     let mut app = app::App::new(state.clone(), tx.clone());
+    // 새 버전 확인 (하루 한 번, 백그라운드). 실패해도 조용히 넘어간다
+    if let Some(dir) = update_dir {
+        let tx = tx.clone();
+        tokio::spawn(async move {
+            if let Ok(Some(r)) = dbtool_core::update::check(&dir, env!("CARGO_PKG_VERSION"), false).await {
+                let _ = tx.send(Box::new(move |a: &mut app::App| a.update = Some(r.version)));
+            }
+        });
+    }
     // keep-alive / auto-disconnect (GUI 와 같은 규칙)
     {
         let tx = tx.clone();

@@ -104,7 +104,19 @@ const handlers: Record<string, (a: any) => unknown> = {
   close_session: () => null,
   execute_batch: (a: any) => a.statements.length,
   load_keymap: () => ({}),
+  tx_state: () => (globalThis as any).__mockManual === true,
+  unsafe_reason: (a: any) => (/^\s*(delete|update)\b(?![\s\S]*\bwhere\b)/i.test(a.sql) ? "DELETE without WHERE changes every row" : /^\s*(drop|truncate)\b/i.test(a.sql) ? "DROP removes data" : null),
+  trust_ssh_host: () => "Trusted",
+  export_csv: () => null,
+  save_text_file: () => null,
+  export_connections: () => null,
+  pick_import_file: () => ["~ update \"[PROD] shop_app\": turns Read-only OFF"],
+  import_picked: () => ({ added: 0, updated: 1 }),
   save_keymap: () => null,
+  check_update: () => ({
+    current: "0.1.0",
+    latest: { version: "0.1.2", url: "https://github.com/Hkhyyy/dbtool/releases/tag/v0.1.2", notes: "## dbtool 0.1.2\n- something new", assets: [{ name: "dbtool_0.1.2_aarch64.dmg", url: "https://example.com/dbtool_0.1.2_aarch64.dmg" }] },
+  }),
 };
 (window as any).__TAURI_INTERNALS__ = {
   invoke: async (cmd: string, args: unknown) => {

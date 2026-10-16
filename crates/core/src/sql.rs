@@ -18,10 +18,24 @@ pub fn default_db(cfg: &ConnectionConfig) -> String {
     }
 }
 
+/// 따옴표 없이 쓰면 문법이 깨지는 예약어 (PG·MySQL 합집합. 불필요하게 따옴표를 쳐도 해는 없다)
+const RESERVED: &[&str] = &[
+    "all", "analyse", "analyze", "and", "any", "array", "as", "asc", "asymmetric", "between", "both", "by", "case", "cast", "change", "check",
+    "collate", "column", "condition", "constraint", "create", "cross", "current_date", "current_role", "current_time", "current_timestamp",
+    "current_user", "database", "default", "deferrable", "delete", "desc", "distinct", "do", "drop", "else", "end", "except", "exists", "false",
+    "fetch", "for", "foreign", "from", "full", "grant", "group", "having", "in", "index", "initially", "inner", "insert", "interval", "intersect",
+    "into", "is", "join", "key", "keys", "lateral", "leading", "left", "like", "limit", "localtime", "localtimestamp", "match", "natural", "not",
+    "null", "offset", "on", "only", "or", "order", "outer", "placing", "primary", "range", "rank", "read", "references", "returning", "right",
+    "row", "rows", "select", "session_user", "set", "some", "symmetric", "table", "then", "to", "trailing", "true", "union", "unique", "update",
+    "usage", "user", "using", "values", "variadic", "when", "where", "window", "with", "write",
+];
+
 pub fn quote_ident(kind: DbKind, s: &str) -> String {
+    let reserved = RESERVED.contains(&s.to_lowercase().as_str());
     let simple = |lower_only: bool| {
         let mut ch = s.chars();
-        matches!(ch.next(), Some(c) if c == '_' || if lower_only { c.is_ascii_lowercase() } else { c.is_ascii_alphabetic() })
+        !reserved
+            && matches!(ch.next(), Some(c) if c == '_' || if lower_only { c.is_ascii_lowercase() } else { c.is_ascii_alphabetic() })
             && s.chars().all(|c| c == '_' || c.is_ascii_digit() || if lower_only { c.is_ascii_lowercase() } else { c.is_ascii_alphabetic() })
     };
     match kind {
@@ -39,7 +53,9 @@ pub fn literal(kind: DbKind, v: Option<&str>) -> String {
     }
 }
 
-/// 세미콜론으로 문장을 나눈다 (문자열·주석·PG 달러 인용 건너뜀). Redis 는 한 줄 = 명령. (start, end) 바이트 범위
+/// 세미콜론으로 문장을 나눈다 (문자열·주석·PG 달러 인용 건너뜀). Redis 는 한 줄 = 명령. (start, end) 바이트 범위.
+/// 서버와 같은 규칙으로 읽어야 한다 (읽기 전용 검사가 이걸로 문장 수를 센다):
+/// MySQL 은 `--` 뒤에 공백이 있어야 주석이고 `/*! … */` 는 실행되는 코드, PG 는 주석이 중첩되고 E'…' 안에서 \ 가 이스케이프
 pub fn split_statements(text: &str, kind: DbKind) -> Vec<(usize, usize)> {
     if kind == DbKind::Redis {
         let mut out = Vec::new();
@@ -60,7 +76,7 @@ pub fn split_statements(text: &str, kind: DbKind) -> Vec<(usize, usize)> {
     while i < n {
         let c = b[i];
         let d = if i + 1 < n { b[i + 1] } else { 0 };
-        if c == b'-' && d == b'-' {
+        if c == b'-' && d == b'-' && (kind != DbKind::Mysql || i + 2 >= n || b[i + 2].is_ascii_whitespace() || b[i + 2].is_ascii_control()) {
             i = text[i..].find('\n').map(|j| i + j + 1).unwrap_or(n);
             continue;
         }
@@ -69,13 +85,33 @@ pub fn split_statements(text: &str, kind: DbKind) -> Vec<(usize, usize)> {
             continue;
         }
         if c == b'/' && d == b'*' {
-            i = text[i + 2..].find("*/").map(|j| i + 2 + j + 2).unwrap_or(n);
+            // MySQL /*! … */ 는 주석이 아니라 실행되는 코드: 안쪽도 그대로 읽는다
+            if kind == DbKind::Mysql && i + 2 < n && b[i + 2] == b'!' {
+                i += 3;
+                continue;
+            }
+            // PG 주석은 중첩된다
+            let (mut depth, mut j) = (1, i + 2);
+            while j < n && depth > 0 {
+                if b[j] == b'/' && j + 1 < n && b[j + 1] == b'*' && kind == DbKind::Postgres {
+                    depth += 1;
+                    j += 2;
+                } else if b[j] == b'*' && j + 1 < n && b[j + 1] == b'/' {
+                    depth -= 1;
+                    j += 2;
+                } else {
+                    j += 1;
+                }
+            }
+            i = j;
             continue;
         }
         if c == b'\'' || c == b'"' || c == b'`' {
+            // PG E'…' 문자열은 \ 가 이스케이프
+            let e_string = kind == DbKind::Postgres && c == b'\'' && i > 0 && (b[i - 1] == b'e' || b[i - 1] == b'E') && (i < 2 || !(b[i - 2].is_ascii_alphanumeric() || b[i - 2] == b'_'));
             let mut j = i + 1;
             while j < n {
-                if backslash && b[j] == b'\\' {
+                if (backslash || e_string) && b[j] == b'\\' {
                     j += 2;
                     continue;
                 }
@@ -133,7 +169,25 @@ mod tests {
         assert_eq!(split_statements("GET a\n# c\n\nSET b 1", DbKind::Redis).len(), 2);
         assert_eq!(quote_ident(DbKind::Postgres, "User"), "\"User\"");
         assert_eq!(quote_ident(DbKind::Mysql, "my col"), "`my col`");
+        assert_eq!(quote_ident(DbKind::Postgres, "user"), "\"user\"");
+        assert_eq!(quote_ident(DbKind::Mysql, "order"), "`order`");
+        assert_eq!(quote_ident(DbKind::Postgres, "users"), "users");
         assert_eq!(literal(DbKind::Mysql, Some("a\\'b")), "'a\\\\''b'");
         assert_eq!(literal(DbKind::Postgres, None), "NULL");
+    }
+
+    #[test]
+    fn split_follows_server_comment_rules() {
+        let n = |t: &str, k| split_statements(t, k).len();
+        // MySQL: `--x` 는 주석이 아니다 → 문장 셋 (실제로 MCP 읽기 전용이 뚫렸던 형태)
+        assert_eq!(n("select 1 --1; COMMIT; DELETE FROM t", DbKind::Mysql), 3);
+        assert_eq!(n("select 1 -- x; delete", DbKind::Mysql), 1);
+        // MySQL /*! … */ 안은 코드
+        assert_eq!(n("/*! COMMIT; DELETE FROM t; */ select 1", DbKind::Mysql), 3);
+        assert_eq!(n("/* c; */ select 1", DbKind::Mysql), 1);
+        // PG: 중첩 주석, E'' 의 \'
+        assert_eq!(n("/* a /* b */ ; */ select 1", DbKind::Postgres), 1);
+        assert_eq!(n("select E'\\'; x'; select 2", DbKind::Postgres), 2);
+        assert_eq!(n("select '\\'; select 2", DbKind::Postgres), 2);
     }
 }

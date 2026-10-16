@@ -4,6 +4,7 @@ use crate::db::QueryResult;
 use crate::error::AppResult;
 use crate::store::ConnectionConfig;
 use tauri::State;
+use tauri_plugin_dialog::DialogExt;
 
 #[tauri::command]
 pub async fn list_connections(state: State<'_, AppState>) -> AppResult<Vec<ConnectionView>> {
@@ -81,8 +82,9 @@ pub async fn close_session(state: State<'_, AppState>, tab_id: String) -> AppRes
 }
 
 #[tauri::command]
-pub async fn execute_batch(state: State<'_, AppState>, id: String, statements: Vec<String>) -> AppResult<u64> {
-    state.execute_batch(id, statements).await
+/// exact_one = 표 편집 저장 (UPDATE/DELETE 가 정확히 1행이 아니면 전부 롤백)
+pub async fn execute_batch(state: State<'_, AppState>, id: String, statements: Vec<String>, exact_one: Option<bool>) -> AppResult<u64> {
+    state.execute_batch(id, statements, exact_one.unwrap_or(false)).await
 }
 
 #[tauri::command]
@@ -117,25 +119,66 @@ pub async fn redis_exec(state: State<'_, AppState>, id: String, args: Vec<String
 }
 
 #[tauri::command]
-pub async fn export_connections(state: State<'_, AppState>, path: String) -> AppResult<usize> {
-    state.export_connections(path).await
+pub async fn export_connections(app: tauri::AppHandle, state: State<'_, AppState>) -> AppResult<Option<(usize, String)>> {
+    let Some(path) = save_dialog(&app, "dbtool-datasources.json", "JSON", &["json"]) else { return Ok(None) };
+    Ok(Some((state.export_connections(path.clone()).await?, path)))
+}
+
+/// 가져올 파일 고르기 → 무엇이 바뀌는지 미리보기. 실제 가져오기는 import_picked (사용자가 확인한 뒤)
+#[tauri::command]
+pub async fn pick_import_file(app: tauri::AppHandle, state: State<'_, AppState>, pending: State<'_, PendingImport>) -> AppResult<Option<Vec<String>>> {
+    let picked = app.dialog().file().add_filter("JSON", &["json"]).blocking_pick_file();
+    let Some(path) = picked.and_then(|p| p.into_path().ok()) else { return Ok(None) };
+    let lines = state.import_preview(path.display().to_string())?;
+    *pending.0.lock().unwrap() = Some(path);
+    Ok(Some(lines))
 }
 
 #[tauri::command]
-pub async fn import_connections(state: State<'_, AppState>, path: String) -> AppResult<ImportResult> {
-    state.import_connections(path).await
+pub async fn import_picked(state: State<'_, AppState>, pending: State<'_, PendingImport>) -> AppResult<ImportResult> {
+    let path = pending.0.lock().unwrap().take().ok_or_else(|| crate::error::AppError::Msg("Choose a file first".into()))?;
+    state.import_connections(path.display().to_string()).await
 }
 
-/// SQL Generator "Save to File"
+/// 고른 가져오기 파일 (미리보기와 실제 가져오기 사이)
+#[derive(Default)]
+pub struct PendingImport(pub std::sync::Mutex<Option<std::path::PathBuf>>);
+
+/// 저장 대화상자는 여기(백엔드)에서 연다: 웹뷰가 임의 경로를 넘겨 파일을 쓰지 못하게, 사용자가 고른 경로에만 쓴다
+fn save_dialog(app: &tauri::AppHandle, default_name: &str, filter: &str, exts: &[&str]) -> Option<String> {
+    app.dialog().file().set_file_name(default_name).add_filter(filter, exts).blocking_save_file().and_then(|p| p.into_path().ok()).map(|p| p.display().to_string())
+}
+
+/// SQL Generator·DDL "Save to File" → 저장한 경로 (취소하면 None)
 #[tauri::command]
-pub async fn write_text_file(path: String, text: String) -> AppResult<()> {
-    std::fs::write(path, text)?;
-    Ok(())
+pub async fn save_text_file(app: tauri::AppHandle, default_name: String, text: String) -> AppResult<Option<String>> {
+    let Some(path) = save_dialog(&app, &default_name, "SQL", &["sql"]) else { return Ok(None) };
+    std::fs::write(&path, text)?;
+    Ok(Some(path))
 }
 
 #[tauri::command]
-pub async fn export_csv(state: State<'_, AppState>, id: String, sql: String, path: String) -> AppResult<u64> {
-    state.export_csv(id, sql, path).await
+pub async fn export_csv(app: tauri::AppHandle, state: State<'_, AppState>, id: String, sql: String, default_name: String) -> AppResult<Option<(u64, String)>> {
+    let Some(path) = save_dialog(&app, &default_name, "CSV (Excel)", &["csv"]) else { return Ok(None) };
+    Ok(Some((state.export_csv(id, sql, path.clone()).await?, path)))
+}
+
+/// 탭 세션에 커밋 안 한 변경이 있는지 (오류 뒤 Commit/Roll back 표시)
+#[tauri::command]
+pub async fn tx_state(state: State<'_, AppState>, tab_id: String) -> AppResult<bool> {
+    Ok(state.tx_state(tab_id).await)
+}
+
+/// 처음 보는 SSH 서버 키를 신뢰 (사용자가 지문을 확인한 뒤)
+#[tauri::command]
+pub async fn trust_ssh_host(state: State<'_, AppState>, host: String, port: u16) -> AppResult<String> {
+    state.trust_ssh_host(host, port)
+}
+
+/// 실행 전에 확인을 받을 위험한 문장이면 이유 (WHERE 없는 UPDATE/DELETE, DROP, TRUNCATE, Redis FLUSH*·DEL)
+#[tauri::command]
+pub fn unsafe_reason(kind: crate::store::DbKind, sql: String) -> Option<String> {
+    dbtool_core::guard::unsafe_statement(&sql, kind)
 }
 
 #[tauri::command]
@@ -177,6 +220,25 @@ pub fn load_keymap(state: State<'_, AppState>) -> AppResult<crate::store::Keymap
 #[tauri::command]
 pub fn save_keymap(state: State<'_, AppState>, map: crate::store::Keymap) -> AppResult<()> {
     state.store.save_keymap("gui", &map)
+}
+
+/// 새 버전 확인 결과 (current = 이 앱 버전)
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateInfo {
+    current: String,
+    latest: Option<dbtool_core::update::Release>,
+}
+
+/// 새 버전 확인. force 가 아니면 하루 한 번만 GitHub 에 묻는다. 개발 빌드(pnpm tauri dev)는 force 일 때만
+#[tauri::command]
+pub async fn check_update(state: State<'_, AppState>, force: bool) -> AppResult<UpdateInfo> {
+    let current = env!("CARGO_PKG_VERSION").to_string();
+    if (cfg!(debug_assertions) && !force) || (dbtool_core::update::disabled() && !force) {
+        return Ok(UpdateInfo { current, latest: None });
+    }
+    let latest = dbtool_core::update::check(&state.store.dir(), &current, force).await?;
+    Ok(UpdateInfo { current, latest })
 }
 
 #[cfg(test)]

@@ -250,17 +250,56 @@ impl Store {
         let connections = self.list()?;
         let n = connections.len();
         let file = ExportFile { app: "dbtool".into(), version: 1, connections };
-        fs::write(path, serde_json::to_string_pretty(&file)?)?;
+        crate::secrets::write_private(path, serde_json::to_string_pretty(&file)?.as_bytes())?;
         Ok(n)
     }
 
     /// 같은 id는 덮어쓰고 새 id는 추가한다. 반환값: (추가, 갱신)
-    pub fn import_from(&self, path: &std::path::Path) -> AppResult<(usize, usize)> {
+    fn read_import(path: &std::path::Path) -> AppResult<Vec<ConnectionConfig>> {
         let text = fs::read_to_string(path)?;
-        let incoming: Vec<ConnectionConfig> = match serde_json::from_str::<ExportFile>(&text) {
+        Ok(match serde_json::from_str::<ExportFile>(&text) {
             Ok(f) => f.connections,
             Err(_) => serde_json::from_str(&text)?,
-        };
+        })
+    }
+
+    /// 가져오기 전에 무엇이 바뀌는지 (남이 준 파일이 Read-only 를 끄거나 접속 시 실행할 SQL 을 넣을 수 있다)
+    pub fn import_preview(&self, path: &std::path::Path) -> AppResult<Vec<String>> {
+        let all = self.list()?;
+        let mut out = vec![];
+        for c in Self::read_import(path)? {
+            let script = |c: &ConnectionConfig| c.options.startup_script.trim().to_string();
+            match all.iter().find(|e| !c.id.is_empty() && e.id == c.id) {
+                None => {
+                    let mut line = format!("+ add \"{}\" ({}@{}:{})", c.name, c.user, c.host, c.port);
+                    if !script(&c).is_empty() {
+                        line += " — runs a startup script on connect";
+                    }
+                    out.push(line);
+                }
+                Some(e) => {
+                    let mut ch = vec![];
+                    if (e.host.as_str(), e.port, e.user.as_str()) != (c.host.as_str(), c.port, c.user.as_str()) {
+                        ch.push(format!("server {}@{}:{} → {}@{}:{}", e.user, e.host, e.port, c.user, c.host, c.port));
+                    }
+                    if e.read_only && !c.read_only {
+                        ch.push("turns Read-only OFF".into());
+                    }
+                    if e.active_ssh().map(|s| (&s.host, s.port)) != c.active_ssh().map(|s| (&s.host, s.port)) {
+                        ch.push("changes the SSH tunnel".into());
+                    }
+                    if script(e) != script(&c) {
+                        ch.push("changes the startup script".into());
+                    }
+                    out.push(format!("~ update \"{}\"{}", e.name, if ch.is_empty() { String::new() } else { format!(": {}", ch.join(", ")) }));
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn import_from(&self, path: &std::path::Path) -> AppResult<(usize, usize)> {
+        let incoming = Self::read_import(path)?;
         let mut all = self.list()?;
         let (mut added, mut updated) = (0, 0);
         for mut c in incoming {
@@ -280,6 +319,11 @@ impl Store {
         }
         self.write(&all)?;
         Ok((added, updated))
+    }
+
+    /// 설정 폴더 (connections.json 이 있는 곳)
+    pub fn dir(&self) -> PathBuf {
+        self.path.parent().map(|p| p.to_path_buf()).unwrap_or_default()
     }
 
     fn keymap_path(&self) -> PathBuf {
@@ -304,7 +348,7 @@ impl Store {
         if let Some(dir) = path.parent() {
             fs::create_dir_all(dir)?;
         }
-        fs::write(path, serde_json::to_string_pretty(&all)?)?;
+        crate::secrets::write_private(&path, serde_json::to_string_pretty(&all)?.as_bytes())?;
         Ok(())
     }
 
@@ -312,7 +356,8 @@ impl Store {
         if let Some(dir) = self.path.parent() {
             fs::create_dir_all(dir)?;
         }
-        fs::write(&self.path, serde_json::to_string_pretty(all)?)?;
+        // 호스트·사용자·SSH 키 경로가 들어 있다 → 본인만 읽게
+        crate::secrets::write_private(&self.path, serde_json::to_string_pretty(all)?.as_bytes())?;
         Ok(())
     }
 }

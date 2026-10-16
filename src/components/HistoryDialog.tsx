@@ -50,9 +50,18 @@ const store = (items: HistoryItem[]) => {
 };
 window.addEventListener("beforeunload", () => timer && flush());
 
+/** 기록에 남기지 않을 비밀번호: CREATE/ALTER USER … PASSWORD '…', IDENTIFIED BY '…', Redis AUTH/CONFIG SET requirepass */
+export const redactSecrets = (sql: string) =>
+  sql
+    .replace(/(\bpassword\s*(?:=\s*)?)('(?:[^']|'')*'|"[^"]*")/gi, "$1'***'")
+    .replace(/(\bidentified\s+(?:with\s+\S+\s+)?by\s+)('(?:[^'\\]|\\.|'')*'|"[^"]*")/gi, "$1'***'")
+    .replace(/^(\s*auth\s+)(?:\S+\s+)?\S+\s*$/gim, "$1***")
+    .replace(/(\b(?:requirepass|masterauth)\s+)\S+/gi, "$1***");
+
 export function pushHistory(h: Omit<HistoryItem, "id" | "ts">) {
   const items = load();
-  const sql = h.sql.length > MAX_SQL ? h.sql.slice(0, MAX_SQL) : h.sql;
+  const clean = redactSecrets(h.sql);
+  const sql = clean.length > MAX_SQL ? clean.slice(0, MAX_SQL) : clean;
   const last = items[items.length - 1];
   if (last && last.connId === h.connId && last.sql === sql) {
     last.ts = Date.now();

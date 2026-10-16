@@ -330,9 +330,11 @@ fn tree_key(app: &mut App, k: KeyEvent) {
     // 스피드 서치 입력 중
     if !app.tree.filter.is_empty() || k.code == KeyCode::Char('/') {
         match k.code {
-            KeyCode::Char('/') if app.tree.filter.is_empty() => {
-                app.input("Speed search (filters loaded nodes)", "", |a, s| {
-                    a.tree.filter = s;
+            // 필터가 걸려 있으면 지금 필터를 채워서 연다 (비우고 Enter = 해제)
+            KeyCode::Char('/') => {
+                let cur = app.tree.filter.clone();
+                app.input("Speed search (filters loaded nodes · empty = clear)", &cur, |a, s| {
+                    a.tree.filter = s.trim().to_string();
                     a.tree.sel = 0;
                     a.tree.clamp();
                 });
@@ -770,13 +772,20 @@ fn redis_key(app: &mut App, id: u64, k: KeyEvent) {
         }
         KeyCode::Char(':') => {
             app.input("redis>", "", move |a, line| {
-                let st = a.state.clone();
-                let target = a.tab_mut(id).map(|t| t.target.clone()).unwrap_or_default();
-                let shown = line.clone();
-                a.spawn(async move { st.redis_exec_line(target, line).await.map_err(|e| e.to_string()) }, move |a, r| match r {
-                    Ok(v) => a.popup = Some(Popup::Message { title: shown, text: crate::ui::format_reply(&v) }),
-                    Err(e) => a.popup = Some(Popup::Message { title: shown, text: format!("(error) {e}") }),
-                });
+                let run = move |a: &mut App, line: String| {
+                    let st = a.state.clone();
+                    let target = a.tab_mut(id).map(|t| t.target.clone()).unwrap_or_default();
+                    let shown = line.clone();
+                    a.spawn(async move { st.redis_exec_line(target, line).await.map_err(|e| e.to_string()) }, move |a, r| match r {
+                        Ok(v) => a.popup = Some(Popup::Message { title: shown, text: crate::ui::format_reply(&v) }),
+                        Err(e) => a.popup = Some(Popup::Message { title: shown, text: format!("(error) {e}") }),
+                    });
+                };
+                // FLUSHALL·FLUSHDB·DEL 같은 지우는 명령은 한 번 더 묻는다
+                match dbtool_core::guard::unsafe_statement(&line, dbtool_core::store::DbKind::Redis) {
+                    Some(why) => a.popup = Some(Popup::Confirm { text: format!("{why}:\n  {line}\nRun it anyway?"), on_yes: Box::new(move |a| run(a, line)) }),
+                    None => run(a, line),
+                }
             });
         }
         KeyCode::Esc => app.focus = Focus::Tree,
@@ -890,6 +899,15 @@ fn popup_key(app: &mut App, k: KeyEvent) {
                 KeyCode::Esc => return,
                 KeyCode::Down | KeyCode::Tab => form.sel = (form.sel + 1) % n,
                 KeyCode::Up | KeyCode::BackTab => form.sel = (form.sel + n - 1) % n,
+                // SSH 처음 보는 서버: 지문을 확인한 뒤 신뢰
+                KeyCode::Char('y') if k.modifiers.contains(KeyModifiers::CONTROL) => {
+                    let v = |l: &str| form.fields.iter().find(|f| f.label == l).map(|f| f.value.trim().to_string()).unwrap_or_default();
+                    let port = v("SSH port").parse().unwrap_or(22);
+                    form.message = Some(match app.state.trust_ssh_host(v("SSH host"), port) {
+                        Ok(m) => (true, format!("✓ {m} — press Ctrl+T to test again")),
+                        Err(e) => (false, format!("✕ {e}")),
+                    });
+                }
                 KeyCode::Char('t') if k.modifiers.contains(KeyModifiers::CONTROL) => {
                     match App::form_config(&form) {
                         Ok((cfg, pw, ssh)) => {
@@ -899,6 +917,7 @@ fn popup_key(app: &mut App, k: KeyEvent) {
                                 if let Some(Popup::ConnForm(f)) = &mut a.popup {
                                     f.message = Some(match r {
                                         Ok(v) => (true, format!("✓ {v}")),
+                                        Err(e) if e.contains(dbtool_core::tunnel::UNKNOWN_HOST) => (false, format!("✕ {e} Press Ctrl+Y to trust it.")),
                                         Err(e) => (false, format!("✕ {e}")),
                                     });
                                 }

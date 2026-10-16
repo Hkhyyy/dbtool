@@ -12,7 +12,7 @@ All three share the same data sources and passwords, so a connection created in 
 
 - Config folder: `~/Library/Application Support/com.hyunkyo.dbtool` (macOS), `~/.config/com.hyunkyo.dbtool` (Linux)
 - Custom shortcuts are stored in `keymap.json` in that folder (`"gui"` and `"tui"` sections, only the ones you changed)
-- Passwords are stored in `secrets.json` in that folder, encrypted with AES-GCM (key in `secret.key`, mode 0600). The macOS Keychain is not used.
+- Passwords are stored in `secrets.json` in that folder, encrypted with AES-GCM (key in `secret.key`). The folder is 0700 and its files 0600. The macOS Keychain is not used, so anyone who can read your files (or a copy of this folder) can decrypt the passwords.
 
 ## Download
 
@@ -23,6 +23,16 @@ Get the latest build from [Releases](https://github.com/Hkhyyy/dbtool/releases):
 
 The app is not code-signed yet, so macOS shows an "unidentified developer" / "damaged" warning on first launch. Run `xattr -dr com.apple.quarantine /Applications/dbtool.app` (or right-click the app → Open).
 
+A new release is published automatically every time `main` changes.
+
+### Updates
+
+Both apps check GitHub for a newer release once a day (one request to the GitHub API) and tell you when there is one.
+
+- **GUI** — a `⬆ vX.Y.Z available` button appears in the status bar. It shows the release notes and **Download** fetches the new DMG (drag it into Applications to replace the old app). Turn the check off or run it now in **Settings › Appearance › Updates**.
+- **TUI** — the status line shows `⬆ vX.Y.Z available`. Quit and run `dbtool-tui --update` to download the release and replace `dbtool-tui` and `dbtool-mcp` in place. A TUI built from source (`target/release`) is not checked; update it with `git pull` and `cargo build`.
+- Turn the check off with `dbtool-tui --no-update-check` or `DBTOOL_NO_UPDATE_CHECK=1`.
+
 ## Supported databases
 
 | Database | Features |
@@ -32,7 +42,7 @@ The app is not code-signed yet, so macOS shows an "unidentified developer" / "da
 | Redis | Medis-style browser (key list with type and TTL, per-type value editor), redis-cli style terminal, **Standalone / Sentinel / Cluster** |
 
 Connection options:
-- **SSH tunnel** with a key or password. Host keys are checked against `~/.ssh/known_hosts`.
+- **SSH tunnel** with a key or password. Host keys are checked against `~/.ssh/known_hosts`: a changed key is refused, and an unknown server stops with its SHA256 fingerprint until you choose **Trust host key** (GUI: data source dialog; TUI: `Ctrl+Y` in the form or `Ctrl+K › Trust SSH Host Key`).
 - **SSL/TLS**: Require / Verify CA / Full Verification, with optional CA and client certificate. Works for PostgreSQL, MySQL and Redis.
 - **Options tab**: read-only, transaction control and isolation level, time zone, keep-alive, auto-disconnect when idle, single database mode, startup script.
 
@@ -243,7 +253,7 @@ Ctrl+Enter is only distinguishable in terminals that support the kitty keyboard 
 | `Enter / double-click` | Expand / collapse (connects) · open table data · open a Redis key · show DDL of routines |
 | `F4 / Ctrl+↓` | Open a query console for the data source / database (Redis: the key browser) |
 | `Ctrl+B` | Go to DDL |
-| `/` | Filter loaded nodes (Esc clears) |
+| `/` | Filter loaded nodes (/ again edits it · empty or Esc clears) |
 | `n / e / D` | New / edit / remove data source |
 | `c / X` | Connect / disconnect |
 | `r / F5` | Refresh |
@@ -315,6 +325,7 @@ Ctrl+Enter is only distinguishable in terminals that support the kitty keyboard 
 | `type / Backspace` | Edit text fields |
 | `Space / ← →` | Toggle on/off · change choice (Type, Color, SSL mode, Redis mode…) |
 | `Ctrl+T` | Test connection |
+| `Ctrl+Y` | Trust the SSH server's host key (after Ctrl+T showed its fingerprint) |
 | `Enter / Ctrl+S` | Save |
 | `Esc` | Cancel |
 
@@ -349,19 +360,32 @@ claude mcp add dbtool-rw -- dbtool-mcp --allow-write # adds the execute tool
 | `explain` | Execution plan (optionally ANALYZE) |
 | `full_text_search` | Find a value in every table |
 | `redis_scan` / `redis_get` | Redis key list / key details |
-| `export_csv` | Save a read-only query result as CSV |
+| `export_csv` | Save a read-only query result as CSV in `~/Downloads/dbtool-exports` (file name only, never overwrites) |
 | `execute` | Only with `--allow-write`. Runs statements in one transaction; refused for read-only data sources |
 
 **How read-only is enforced**
-- PostgreSQL / MySQL: exactly one statement, starting with SELECT / WITH / VALUES / TABLE / SHOW / EXPLAIN / DESCRIBE, executed inside a READ ONLY transaction that is rolled back afterwards. `COMMIT; DELETE …`, `WITH … DELETE` and `EXPLAIN ANALYZE DELETE` are all rejected.
-- Redis: only read commands are allowed.
+- PostgreSQL / MySQL: exactly one statement, starting with SELECT / WITH / VALUES / TABLE / SHOW / EXPLAIN / DESCRIBE, executed inside a READ ONLY transaction with a 60 s time limit that is rolled back afterwards. Statements are split with the server's own comment rules (MySQL `--x` and `/*! … */`, PostgreSQL nested comments), and MySQL runs over the prepared-statement protocol, which accepts a single statement. `COMMIT; DELETE …`, `WITH … DELETE`, `EXPLAIN ANALYZE DELETE`, `SELECT … INTO OUTFILE` and functions with side effects outside the transaction (`pg_terminate_backend`, `pg_read_file`, `dblink`, `load_file`, `sleep`, …) are rejected.
+- Redis: only read commands, and not `CONFIG` (it can reveal passwords) or `KEYS` (use `redis_scan`).
+- Still, give the MCP server a **least-privilege database user** (read-only role, no superuser/FILE privilege): the checks above are a second line of defence, not a replacement for database permissions.
 
 Options: `--config-dir DIR` (use another config folder), `--verbose` (engine logs to stderr).
+
+## Safety
+
+- **Read-only data sources** are enforced by the engine, not only the UI: in every console, the table editor, Redis and exports, only reading statements run (plus transaction control and `SET`, but not switching read-only off).
+- **Transactions**: a transaction you open (Manual mode, or `BEGIN` in Auto mode) is never committed or rolled back behind your back by result paging. Switching Manual → Auto with uncommitted changes asks first, and closing a tab, disconnecting, switching database or quitting with uncommitted changes asks before rolling them back. Data sources with open transactions are not auto-disconnected.
+- **Confirmations** before `UPDATE`/`DELETE` without `WHERE`, `DROP`, `TRUNCATE` and Redis `FLUSHALL`/`FLUSHDB`/`DEL` (GUI and TUI).
+- **Scripts in Auto mode** run statement by statement: if one fails, the output says how many earlier statements were already committed.
+- **Table editor** saves all edits in one transaction, and each `UPDATE`/`DELETE` must change exactly one row, otherwise nothing is saved.
+- **Import** of data source files shows what changes first (e.g. "turns Read-only OFF", new startup script).
+- **Query history** (GUI) hides passwords in `CREATE/ALTER USER … PASSWORD '…'`, `IDENTIFIED BY '…'` and Redis `AUTH`.
+- **Releases** are built by GitHub Actions pinned to commit SHAs, with `SHA256SUMS` and build provenance attestations; `dbtool-tui --update` verifies the checksum before installing.
 
 ## Tests
 
 ```bash
 cargo test --workspace -- --include-ignored --skip tunnel   # needs a local PostgreSQL and the containers below
+DBTOOL_TEST_PG=127.0.0.1:15499:postgres:shop cargo test -p dbtool-core session -- --ignored   # PostgreSQL elsewhere (host:port:user:db)
 ```
 
 Containers for the integration tests:

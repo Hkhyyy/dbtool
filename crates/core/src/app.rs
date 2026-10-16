@@ -28,6 +28,8 @@ pub struct AppState {
     pub last_used: std::sync::Mutex<HashMap<String, std::time::Instant>>,
     /// Data Source id → 마지막 keep-alive 시각
     pub last_ping: std::sync::Mutex<HashMap<String, std::time::Instant>>,
+    /// 탭 id → Manual 모드 (다시 접속해 세션을 새로 열 때도 같은 모드로)
+    pub tab_manual: std::sync::Mutex<HashMap<String, bool>>,
 }
 
 impl AppState {
@@ -51,7 +53,7 @@ impl AppState {
 
 impl AppState {
     pub fn new(store: Store, secret_file: crate::secrets::SecretFile) -> Self {
-        Self { store, pools: RwLock::new(HashMap::new()), sessions: RwLock::new(HashMap::new()), tunnels: RwLock::new(HashMap::new()), secrets: Default::default(), secret_file, last_used: Default::default(), last_ping: Default::default() }
+        Self { store, pools: RwLock::new(HashMap::new()), sessions: RwLock::new(HashMap::new()), tunnels: RwLock::new(HashMap::new()), secrets: Default::default(), secret_file, last_used: Default::default(), last_ping: Default::default(), tab_manual: Default::default() }
     }
 }
 
@@ -136,7 +138,8 @@ pub async fn housekeeping(state: &AppState) -> Vec<String> {
         if let Some(secs) = cfg.options.auto_disconnect_secs.filter(|s| *s > 0) {
             let last = *state.last_used.lock().unwrap().entry(base.clone()).or_insert(now);
             // 실행 중인 쿼리(세션 잠김)가 있으면 끊지 않는다
-            let busy = state.sessions.read().await.values().any(|e| belongs(&e.conn_id, &base) && e.session.try_lock().is_err());
+            // 실행 중인 쿼리가 있거나 커밋 안 한 변경이 있는 세션이 있으면 끊지 않는다 (끊으면 변경이 사라진다)
+            let busy = state.sessions.read().await.values().any(|e| belongs(&e.conn_id, &base) && e.session.try_lock().map(|g| g.in_tx()).unwrap_or(true));
             if !busy && now.duration_since(last) >= Duration::from_secs(secs as u64) {
                 drop_pool(state, &base).await;
                 state.last_used.lock().unwrap().remove(&base);
@@ -211,7 +214,11 @@ pub async fn ensure_session(state: &AppState, id: &str, tab_id: &str) -> AppResu
         e.session.lock().await.discard().await;
     }
     let pool = ensure_pool(state, id).await?;
-    let s = Session::open(&pool).await?;
+    let mut s = Session::open(&pool).await?;
+    // 탭이 Manual 이면 새 세션도 Manual (재접속 후 몰래 Auto 가 되면 다음 변경이 바로 커밋된다)
+    if state.tab_manual.lock().unwrap().get(tab_id).copied().unwrap_or(false) {
+        s.set_manual(true).await?;
+    }
     let entry = SessionEntry { conn_id: id.to_string(), pid: s.backend_id(), session: std::sync::Arc::new(tokio::sync::Mutex::new(s)) };
     let arc = entry.session.clone();
     state.sessions.write().await.insert(tab_id.to_string(), entry);
@@ -225,6 +232,10 @@ pub async fn redis_pool(state: &AppState, id: &str) -> AppResult<crate::redisdb:
     }
 }
 
+/// 읽기 전용(MCP) 쿼리 시간 제한 (남이 보낸 쿼리로 서버를 오래 붙잡지 않게)
+const READ_ONLY_TIMEOUT_PG: &str = "SET LOCAL statement_timeout = '60s'";
+const READ_ONLY_TIMEOUT_MY: &str = "SET SESSION max_execution_time = 60000";
+
 #[derive(Serialize)]
 pub struct ImportResult {
     pub added: usize,
@@ -232,35 +243,30 @@ pub struct ImportResult {
 }
 
 impl AppState {
-    /// 읽기 전용으로 실행 (MCP 기본). PG·MySQL: READ ONLY 트랜잭션 안에서 실행 후 롤백. Redis: 읽기 명령만
+    /// 읽기 전용으로 실행 (MCP 기본). 검사는 guard (한 문장·읽기 명령·부작용 함수 금지), 실행은 READ ONLY 트랜잭션 안에서
+    /// 60초 제한을 걸고 끝나면 롤백. MySQL 은 prepared 프로토콜 (서버가 한 문장만 받는다). Redis: 읽기 명령만 (CONFIG·KEYS 제외)
     pub async fn run_read_only(&self, id: String, sql: String, limit: usize) -> AppResult<QueryResult> {
         use sqlx::Executor;
         let kind = self.kind_of(&id)?;
-        if kind != crate::store::DbKind::Redis {
-            // 한 문장만, 읽기 키워드로 시작해야 한다 (COMMIT; DELETE … 같은 트랜잭션 탈출 방지)
-            let stmts = crate::sql::split_statements(&sql, kind);
-            if stmts.len() != 1 {
-                return Err(AppError::Msg("Read-only mode runs exactly one statement".into()));
-            }
-            let first = session::strip_comments_lead(&sql);
-            let word = first.split(|c: char| !c.is_ascii_alphabetic()).next().unwrap_or("");
-            if !["select", "with", "values", "table", "show", "explain", "describe", "desc"].contains(&word) {
-                return Err(AppError::Msg(format!("Read-only mode: '{word}' statements are not allowed (start the MCP server with --allow-write)")));
-            }
+        if let Some(why) = crate::guard::read_only_violation(&sql, kind, true) {
+            return Err(AppError::Msg(format!("{why} (start the MCP server with --allow-write to change data)")));
         }
         match ensure_pool(self, &id).await? {
             Pool::Pg(p) => {
                 let mut tx = p.begin().await?;
                 tx.execute("SET TRANSACTION READ ONLY").await?;
+                tx.execute(READ_ONLY_TIMEOUT_PG).await?;
                 let r = db::run_on(&mut tx, &sql, limit).await;
                 let _ = tx.rollback().await;
                 r
             }
             Pool::My(p) => {
                 let mut conn = p.acquire().await?;
+                conn.execute(READ_ONLY_TIMEOUT_MY).await?;
                 conn.execute("START TRANSACTION READ ONLY").await?;
-                let r = crate::mysql::run_on(&mut conn, &sql, limit).await;
+                let r = crate::mysql::run_read_only_on(&mut conn, &sql, limit).await;
                 let _ = conn.execute("ROLLBACK").await;
+                let _ = conn.execute("SET SESSION max_execution_time = 0").await;
                 r
             }
             Pool::Redis(m, _) => {
@@ -270,12 +276,40 @@ impl AppState {
                 if !crate::redisdb::is_read_command(&cmd, &sub) {
                     return Err(AppError::Msg(format!("{cmd} is not a read-only command")));
                 }
+                if let Some(why) = crate::guard::redis_strict_violation(&cmd) {
+                    return Err(AppError::Msg(why));
+                }
                 crate::redisdb::run(&m, &sql, limit).await
             }
         }
     }
 
-    /// 데이터 소스 종류
+    /// 읽기 전용 쿼리 결과를 CSV 로 (MCP). 검사·실행 모두 run_read_only 와 같은 규칙 (전체 결과도 READ ONLY 트랜잭션 안에서)
+    pub async fn export_csv_read_only(&self, id: String, sql: String, path: std::path::PathBuf) -> AppResult<u64> {
+        use sqlx::Executor;
+        let kind = self.kind_of(&id)?;
+        if let Some(why) = crate::guard::read_only_violation(&sql, kind, true) {
+            return Err(AppError::Msg(why));
+        }
+        match ensure_pool(self, &id).await? {
+            Pool::Pg(p) => {
+                let mut tx = p.begin().await?;
+                tx.execute("SET TRANSACTION READ ONLY").await?;
+                let r = db::export_pg_on(&mut tx, &sql, &path).await;
+                let _ = tx.rollback().await;
+                r
+            }
+            Pool::My(p) => {
+                let mut conn = p.acquire().await?;
+                conn.execute("START TRANSACTION READ ONLY").await?;
+                let r = crate::mysql::export_on(&mut conn, &sql, &path, true).await;
+                let _ = conn.execute("ROLLBACK").await;
+                r
+            }
+            Pool::Redis(..) => Err(AppError::Msg("CSV export of Redis commands is not available in read-only mode".into())),
+        }
+    }
+
     pub fn kind_of(&self, id: &str) -> AppResult<crate::store::DbKind> {
         let (base, _) = split_target(id);
         Ok(self.store.get(base)?.ok_or_else(|| AppError::Msg(format!("Data source not found: {base}")))?.kind)
@@ -389,6 +423,7 @@ impl AppState {
     /// `tab_id`가 있으면 그 콘솔의 세션에서 실행한다 (커서·취소 지원).
     pub async fn run_query(&self, id: String, sql: String, limit: Option<usize>, tab_id: Option<String>) -> AppResult<QueryResult> {
         let limit = limit.unwrap_or(500);
+        self.check_read_only(&id, &sql)?;
         match tab_id {
             Some(tab) => {
                 let sess = ensure_session(self, &id, &tab).await?;
@@ -424,7 +459,52 @@ impl AppState {
     pub async fn set_tx_mode(&self, id: String, tab_id: String, manual: bool) -> AppResult<()> {
         let sess = ensure_session(self, &id, &tab_id).await?;
         let mut s = sess.lock().await;
-        s.set_manual(manual).await
+        s.set_manual(manual).await?;
+        self.tab_manual.lock().unwrap().insert(tab_id, manual);
+        Ok(())
+    }
+
+    /// 탭 세션에 커밋 안 한 변경이 있는지 (오류 뒤에도 Commit/Roll back 버튼을 맞게 보이려고)
+    pub async fn tx_state(&self, tab_id: String) -> bool {
+        let sess = self.sessions.read().await.get(&tab_id).map(|e| e.session.clone());
+        match sess {
+            Some(s) => s.lock().await.in_tx(),
+            None => false,
+        }
+    }
+
+    /// Read-only Redis Data Source 면 쓰기 명령을 막는다
+    fn check_read_only_redis(&self, id: &str, cmd: &str, sub: &str) -> AppResult<()> {
+        let cfg = self.source(id)?;
+        let (cmd, sub) = (cmd.to_uppercase(), sub.to_uppercase());
+        if cfg.read_only && !crate::redisdb::is_read_command(&cmd, &sub) {
+            return Err(AppError::Msg(format!("Data source \"{}\" is read-only: {cmd} changes data", cfg.name)));
+        }
+        Ok(())
+    }
+
+    /// Data Source 설정 (읽기 전용 여부 등)
+    fn source(&self, id: &str) -> AppResult<ConnectionConfig> {
+        self.store.get(split_target(id).0)?.ok_or_else(|| AppError::Msg("Data source not found".into()))
+    }
+
+    /// Read-only Data Source 면 데이터를 바꾸는 문장을 막는다 (UI 와 상관없이 여기서 지킨다)
+    fn check_read_only(&self, id: &str, sql: &str) -> AppResult<()> {
+        let cfg = self.source(id)?;
+        if !cfg.read_only {
+            return Ok(());
+        }
+        let blocked = if cfg.kind == crate::store::DbKind::Redis {
+            let args = crate::redisdb::parse_command(sql)?;
+            let arg = |i: usize| args.get(i).map(|a| String::from_utf8_lossy(a).into_owned()).unwrap_or_default();
+            return self.check_read_only_redis(id, &arg(0), &arg(1));
+        } else {
+            crate::guard::read_only_violation(sql, cfg.kind, false)
+        };
+        match blocked {
+            Some(why) => Err(AppError::Msg(format!("Data source \"{}\" is read-only: {why}", cfg.name))),
+            None => Ok(()),
+        }
     }
 
     pub async fn commit_tx(&self, tab_id: String) -> AppResult<()> {
@@ -440,6 +520,7 @@ impl AppState {
     }
 
     pub async fn close_session(&self, tab_id: String) -> AppResult<()> {
+        self.tab_manual.lock().unwrap().remove(&tab_id);
         // 쿼리가 돌고 있으면 먼저 취소한다 (안 그러면 끝날 때까지 연결과 정리 작업이 묶인다)
         let busy = self.sessions.read().await.get(&tab_id).is_some_and(|e| e.session.try_lock().is_err());
         if busy {
@@ -452,10 +533,14 @@ impl AppState {
         Ok(())
     }
 
-    pub async fn execute_batch(&self, id: String, statements: Vec<String>) -> AppResult<u64> {
+    /// 문장들을 한 트랜잭션으로. exact_one = 표 편집 저장 (UPDATE/DELETE 가 정확히 1행이 아니면 전부 롤백)
+    pub async fn execute_batch(&self, id: String, statements: Vec<String>, exact_one: bool) -> AppResult<u64> {
+        for st in &statements {
+            self.check_read_only(&id, st)?;
+        }
         match ensure_pool(self, &id).await? {
-            Pool::Pg(pg) => session::execute_batch(&pg, &statements).await,
-            Pool::My(my) => crate::mysql::execute_batch(&my, &statements).await,
+            Pool::Pg(pg) => session::execute_batch(&pg, &statements, exact_one).await,
+            Pool::My(my) => crate::mysql::execute_batch(&my, &statements, exact_one).await,
             Pool::Redis(m, _) => {
                 for st in &statements {
                     crate::redisdb::run(&m, st, 1).await?;
@@ -483,16 +568,28 @@ impl AppState {
 
     /// 터미널: redis-cli 처럼 한 줄을 그대로
     pub async fn redis_exec_line(&self, id: String, line: String) -> AppResult<serde_json::Value> {
+        self.check_read_only(&id, &line)?;
         let args: Vec<String> = crate::redisdb::parse_command(&line)?.into_iter().map(|a| String::from_utf8_lossy(&a).into_owned()).collect();
         crate::redisdb::exec_args(&redis_pool(self, &id).await?, &args).await
     }
 
     pub async fn redis_exec(&self, id: String, args: Vec<String>) -> AppResult<serde_json::Value> {
+        self.check_read_only_redis(&id, args.first().map(|s| s.as_str()).unwrap_or(""), args.get(1).map(|s| s.as_str()).unwrap_or(""))?;
         crate::redisdb::exec_args(&redis_pool(self, &id).await?, &args).await
     }
 
     pub async fn export_connections(&self, path: String) -> AppResult<usize> {
         self.store.export_to(std::path::Path::new(&path))
+    }
+
+    /// 가져오기 미리보기: 추가·변경될 Data Source 와 위험한 변경 (Read-only 해제, 서버·SSH·시작 스크립트 변경)
+    pub fn import_preview(&self, path: String) -> AppResult<Vec<String>> {
+        self.store.import_preview(std::path::Path::new(&path))
+    }
+
+    /// 처음 보는 SSH 서버 키를 사용자가 확인하고 신뢰 (known_hosts 에 등록)
+    pub fn trust_ssh_host(&self, host: String, port: u16) -> AppResult<String> {
+        crate::tunnel::trust_host_key(&host, port)
     }
 
     pub async fn import_connections(&self, path: String) -> AppResult<ImportResult> {
@@ -501,6 +598,7 @@ impl AppState {
     }
 
     pub async fn export_csv(&self, id: String, sql: String, path: String) -> AppResult<u64> {
+        self.check_read_only(&id, &sql)?;
         let pool = ensure_pool(self, &id).await?;
         pool.export_csv(&sql, std::path::Path::new(&path)).await
     }

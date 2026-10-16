@@ -49,6 +49,7 @@ pub fn run() {
             let dir = app.path().app_config_dir()?;
             let secret_file = secrets::SecretFile::open(&dir)?;
             app.manage(app::AppState::new(store::Store::new(dir), secret_file));
+            app.manage(commands::PendingImport::default());
             // keep-alive / auto-disconnect
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -74,9 +75,13 @@ pub fn run() {
             commands::disconnect,
             commands::run_query,
             commands::export_connections,
-            commands::import_connections,
             commands::export_csv,
-            commands::write_text_file,
+            commands::save_text_file,
+            commands::pick_import_file,
+            commands::import_picked,
+            commands::tx_state,
+            commands::trust_ssh_host,
+            commands::unsafe_reason,
             commands::list_databases,
             commands::list_schemas,
             commands::list_objects,
@@ -98,6 +103,7 @@ pub fn run() {
             commands::redis_exec_line,
             commands::load_keymap,
             commands::save_keymap,
+            commands::check_update,
         ])
         .run(app_context())
         .expect("error while running tauri application");

@@ -115,7 +115,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
 fn draw_tree(f: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focus == Focus::Tree;
-    let title = if app.tree.filter.is_empty() { " Database Explorer ".to_string() } else { format!(" Database Explorer — /{} ", app.tree.filter) };
+    let title = if app.tree.filter.is_empty() { " Database Explorer ".to_string() } else { format!(" Database Explorer — /{} (Esc clears) ", app.tree.filter) };
     let b = block(title, focused);
     let inner = b.inner(area);
     f.render_widget(b, area);
@@ -486,7 +486,15 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             _ => "arrows move · PgUp/PgDn · Home/End · Esc editor · x export",
         },
     };
-    let [l, r] = Layout::horizontal([Constraint::Min(10), Constraint::Length(hints.chars().count() as u16 + 1)]).areas(area);
+    // 새 버전 알림은 상태 글 앞에 계속 보인다
+    let badge = app.update.as_ref().map(|v| format!(" ⬆ v{v} available — quit and run: dbtool-tui --update "));
+    let bw = badge.as_ref().map(|b| b.chars().count() as u16).unwrap_or(0);
+    // 폭이 모자라면 오른쪽 힌트를 줄인다 (업데이트 알림이 잘리지 않게)
+    let hw = (hints.chars().count() as u16 + 1).min(area.width.saturating_sub(bw + 12));
+    let [u, l, r] = Layout::horizontal([Constraint::Length(bw), Constraint::Min(10), Constraint::Length(hw)]).areas(area);
+    if let Some(b) = badge {
+        f.render_widget(Paragraph::new(b).style(Style::default().fg(Color::Black).bg(Color::Rgb(201, 162, 109))), u);
+    }
     f.render_widget(Paragraph::new(format!(" {}", app.status)).style(Style::default().fg(Color::Gray).bg(Color::Rgb(43, 45, 48))), l);
     f.render_widget(Paragraph::new(hints).style(Style::default().fg(DIM).bg(Color::Rgb(43, 45, 48))), r);
 }
@@ -561,9 +569,13 @@ fn draw_popup(f: &mut Frame, app: &mut App) {
             f.render_widget(Paragraph::new(text.clone()).wrap(Wrap { trim: false }).block(block(format!(" {title} (Esc) "), true)), r);
         }
         Popup::Confirm { text, .. } => {
-            let r = centered(area, 70, 5);
+            // 여러 줄 (이유 · 문장 · 질문)
+            let mut lines: Vec<Line> = text.lines().map(|l| Line::raw(l.to_string())).collect();
+            lines.push(Line::raw(""));
+            lines.push(Line::styled("y = yes · n / Esc = no", Style::default().fg(DIM)));
+            let r = centered(area, 90, lines.len() as u16 + 2);
             f.render_widget(Clear, r);
-            f.render_widget(Paragraph::new(vec![Line::raw(text.clone()), Line::raw(""), Line::styled("y = yes · n / Esc = no", Style::default().fg(DIM))]).block(block(" Confirm ", true)), r);
+            f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).block(block(" Confirm ", true)), r);
         }
         Popup::Input { title, input, .. } => {
             let r = centered(area, 90, 3);
