@@ -125,9 +125,9 @@ impl Server {
             ),
             tool(
                 "export_csv",
-                "Run a read-only query and save the full result as a CSV file (UTF-8 with BOM, opens in Excel).",
-                ds_props(json!({ "sql": { "type": "string" }, "path": { "type": "string", "description": "Absolute output file path" } })),
-                &["data_source", "sql", "path"],
+                "Run a read-only query and save the full result as a CSV file (UTF-8 with BOM, opens in Excel) in ~/Downloads/dbtool-exports. Existing files are never overwritten.",
+                ds_props(json!({ "sql": { "type": "string" }, "file_name": { "type": "string", "description": "Plain file name such as orders.csv (no folders)" } })),
+                &["data_source", "sql", "file_name"],
                 false,
             ),
         ];
@@ -317,11 +317,10 @@ impl Server {
             "export_csv" => {
                 let (t, ..) = self.target(a).await?;
                 let q = s("sql").ok_or("sql is required")?;
-                let path = s("path").ok_or("path is required")?;
-                // 먼저 읽기 전용 규칙으로 검사 (한 문장, 읽기 명령)
-                st.run_read_only(t.clone(), q.clone(), 1).await.map_err(e)?;
-                let rows = st.export_csv(t, q, path.clone()).await.map_err(e)?;
-                Ok(json!({ "rows": rows, "path": path }))
+                // 정해진 폴더에만, 새 파일로 (남이 정한 경로에 쓰지 않는다)
+                let path = dbtool_core::export_path(&s("file_name").ok_or("file_name is required")?).map_err(e)?;
+                let rows = st.export_csv_read_only(t, q, path.clone()).await.map_err(e)?;
+                Ok(json!({ "rows": rows, "path": path.display().to_string() }))
             }
             "execute" if self.allow_write => {
                 let (t, _, _, ro) = self.target(a).await?;
@@ -332,7 +331,7 @@ impl Server {
                 if stmts.is_empty() {
                     return Err("statements is empty".into());
                 }
-                let n = st.execute_batch(t, stmts.clone()).await.map_err(e)?;
+                let n = st.execute_batch(t, stmts.clone(), false).await.map_err(e)?;
                 Ok(json!({ "statements": stmts.len(), "rows_affected": n }))
             }
             other => Err(format!("Unknown tool: {other}")),

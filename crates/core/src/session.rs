@@ -11,6 +11,8 @@ use sqlx::{Column, Either, Executor, Postgres, Row, TypeInfo};
 use std::time::Instant;
 
 const CURSOR: &str = "dbtool_cur";
+/// Manual → Auto 전환을 막을 때
+pub const PENDING_TX: &str = "There are uncommitted changes — commit or roll back first";
 
 pub struct PgSession {
     conn: PoolConnection<Postgres>,
@@ -71,10 +73,16 @@ impl PgSession {
         self.cursor_open
     }
 
+    /// 사용자가 연 트랜잭션이 있는지 (Manual 모드, 또는 Auto 에서 직접 BEGIN). 이때 커서는 savepoint 만 쓰고
+    /// COMMIT·ROLLBACK 으로 사용자 트랜잭션을 끝내지 않는다
+    fn user_tx(&self) -> bool {
+        self.manual || self.in_tx
+    }
+
     pub async fn close_cursor(&mut self) {
         if self.cursor_open {
-            // Manual 모드에서는 사용자 트랜잭션을 건드리지 않는다
-            let sql = if self.manual { "CLOSE dbtool_cur" } else { "CLOSE dbtool_cur; COMMIT" };
+            // 사용자 트랜잭션 안의 커서면 닫기만 한다 (커밋하면 사용자의 변경이 몰래 확정된다)
+            let sql = if self.user_tx() { "CLOSE dbtool_cur" } else { "CLOSE dbtool_cur; COMMIT" };
             let _ = self.conn.execute(sql).await;
             self.cursor_open = false;
         }
@@ -82,7 +90,7 @@ impl PgSession {
 
     /// Auto 모드에서 오래 안 쓴 커서를 닫고 트랜잭션을 끝낸다 (Manual 은 사용자 트랜잭션이라 두지 않는다)
     pub async fn close_idle_cursor(&mut self, idle: std::time::Duration) -> bool {
-        if self.cursor_open && !self.manual && self.cursor_used.elapsed() >= idle {
+        if self.cursor_open && !self.user_tx() && self.cursor_used.elapsed() >= idle {
             self.close_cursor().await;
             self.idle_closed = true;
             return true;
@@ -99,20 +107,23 @@ impl PgSession {
         }
     }
 
+    /// 커서 쪽 실패를 되돌린다: 사용자 트랜잭션 안이면 savepoint 까지만 (트랜잭션은 살린다)
     async fn rollback(&mut self) {
-        if !self.manual {
-            let _ = self.conn.execute("ROLLBACK").await;
-        }
+        let sql = if self.user_tx() { "ROLLBACK TO SAVEPOINT dbtool_sp" } else { "ROLLBACK" };
+        let _ = self.conn.execute(sql).await;
         self.cursor_open = false;
     }
 
-    /// Tx 모드 전환. Manual → Auto 로 바꿀 때 열린 트랜잭션은 커밋한다.
+    pub fn in_tx(&self) -> bool {
+        self.in_tx
+    }
+
+    /// Tx 모드 전환. 커밋 안 한 변경이 있으면 Auto 로 바꾸지 않는다 (먼저 Commit 또는 Roll back)
     pub async fn set_manual(&mut self, manual: bool) -> AppResult<()> {
-        self.close_cursor().await;
         if !manual && self.in_tx {
-            self.conn.execute("COMMIT").await?;
-            self.in_tx = false;
+            return Err(AppError::Msg(PENDING_TX.into()));
         }
+        self.close_cursor().await;
         self.manual = manual;
         Ok(())
     }
@@ -159,8 +170,8 @@ impl PgSession {
             self.in_tx = true;
         }
         if is_select_like(sql) {
-            // Auto: 커서용 짧은 트랜잭션. Manual: 사용자 트랜잭션 안에서 savepoint 로 보호.
-            let declare: String = if self.manual {
+            // 커서용 짧은 트랜잭션. 사용자 트랜잭션(Manual, 또는 Auto 에서 직접 BEGIN) 안이면 savepoint 로 보호.
+            let declare: String = if self.user_tx() {
                 format!("SAVEPOINT dbtool_sp; DECLARE {CURSOR} NO SCROLL CURSOR FOR {}", strip_trailing_semicolon(sql))
             } else {
                 format!("BEGIN; DECLARE {CURSOR} NO SCROLL CURSOR FOR {}", strip_trailing_semicolon(sql))
@@ -178,11 +189,7 @@ impl PgSession {
                 }
                 Err(_) => {
                     // DECLARE가 안 되는 문장(예: WITH ... DELETE) → 일반 실행으로. 진짜 오류면 아래에서 다시 난다.
-                    if self.manual {
-                        let _ = self.conn.execute("ROLLBACK TO SAVEPOINT dbtool_sp").await;
-                    } else {
-                        self.rollback().await;
-                    }
+                    self.rollback().await;
                 }
             }
         }
@@ -325,6 +332,14 @@ impl Session {
             Session::Redis(_) => {}
         }
     }
+    /// 커밋 안 한 변경이 있는지
+    pub fn in_tx(&self) -> bool {
+        match self {
+            Session::Pg(s) => s.in_tx(),
+            Session::My(s) => s.in_tx,
+            Session::Redis(_) => false,
+        }
+    }
     /// 탭을 닫을 때: 열린 트랜잭션을 되돌리고 세션 설정을 풀어서 풀에 돌려준다
     pub async fn discard(&mut self) {
         match self {
@@ -354,14 +369,28 @@ pub async fn cancel(pool: &PgPool, pid: i32) -> AppResult<bool> {
 }
 
 /// 데이터 편집 결과를 한 트랜잭션으로 반영한다. 하나라도 실패하면 전부 롤백.
-pub async fn execute_batch(pool: &PgPool, statements: &[String]) -> AppResult<u64> {
+/// 문장들을 한 트랜잭션으로 (하나라도 실패하면 전부 롤백). exact_one = 표 편집: UPDATE/DELETE 는 정확히 1행이어야 한다
+pub async fn execute_batch(pool: &PgPool, statements: &[String], exact_one: bool) -> AppResult<u64> {
     let mut tx = pool.begin().await?;
     let mut affected = 0;
     for st in statements {
-        affected += tx.execute(st.as_str()).await.map_err(|e| AppError::Msg(format!("{e}\n→ {st}")))?.rows_affected();
+        let n = tx.execute(st.as_str()).await.map_err(|e| AppError::Msg(format!("{e}\n→ {st}")))?.rows_affected();
+        check_exact_one(st, n, exact_one)?;
+        affected += n;
     }
     tx.commit().await?;
     Ok(affected)
+}
+
+/// 표 편집의 UPDATE/DELETE 가 0행이나 여러 행에 적용되면 (다른 사람이 바꿨거나 키가 겹침) 전부 롤백시킨다
+pub fn check_exact_one(st: &str, n: u64, exact_one: bool) -> AppResult<()> {
+    let s = strip_comments_lead(st);
+    if exact_one && (s.starts_with("update") || s.starts_with("delete")) && n != 1 {
+        return Err(AppError::Msg(format!(
+            "Expected to change exactly 1 row but changed {n} — nothing was saved (the row may have been changed or deleted by someone else; reload and try again)\n→ {st}"
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -370,13 +399,56 @@ mod tests {
     use crate::db::{connect, Pool};
     use crate::store::{ConnectionConfig, DbKind};
 
+    /// 테스트 DB: 기본은 로컬 PostgreSQL. DBTOOL_TEST_PG=host:port:user:db 로 바꾼다 (예: 컨테이너)
     async fn pool() -> PgPool {
+        let env = std::env::var("DBTOOL_TEST_PG").ok();
+        let part = |i: usize, d: String| env.as_ref().and_then(|e| e.split(':').nth(i).map(String::from)).unwrap_or(d);
         let cfg = ConnectionConfig {
-            id: "t".into(), name: "t".into(), kind: DbKind::Postgres, host: "localhost".into(), port: 5432,
-            user: std::env::var("USER").unwrap(), database: String::new(), color: None, ssh: None, password_saved: false, ssh_secret_saved: false, scope: Default::default(), read_only: false, options: Default::default(), ssl: None, redis: None,
+            id: "t".into(), name: "t".into(), kind: DbKind::Postgres, host: part(0, "localhost".into()), port: part(1, "5432".into()).parse().unwrap(),
+            user: part(2, std::env::var("USER").unwrap()), database: part(3, String::new()), color: None, ssh: None, password_saved: false, ssh_secret_saved: false, scope: Default::default(), read_only: false, options: Default::default(), ssl: None, redis: None,
         };
         let Pool::Pg(p) = connect(&cfg, None).await.unwrap() else { unreachable!() };
         p
+    }
+
+    /// Auto 모드에서 사용자가 직접 연 트랜잭션은 커서(SELECT)가 커밋하지 않는다 (예전엔 SELECT 한 번에 UPDATE 가 확정됐다)
+    #[tokio::test]
+    #[ignore]
+    async fn auto_mode_user_transaction_is_not_committed_by_select() {
+        let p = pool().await;
+        sqlx::query("create table if not exists public.dbtool_tx_t(id int primary key, v text)").execute(&p).await.unwrap();
+        sqlx::query("delete from public.dbtool_tx_t").execute(&p).await.unwrap();
+        sqlx::query("insert into public.dbtool_tx_t values (1, 'a')").execute(&p).await.unwrap();
+        let seen = || async { sqlx::query_scalar::<_, String>("select v from public.dbtool_tx_t where id = 1").fetch_one(&p).await.unwrap() };
+        let mut s = PgSession::open(&p).await.unwrap();
+        s.run("begin", 500).await.unwrap();
+        s.run("update public.dbtool_tx_t set v = 'changed' where id = 1", 500).await.unwrap();
+        // 끝까지 읽는 SELECT, 여러 페이지 SELECT, 실패하는 SELECT 모두 트랜잭션을 건드리지 않는다
+        let r = s.run("select * from public.dbtool_tx_t", 500).await.unwrap();
+        assert!(r.in_transaction);
+        s.run("select g from generate_series(1, 1200) g", 500).await.unwrap();
+        assert!(s.run("select * from no_such_table_xyz", 500).await.is_err());
+        assert_eq!(seen().await, "a", "nothing committed yet");
+        assert!(s.set_manual(true).await.is_ok() && s.set_manual(false).await.is_err(), "pending changes block switching to Auto");
+        s.run("rollback", 500).await.unwrap();
+        assert_eq!(seen().await, "a", "rolled back");
+        // Manual 에서 커밋 안 한 변경이 있으면 Auto 로 못 바꾼다
+        s.set_manual(true).await.unwrap();
+        s.run("update public.dbtool_tx_t set v = 'm' where id = 1", 500).await.unwrap();
+        assert!(s.set_manual(false).await.is_err());
+        s.rollback_tx().await.unwrap();
+        s.set_manual(false).await.unwrap();
+        assert_eq!(seen().await, "a");
+        // 표 편집 저장: 0행·여러 행에 적용되는 UPDATE/DELETE 는 전부 롤백
+        let none = execute_batch(&p, &["insert into public.dbtool_tx_t values (2, 'b')".into(), "update public.dbtool_tx_t set v = 'x' where id = 99".into()], true).await;
+        assert!(none.is_err());
+        let many = execute_batch(&p, &["update public.dbtool_tx_t set v = 'x' where id > 0".into()], true).await;
+        assert!(many.is_ok(), "one row matches");
+        sqlx::query("insert into public.dbtool_tx_t values (3, 'c')").execute(&p).await.unwrap();
+        assert!(execute_batch(&p, &["delete from public.dbtool_tx_t where id > 0".into()], true).await.is_err());
+        let n: i64 = sqlx::query_scalar("select count(*) from public.dbtool_tx_t").fetch_one(&p).await.unwrap();
+        assert_eq!(n, 2, "row 2 insert was rolled back, rows 1 and 3 remain");
+        sqlx::query("drop table public.dbtool_tx_t").execute(&p).await.unwrap();
     }
 
     #[test]
@@ -464,9 +536,9 @@ mod tests {
         // 일괄 편집: 실패 시 전부 롤백
         sqlx::query("create table if not exists public.dbtool_batch_t(id int primary key, name text)").execute(&p).await.unwrap();
         sqlx::query("truncate public.dbtool_batch_t").execute(&p).await.unwrap();
-        let ok = execute_batch(&p, &["insert into public.dbtool_batch_t values (1,'a')".into(), "update public.dbtool_batch_t set name='b' where id=1".into()]).await.unwrap();
+        let ok = execute_batch(&p, &["insert into public.dbtool_batch_t values (1,'a')".into(), "update public.dbtool_batch_t set name='b' where id=1".into()], true).await.unwrap();
         assert_eq!(ok, 2);
-        let bad = execute_batch(&p, &["insert into public.dbtool_batch_t values (2,'c')".into(), "insert into public.dbtool_batch_t values (1,'dup')".into()]).await;
+        let bad = execute_batch(&p, &["insert into public.dbtool_batch_t values (2,'c')".into(), "insert into public.dbtool_batch_t values (1,'dup')".into()], true).await;
         assert!(bad.is_err());
         let n: i64 = sqlx::query_scalar("select count(*) from public.dbtool_batch_t").fetch_one(&p).await.unwrap();
         assert_eq!(n, 1);

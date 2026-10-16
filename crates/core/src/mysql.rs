@@ -39,7 +39,8 @@ pub async fn connect(cfg: &ConnectionConfig, password: Option<&str>, host: &str,
         opts = opts.ssl_mode(match ssl.mode() {
             "verify-full" => MySqlSslMode::VerifyIdentity,
             "verify-ca" => MySqlSslMode::VerifyCa,
-            _ => MySqlSslMode::Required,
+            "require" => MySqlSslMode::Required,
+            m => return Err(AppError::Msg(format!("Unknown SSL mode '{m}' (use require, verify-ca or verify-full)"))),
         });
         let home = |p: &str| p.strip_prefix("~/").map(|r| format!("{}/{r}", std::env::var("HOME").unwrap_or_default())).unwrap_or_else(|| p.to_string());
         if !ssl.ca_file.trim().is_empty() {
@@ -141,6 +142,19 @@ pub async fn run(p: &MySqlPool, sql: &str, limit: usize) -> AppResult<QueryResul
 }
 
 pub async fn run_on(conn: &mut sqlx::MySqlConnection, sql: &str, limit: usize) -> AppResult<QueryResult> {
+    run_on_with(conn, sql, limit, false).await
+}
+
+/// 읽기 전용 경로: prepared 프로토콜로 실행 (서버가 한 문장만 받는다 → `;` 로 문장을 덧붙이는 우회가 통하지 않는다).
+/// prepared 로 안 되는 문장(일부 SHOW 등, 오류 1295)만 텍스트 프로토콜로 — 이때도 guard 검사는 이미 지났다
+pub async fn run_read_only_on(conn: &mut sqlx::MySqlConnection, sql: &str, limit: usize) -> AppResult<QueryResult> {
+    match run_on_with(conn, sql, limit, true).await {
+        Err(AppError::Db(sqlx::Error::Database(e))) if e.code().as_deref() == Some("HY000") && e.message().contains("prepared statement protocol") => run_on_with(conn, sql, limit, false).await,
+        r => r,
+    }
+}
+
+async fn run_on_with(conn: &mut sqlx::MySqlConnection, sql: &str, limit: usize, prepared: bool) -> AppResult<QueryResult> {
     let start = Instant::now();
     let mut columns = Vec::new();
     let mut rows: Vec<Vec<Value>> = Vec::new();
@@ -148,7 +162,7 @@ pub async fn run_on(conn: &mut sqlx::MySqlConnection, sql: &str, limit: usize) -
     let mut truncated = false;
     let mut has_rs = false;
     {
-        let mut stream = conn.fetch_many(sqlx::raw_sql(sql));
+        let mut stream = if prepared { conn.fetch_many(sqlx::query(sql)) } else { conn.fetch_many(sqlx::raw_sql(sql)) };
         while let Some(item) = stream.try_next().await? {
             match item {
                 Either::Left(done) => affected += done.rows_affected(),
@@ -179,11 +193,16 @@ pub async fn run_on(conn: &mut sqlx::MySqlConnection, sql: &str, limit: usize) -
 }
 
 pub async fn export_csv(p: &MySqlPool, sql: &str, path: &std::path::Path) -> AppResult<u64> {
+    let mut conn = p.acquire().await?;
+    export_on(&mut conn, sql, path, false).await
+}
+
+/// 이미 잡은 연결에서 CSV 로. prepared = 한 문장만 실행되는 prepared 프로토콜 (읽기 전용 경로)
+pub async fn export_on(conn: &mut sqlx::MySqlConnection, sql: &str, path: &std::path::Path, prepared: bool) -> AppResult<u64> {
     let mut out = crate::db::CsvOut::create(path).await?;
     let mut count = 0u64;
     let mut header = false;
-    let mut conn = p.acquire().await?;
-    let mut stream = conn.fetch(sqlx::raw_sql(sql));
+    let mut stream = if prepared { conn.fetch(sqlx::query(sql)) } else { conn.fetch(sqlx::raw_sql(sql)) };
     while let Some(row) = stream.try_next().await? {
         if !header {
             let names: Vec<String> = row.columns().iter().map(|c| crate::db::csv_field(c.name())).collect();
@@ -199,11 +218,13 @@ pub async fn export_csv(p: &MySqlPool, sql: &str, path: &std::path::Path) -> App
     Ok(count)
 }
 
-pub async fn execute_batch(p: &MySqlPool, statements: &[String]) -> AppResult<u64> {
+pub async fn execute_batch(p: &MySqlPool, statements: &[String], exact_one: bool) -> AppResult<u64> {
     let mut tx = p.begin().await?;
     let mut affected = 0;
     for st in statements {
-        affected += tx.execute(sqlx::raw_sql(st)).await.map_err(|e| AppError::Msg(format!("{e}\n→ {st}")))?.rows_affected();
+        let n = tx.execute(sqlx::raw_sql(st)).await.map_err(|e| AppError::Msg(format!("{e}\n→ {st}")))?.rows_affected();
+        crate::session::check_exact_one(st, n, exact_one)?;
+        affected += n;
     }
     tx.commit().await?;
     Ok(affected)
@@ -254,12 +275,12 @@ impl MySession {
         }
     }
 
+    /// 커밋 안 한 변경이 있으면 Auto 로 바꾸지 않는다 (먼저 Commit 또는 Roll back)
     pub async fn set_manual(&mut self, manual: bool) -> AppResult<()> {
-        self.more = None;
         if !manual && self.in_tx {
-            self.conn.execute("COMMIT").await?;
-            self.in_tx = false;
+            return Err(AppError::Msg(crate::session::PENDING_TX.into()));
         }
+        self.more = None;
         self.conn.execute(if manual { "SET autocommit = 0" } else { "SET autocommit = 1" }).await?;
         self.manual = manual;
         Ok(())
@@ -646,7 +667,7 @@ mod tests {
         assert!(!after.in_transaction);
         s.set_manual(false).await.unwrap();
         // 편집 배치
-        crate::mysql::execute_batch(p, &["update orders set memo = 'y' where id = 1".into()]).await.unwrap();
+        crate::mysql::execute_batch(p, &["update orders set memo = 'y' where id = 1".into()], true).await.unwrap();
         // Read-only
         let mut ro = cfg();
         ro.read_only = true;

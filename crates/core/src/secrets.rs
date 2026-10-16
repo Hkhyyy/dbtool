@@ -3,7 +3,7 @@
 //! - secret.key  : 32바이트 랜덤 키
 //! 두 파일 모두 권한 0600. 같은 사용자 권한으로 파일을 읽으면 복호화할 수 있다 (DBeaver 수준).
 use crate::error::{AppError, AppResult};
-use aes_gcm::aead::{Aead, KeyInit};
+use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
 use base64::Engine;
 use rand::RngCore;
@@ -16,25 +16,54 @@ pub struct SecretFile {
     cipher: Aes256Gcm,
 }
 
-fn write_private(path: &Path, data: &[u8]) -> AppResult<()> {
+/// 본인만 읽는 파일로 쓴다: 처음부터 0600 으로 만든 임시 파일에 쓰고 rename (잠깐이라도 0644 로 열려 있지 않게, 도중에 깨지지 않게)
+pub(crate) fn write_private(path: &Path, data: &[u8]) -> AppResult<()> {
+    use std::io::Write;
     if let Some(dir) = path.parent() {
-        fs::create_dir_all(dir)?;
+        private_dir(dir)?;
     }
-    fs::write(path, data)?;
+    let tmp = path.with_extension(format!("tmp-{}", std::process::id()));
+    let mut opts = fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut f = opts.open(&tmp)?;
+    f.write_all(data)?;
+    f.sync_all()?;
+    drop(f);
+    fs::rename(&tmp, path)?;
+    Ok(())
+}
+
+/// 설정 폴더: 본인만 들어갈 수 있게 0700
+pub(crate) fn private_dir(dir: &Path) -> AppResult<()> {
+    fs::create_dir_all(dir)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+        let _ = fs::set_permissions(dir, fs::Permissions::from_mode(0o700));
     }
     Ok(())
 }
 
 impl SecretFile {
     pub fn open(dir: &Path) -> AppResult<Self> {
+        private_dir(dir)?;
         let key_path = dir.join("secret.key");
+        let secrets_path = dir.join("secrets.json");
         let key: Vec<u8> = match fs::read(&key_path) {
             Ok(k) if k.len() == 32 => k,
-            _ => {
+            // 있는데 못 읽거나 길이가 틀리면 새로 만들지 않는다 (덮어쓰면 저장된 비밀번호를 영영 못 푼다)
+            Ok(_) => return Err(AppError::Msg(format!("{} is corrupted — restore it from a backup, or delete it and secrets.json to start over", key_path.display()))),
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(AppError::Msg(format!("Cannot read {}: {e}", key_path.display()))),
+            Err(_) => {
+                // 키 없이 비밀번호 파일만 남아 있으면 지우지 말고 옆으로 치워 둔다
+                if secrets_path.exists() {
+                    let _ = fs::rename(&secrets_path, dir.join(format!("secrets.json.orphaned-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0))));
+                }
                 let mut k = vec![0u8; 32];
                 rand::thread_rng().fill_bytes(&mut k);
                 write_private(&key_path, &k)?;
@@ -55,7 +84,12 @@ impl SecretFile {
             return None;
         }
         let (nonce, ct) = raw.split_at(12);
-        let pt = self.cipher.decrypt(Nonce::from_slice(nonce), ct).ok()?;
+        // 이름을 AAD 로 묶어 둔다 (다른 항목의 암호문을 옮겨 붙이면 풀리지 않게). 예전 형식(AAD 없음)도 읽는다
+        let pt = self
+            .cipher
+            .decrypt(Nonce::from_slice(nonce), Payload { msg: ct, aad: name.as_bytes() })
+            .or_else(|_| self.cipher.decrypt(Nonce::from_slice(nonce), ct))
+            .ok()?;
         String::from_utf8(pt).ok()
     }
 
@@ -67,7 +101,7 @@ impl SecretFile {
                 rand::thread_rng().fill_bytes(&mut nonce);
                 let ct = self
                     .cipher
-                    .encrypt(Nonce::from_slice(&nonce), v.as_bytes())
+                    .encrypt(Nonce::from_slice(&nonce), Payload { msg: v.as_bytes(), aad: name.as_bytes() })
                     .map_err(|_| AppError::Msg("encryption failed".into()))?;
                 let mut raw = nonce.to_vec();
                 raw.extend(ct);

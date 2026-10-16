@@ -141,7 +141,11 @@ fn endpoint(cfg: &ConnectionConfig, user: &str, password: Option<&str>) -> AppRe
         _ => return Err(AppError::Msg("Both client certificate and client key are required".into())),
     };
     // require = 암호화만 (인증서 검증 안 함). verify-ca / verify-full = 검증
-    let insecure = ssl.mode() == "require";
+    let insecure = match ssl.mode() {
+        "require" => true,
+        "verify-ca" | "verify-full" => false,
+        m => return Err(AppError::Msg(format!("Unknown SSL mode '{m}' (use require, verify-ca or verify-full)"))),
+    };
     let certs = if root.is_some() || client_tls.is_some() { Some(redis::TlsCertificates { client_tls, root_cert: root }) } else { None };
     Ok(Endpoint { scheme: "rediss", auth, insecure, certs })
 }

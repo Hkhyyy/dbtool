@@ -1,0 +1,262 @@
+//! 문장 검사: 읽기 전용(MCP·Read-only Data Source)과 위험 문장 확인(WHERE 없는 UPDATE/DELETE, DROP, TRUNCATE).
+//! 서버와 같은 규칙으로 문자열·주석을 건너뛰고 단어를 읽는다 (sql::split_statements 와 같은 규칙).
+//! 마지막 방어선은 서버의 READ ONLY 트랜잭션이고, 여기서는 그 밖으로 새는 것(문장 여러 개, 파일 쓰기, 관리 함수)을 막는다
+use crate::store::DbKind;
+
+/// 문자열·주석 밖의 단어(소문자)와 기호. depth = 괄호 깊이
+#[derive(Debug, Clone, PartialEq)]
+struct Tok {
+    text: String,
+    word: bool,
+    depth: i32,
+}
+
+struct Scan {
+    toks: Vec<Tok>,
+    /// MySQL /*! … */ (실행되는 주석)이 있었는지
+    exec_comment: bool,
+}
+
+fn scan(sql: &str, kind: DbKind) -> Scan {
+    let b = sql.as_bytes();
+    let n = b.len();
+    let (mut toks, mut i, mut depth, mut exec_comment) = (Vec::new(), 0usize, 0i32, false);
+    let my = kind == DbKind::Mysql;
+    while i < n {
+        let c = b[i];
+        let d = if i + 1 < n { b[i + 1] } else { 0 };
+        if c.is_ascii_whitespace() {
+            i += 1;
+            continue;
+        }
+        if c == b'-' && d == b'-' && (!my || i + 2 >= n || b[i + 2].is_ascii_whitespace() || b[i + 2].is_ascii_control()) {
+            i = sql[i..].find('\n').map(|j| i + j + 1).unwrap_or(n);
+            continue;
+        }
+        if c == b'#' && my {
+            i = sql[i..].find('\n').map(|j| i + j + 1).unwrap_or(n);
+            continue;
+        }
+        if c == b'/' && d == b'*' {
+            if my && i + 2 < n && b[i + 2] == b'!' {
+                exec_comment = true;
+                i += 3;
+                while i < n && b[i].is_ascii_digit() {
+                    i += 1;
+                }
+                continue;
+            }
+            let (mut dep, mut j) = (1, i + 2);
+            while j < n && dep > 0 {
+                if b[j] == b'/' && j + 1 < n && b[j + 1] == b'*' && kind == DbKind::Postgres {
+                    dep += 1;
+                    j += 2;
+                } else if b[j] == b'*' && j + 1 < n && b[j + 1] == b'/' {
+                    dep -= 1;
+                    j += 2;
+                } else {
+                    j += 1;
+                }
+            }
+            i = j;
+            continue;
+        }
+        // 문자열 / 인용 식별자: 통째로 한 토큰 (식별자는 이름으로 쓰일 수 있어 단어로 남긴다)
+        if c == b'\'' || c == b'"' || c == b'`' {
+            let e_string = kind == DbKind::Postgres && c == b'\'' && i > 0 && (b[i - 1] == b'e' || b[i - 1] == b'E');
+            let mut j = i + 1;
+            while j < n {
+                if (my || e_string) && b[j] == b'\\' {
+                    j += 2;
+                    continue;
+                }
+                if b[j] == c {
+                    if j + 1 < n && b[j + 1] == c {
+                        j += 2;
+                        continue;
+                    }
+                    break;
+                }
+                j += 1;
+            }
+            let inner = &sql[i + 1..j.min(n)];
+            toks.push(if c == b'\'' { Tok { text: "'".into(), word: false, depth } } else { Tok { text: inner.to_lowercase(), word: true, depth } });
+            i = (j + 1).min(n);
+            continue;
+        }
+        if c == b'$' && kind == DbKind::Postgres {
+            let rest = &sql[i..];
+            if let Some(te) = rest[1..].find('$').map(|j| j + 2) {
+                let tag = &rest[..te];
+                if tag[1..te - 1].chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_') && !tag[1..].starts_with(|ch: char| ch.is_ascii_digit()) {
+                    i = sql[i + te..].find(tag).map(|j| i + te + j + te).unwrap_or(n);
+                    toks.push(Tok { text: "'".into(), word: false, depth });
+                    continue;
+                }
+            }
+        }
+        if c.is_ascii_alphanumeric() || c == b'_' || c >= 0x80 {
+            let start = i;
+            while i < n && (b[i].is_ascii_alphanumeric() || b[i] == b'_' || b[i] == b'$' || b[i] >= 0x80) {
+                i += 1;
+            }
+            toks.push(Tok { text: sql[start..i].to_lowercase(), word: true, depth });
+            continue;
+        }
+        if c == b'(' {
+            depth += 1;
+        }
+        toks.push(Tok { text: (c as char).to_string(), word: false, depth });
+        if c == b')' {
+            depth -= 1;
+        }
+        i += 1;
+    }
+    Scan { toks, exec_comment }
+}
+
+/// 읽기 전용에서 허용하는 첫 단어
+const READ_WORDS: &[&str] = &["select", "with", "values", "table", "show", "explain", "describe", "desc"];
+/// 읽기 전용 Data Source 의 콘솔에서는 트랜잭션 제어와 세션 설정도 허용한다
+const SESSION_WORDS: &[&str] = &["begin", "start", "commit", "rollback", "end", "abort", "set", "use"];
+
+/// 읽기 전용에서도 서버 밖에 부작용을 내는 함수 (MCP 처럼 남이 쿼리를 쓰는 경우에 막는다)
+const SIDE_EFFECT_FUNCS: &[&str] = &[
+    // PostgreSQL: 다른 세션 끊기·서버 파일 읽기/쓰기·설정 재적용·외부 접속·잠금
+    "pg_terminate_backend", "pg_cancel_backend", "pg_reload_conf", "pg_rotate_logfile", "pg_read_file", "pg_read_binary_file",
+    "pg_ls_dir", "pg_stat_file", "pg_ls_logdir", "pg_ls_waldir", "pg_ls_tmpdir", "pg_ls_archive_statusdir", "pg_file_write",
+    "lo_import", "lo_export", "dblink", "dblink_exec", "dblink_connect", "dblink_send_query", "set_config", "pg_switch_wal",
+    "pg_create_restore_point", "pg_promote", "pg_advisory_lock", "pg_advisory_xact_lock", "pg_try_advisory_lock", "pg_sleep",
+    "pg_sleep_for", "pg_sleep_until",
+    // MySQL: 서버 파일 읽기·지연·잠금
+    "load_file", "sleep", "benchmark", "get_lock", "release_lock", "release_all_locks",
+];
+
+/// 읽기 전용으로 실행해도 되는지. strict = MCP (부작용 함수까지 막는다). 막으면 이유
+pub fn read_only_violation(sql: &str, kind: DbKind, strict: bool) -> Option<String> {
+    if kind == DbKind::Redis {
+        return None;
+    }
+    if crate::sql::split_statements(sql, kind).len() != 1 {
+        return Some("Read-only mode runs exactly one statement".into());
+    }
+    let sc = scan(sql, kind);
+    if sc.exec_comment {
+        return Some("MySQL executable comments (/*! … */) are not allowed in read-only mode".into());
+    }
+    let first = sc.toks.iter().find(|t| t.word).map(|t| t.text.as_str()).unwrap_or("");
+    let allowed = READ_WORDS.contains(&first) || (!strict && SESSION_WORDS.contains(&first));
+    if !allowed {
+        return Some(format!("Read-only mode: '{first}' statements are not allowed"));
+    }
+    let words: Vec<&str> = sc.toks.iter().map(|t| t.text.as_str()).collect();
+    // 세션 설정으로 읽기 전용을 끄는 것 (SET default_transaction_read_only = off, SET SESSION TRANSACTION READ WRITE, START TRANSACTION READ WRITE)
+    if words.iter().any(|w| w.contains("read_only")) || words.windows(2).any(|w| w == ["read", "write"]) {
+        return Some("Read-only mode: changing the read-only setting is not allowed".into());
+    }
+    // SELECT … INTO OUTFILE / DUMPFILE (MySQL 서버에 파일 쓰기), SELECT … INTO new_table (PG)
+    if words.windows(2).any(|w| w[0] == "into" && (w[1] == "outfile" || w[1] == "dumpfile")) {
+        return Some("Read-only mode: SELECT … INTO OUTFILE/DUMPFILE is not allowed".into());
+    }
+    if strict {
+        for (i, t) in sc.toks.iter().enumerate() {
+            let call = t.word && sc.toks.get(i + 1).is_some_and(|n| n.text == "(");
+            if call && SIDE_EFFECT_FUNCS.contains(&t.text.as_str()) {
+                return Some(format!("Read-only mode: {}() is not allowed (it has side effects outside the transaction)", t.text));
+            }
+        }
+    }
+    None
+}
+
+/// Redis 읽기 전용(MCP) 에서 더 막는 읽기 명령: 설정·비밀번호가 보이거나(CONFIG GET) 서버를 멈출 수 있는 것(KEYS)
+pub fn redis_strict_violation(cmd: &str) -> Option<String> {
+    match cmd {
+        "CONFIG" => Some("CONFIG is not allowed in read-only mode (it can reveal passwords)".into()),
+        "KEYS" => Some("KEYS is not allowed in read-only mode (it blocks the server on large databases) — use redis_scan".into()),
+        _ => None,
+    }
+}
+
+/// 실행 전에 확인을 받을 위험한 문장이면 이유: WHERE 없는 UPDATE/DELETE, DROP, TRUNCATE
+pub fn unsafe_statement(sql: &str, kind: DbKind) -> Option<String> {
+    if kind == DbKind::Redis {
+        let cmd = sql.split_whitespace().next().unwrap_or("").to_uppercase();
+        return ["FLUSHALL", "FLUSHDB", "DEL", "UNLINK", "SHUTDOWN"].contains(&cmd.as_str()).then(|| format!("{cmd} deletes data"));
+    }
+    let sc = scan(sql, kind);
+    let top: Vec<&str> = sc.toks.iter().filter(|t| t.depth == 0 && t.word).map(|t| t.text.as_str()).collect();
+    // WITH … 다음의 본문 동사 (WITH x AS (…) DELETE …)
+    let verb = if top.first() == Some(&"with") { top.iter().skip(1).find(|w| ["select", "insert", "update", "delete", "merge"].contains(w)).copied() } else { top.first().copied() };
+    match verb {
+        Some("drop") => Some(format!("DROP {} removes the object and its data", top.get(1).map(|s| s.to_uppercase()).unwrap_or_default())),
+        Some("truncate") => Some("TRUNCATE deletes every row".into()),
+        Some(v @ ("update" | "delete")) if !top.contains(&"where") => Some(format!("{} without WHERE changes every row", v.to_uppercase())),
+        _ => None,
+    }
+}
+
+/// 데이터를 바꾸지 않는 문장인지 (스크립트 실패 안내에서 "이미 커밋된 변경" 을 셀 때)
+pub fn is_read(sql: &str, kind: DbKind) -> bool {
+    let sc = scan(sql, kind);
+    let first = sc.toks.iter().find(|t| t.word).map(|t| t.text.as_str()).unwrap_or("");
+    READ_WORDS.contains(&first) && !sc.toks.iter().any(|t| t.word && ["insert", "update", "delete", "merge"].contains(&t.text.as_str()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use DbKind::{Mysql, Postgres};
+
+    #[test]
+    fn read_only_blocks_known_bypasses() {
+        let bad = |s: &str, k| read_only_violation(s, k, true).is_some();
+        // 실제로 뚫렸던 MySQL 형태
+        assert!(bad("select 1 --1; COMMIT; DELETE FROM t WHERE id=1", Mysql));
+        assert!(bad("/*! COMMIT; DELETE FROM t; */ select 1", Mysql));
+        assert!(bad("select /*!50000 1 */", Mysql));
+        assert!(bad("select * from t into outfile '/tmp/x'", Mysql));
+        assert!(bad("select load_file('/etc/passwd')", Mysql));
+        assert!(bad("select 1; delete from t", Postgres));
+        assert!(bad("delete from t", Postgres));
+        assert!(bad("/* /* */ select */ delete from t", Postgres));
+        assert!(bad("select pg_terminate_backend(123)", Postgres));
+        assert!(bad("select pg_catalog.pg_read_file('/etc/passwd')", Postgres));
+        assert!(bad("select set_config('transaction_read_only','off',true)", Postgres));
+        assert!(bad("set default_transaction_read_only = off", Postgres));
+        // 문자열·주석 안의 단어는 상관없다
+        assert!(!bad("select 'pg_terminate_backend(1); delete'", Postgres));
+        assert!(!bad("select $$; delete from t; $$", Postgres));
+        assert!(!bad("select 1 -- x; delete", Mysql));
+        assert!(!bad("with a as (select 1) select * from a", Postgres));
+        assert!(!bad("explain select 1", Postgres));
+        assert!(!bad("show tables", Mysql));
+    }
+
+    #[test]
+    fn read_only_data_source_allows_session_statements() {
+        let ok = |s: &str| read_only_violation(s, Postgres, false).is_none();
+        assert!(ok("begin") && ok("rollback") && ok("set search_path = app"));
+        assert!(!ok("set default_transaction_read_only = off"));
+        assert!(!ok("start transaction read write"));
+        assert!(!ok("update t set a = 1"));
+        // 데이터 소스 읽기 전용은 pg_sleep 같은 건 막지 않는다 (MCP 만)
+        assert!(ok("select pg_sleep(0)"));
+    }
+
+    #[test]
+    fn unsafe_statements() {
+        let u = |s: &str| unsafe_statement(s, Postgres);
+        assert!(u("delete from t").is_some());
+        assert!(u("update t set a = 1").is_some());
+        assert!(u("update t set a = (select max(x) from y where y.k = 1)").is_some(), "WHERE inside a subquery doesn't count");
+        assert!(u("delete from t where 'where' = 'x'").is_none());
+        assert!(u("delete from t -- where id = 1").is_some(), "WHERE in a comment doesn't count");
+        assert!(u("with d as (select 1) delete from t").is_some());
+        assert!(u("drop table t").is_some() && u("truncate t").is_some());
+        assert!(u("delete from t where id = 1").is_none());
+        assert!(u("select * from t").is_none());
+        assert!(unsafe_statement("FLUSHALL", DbKind::Redis).is_some());
+        assert!(unsafe_statement("GET a", DbKind::Redis).is_none());
+    }
+}

@@ -76,7 +76,9 @@ pub async fn connect_via(cfg: &ConnectionConfig, password: Option<&str>, tunnel_
                 opts = opts.ssl_mode(match ssl.mode() {
                     "verify-full" => PgSslMode::VerifyFull,
                     "verify-ca" => PgSslMode::VerifyCa,
-                    _ => PgSslMode::Require,
+                    "require" => PgSslMode::Require,
+                    // 모르는 값을 검증 없는 require 로 넘기지 않는다
+                    m => return Err(crate::error::AppError::Msg(format!("Unknown SSL mode '{m}' (use require, verify-ca or verify-full)"))),
                 });
                 let home = |p: &str| p.strip_prefix("~/").map(|r| format!("{}/{r}", std::env::var("HOME").unwrap_or_default())).unwrap_or_else(|| p.to_string());
                 if !ssl.ca_file.trim().is_empty() {
@@ -289,10 +291,16 @@ impl CsvOut {
 }
 
 async fn export_pg_csv(pool: &PgPool, sql: &str, path: &std::path::Path) -> AppResult<u64> {
+    let mut conn = pool.acquire().await?;
+    export_pg_on(&mut conn, sql, path).await
+}
+
+/// 이미 잡은 연결(읽기 전용 트랜잭션일 수도)에서 CSV 로
+pub async fn export_pg_on(conn: &mut sqlx::PgConnection, sql: &str, path: &std::path::Path) -> AppResult<u64> {
     let mut out = CsvOut::create(path).await?;
     let mut count = 0u64;
     let mut header_written = false;
-    let mut stream = sqlx::query(sql).persistent(false).fetch(pool);
+    let mut stream = sqlx::query(sql).persistent(false).fetch(&mut *conn);
     while let Some(row) = stream.try_next().await? {
         if !header_written {
             let names: Vec<String> = row.columns().iter().map(|c| csv_field(c.name())).collect();
@@ -303,8 +311,9 @@ async fn export_pg_csv(pool: &PgPool, sql: &str, path: &std::path::Path) -> AppR
         out.row(&fields).await?;
         count += 1;
     }
+    drop(stream);
     if !header_written {
-        if let Ok(desc) = pool.describe(sql).await {
+        if let Ok(desc) = (&mut *conn).describe(sql).await {
             let names: Vec<String> = desc.columns().iter().map(|c| csv_field(c.name())).collect();
             out.row(&names).await?;
         }

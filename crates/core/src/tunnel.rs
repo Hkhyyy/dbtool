@@ -3,7 +3,33 @@ use crate::error::{AppError, AppResult};
 use crate::store::{SshAuth, SshConfig};
 use russh::client;
 use russh::keys::{PrivateKeyWithHashAlg, PublicKeyOrCertificate};
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+
+/// 처음 보는 서버 키: (host, port) → 키. 사용자가 지문을 확인하고 trust_host_key 를 부르면 known_hosts 에 등록한다
+static PENDING_KEYS: Mutex<Option<HashMap<(String, u16), russh::keys::PublicKey>>> = Mutex::new(None);
+
+/// 처음 보는 SSH 서버라 접속을 멈췄을 때 오류 메시지에 들어가는 말 (UI 가 "Trust host key" 를 보여 주는 기준)
+pub const UNKNOWN_HOST: &str = "Unknown SSH host key";
+
+fn known_hosts_path() -> Option<String> {
+    // 테스트에서는 DBTOOL_KNOWN_HOSTS 로 별도 파일을 쓴다 (사용자 ~/.ssh/known_hosts 보호)
+    std::env::var("DBTOOL_KNOWN_HOSTS").ok()
+}
+
+/// 사용자가 지문을 확인한 서버 키를 known_hosts 에 등록한다 (그다음 접속부터 통과)
+pub fn trust_host_key(host: &str, port: u16) -> AppResult<String> {
+    let key = PENDING_KEYS.lock().unwrap().as_mut().and_then(|m| m.remove(&(host.to_string(), port)));
+    let Some(key) = key else {
+        return Err(AppError::Msg(format!("No pending host key for {host}:{port} — connect (or Test SSH) first")));
+    };
+    match known_hosts_path() {
+        Some(p) => russh::keys::known_hosts::learn_known_hosts_path(host, port, &key, p),
+        None => russh::keys::known_hosts::learn_known_hosts(host, port, &key),
+    }
+    .map_err(|e| AppError::Msg(format!("Could not write known_hosts: {e}")))?;
+    Ok(format!("Trusted {host}:{port} ({})", key.fingerprint(russh::keys::ssh_key::HashAlg::Sha256)))
+}
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 
@@ -17,14 +43,14 @@ struct Client {
 impl client::Handler for Client {
     type Error = russh::Error;
 
-    /// ~/.ssh/known_hosts 기준: 일치하면 통과, 처음 보는 서버는 등록(TOFU), 키가 바뀌었으면 거부.
+    /// ~/.ssh/known_hosts 기준: 일치하면 통과, 키가 바뀌었으면 거부, 처음 보는 서버는 멈추고 지문을 보여 준다
+    /// (예전엔 묻지 않고 등록했다 → 첫 접속에서 중간자에게 비밀번호를 넘길 수 있었다)
     async fn check_server_key(&mut self, key: &PublicKeyOrCertificate) -> Result<bool, Self::Error> {
         let PublicKeyOrCertificate::PublicKey { key, .. } = key else {
             *self.reject.lock().unwrap() = Some("SSH certificate host keys are not supported yet".into());
             return Ok(false);
         };
-        // 테스트에서는 DBTOOL_KNOWN_HOSTS 로 별도 파일을 쓴다 (사용자 ~/.ssh/known_hosts 보호)
-        let custom = std::env::var("DBTOOL_KNOWN_HOSTS").ok();
+        let custom = known_hosts_path();
         let checked = match &custom {
             Some(p) => russh::keys::check_known_hosts_path(&self.host, self.port, key, p),
             None => russh::keys::check_known_hosts(&self.host, self.port, key),
@@ -32,11 +58,15 @@ impl client::Handler for Client {
         match checked {
             Ok(true) => Ok(true),
             Ok(false) => {
-                let _ = match &custom {
-                    Some(p) => russh::keys::known_hosts::learn_known_hosts_path(&self.host, self.port, key, p),
-                    None => russh::keys::known_hosts::learn_known_hosts(&self.host, self.port, key),
-                };
-                Ok(true)
+                let fp = key.fingerprint(russh::keys::ssh_key::HashAlg::Sha256);
+                PENDING_KEYS.lock().unwrap().get_or_insert_with(HashMap::new).insert((self.host.clone(), self.port), key.clone());
+                *self.reject.lock().unwrap() = Some(format!(
+                    "{UNKNOWN_HOST} for {}:{} — {} {fp}. Check that it matches the server, then choose \"Trust host key\".",
+                    self.host,
+                    self.port,
+                    key.algorithm().as_str()
+                ));
+                Ok(false)
             }
             Err(e) => {
                 *self.reject.lock().unwrap() =
@@ -168,7 +198,13 @@ mod tests {
         };
         let mut ssh = SshConfig { enabled: true, host: "localhost".into(), port: 2222, user: "root".into(), auth: SshAuth::Password, key_path: String::new() };
 
-        // 0) SSH 로그인만 (SSH 탭 테스트) — DB 주소와 무관하게 성공해야 함
+        // 0) 처음 보는 서버: 지문을 보여 주고 멈춘다 → 사용자가 신뢰하면 그다음부터 통과
+        let first = test_login(&ssh, Some("sshpw")).await.err().expect("unknown host must stop").to_string();
+        println!("{first}");
+        assert!(first.contains(UNKNOWN_HOST) && first.contains("SHA256:"), "{first}");
+        assert!(std::fs::read_to_string(&kh).unwrap().is_empty(), "not learned before the user trusts it");
+        println!("{}", trust_host_key(&ssh.host, ssh.port).expect("trust"));
+        // SSH 로그인만 (SSH 탭 테스트) — DB 주소와 무관하게 성공해야 함
         let ok = test_login(&ssh, Some("sshpw")).await.expect("ssh-only login");
         println!("{ok}");
         // DB 주소를 bastion에서 못 갈 때의 메시지
@@ -185,7 +221,7 @@ mod tests {
         // 여러 연결 동시 사용 (풀)
         let r = pool.run_query("select count(*) from generate_series(1,1000)", 10).await.unwrap();
         assert_eq!(r.rows[0][0], serde_json::Value::from(1000));
-        assert!(std::fs::read_to_string(&kh).unwrap().contains("2222"), "host key learned");
+        assert!(std::fs::read_to_string(&kh).unwrap().contains("2222"), "host key trusted");
         pool.close().await;
         drop(t);
 
