@@ -10,16 +10,23 @@ def gui():
     out = []
     for m in re.finditer(r'title: "([^"]+)",\s*rows: \[(.*?)\n    \],', src, re.S):
         out.append(f"\n#### {m.group(1)}\n\n| macOS | Action |\n|---|---|")
-        for k, d in re.findall(r'\["([^"]*)", "([^"]*)"\]', m.group(2)):
+        for k, d in re.findall(r'\["([^"]*)", "([^"]*)"(?:, "[^"]*")?\]', m.group(2)):
             out.append(f"| `{esc(k)}` | {esc(d)} |")
     return "\n".join(out)
 
 def tui():
     src = (root / "crates/tui/src/help.rs").read_text()
-    out = []
+    # 바꿀 수 있는 명령: keys.rs 의 기본 키 + app.rs ACTIONS 의 이름
+    names = dict(re.findall(r'\(Action::(\w+), "([^"]*)", "[^"]*"\)', (root / "crates/tui/src/app.rs").read_text()))
+    keys = (root / "crates/tui/src/keys.rs").read_text()
+    out = ["\n#### Commands (default keys — change them in the F1 window)\n\n| Key | Action |\n|---|---|"]
+    for a, ks in re.findall(r'\(Action::(\w+), &\[(.*?)\]\)', keys):
+        k = " / ".join(re.findall(r'"([^"]*)"', ks)).replace("\\\\", "\\")
+        out.append(f"| `{esc(k)}` | {esc(names[a])} |")
     for m in re.finditer(r'\("([^"]+)", &\[(.*?)\]\),', src, re.S):
         out.append(f"\n#### {m.group(1)}\n\n| Key | Action |\n|---|---|")
         for k, d in re.findall(r'\("([^"]*)", "([^"]*)"\)', m.group(2)):
+            k = k.replace("\\\\", "\\")  # Rust 문자열의 \\ → \
             out.append(f"| `{esc(k)}` | {esc(d)} |")
     return "\n".join(out)
 
