@@ -82,12 +82,12 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
 pub fn text() -> String {
     let mut s = String::from("\nCommands (change them with F1)\n");
     for (a, keys) in crate::keys::DEFAULT_KEYS {
-        s.push_str(&format!("  {:<30} {}\n", keys.join(" / "), crate::input::name_of(*a)));
+        s.push_str(&format!("  {:<30} {}\n", crate::keys::disp(&keys.join(" / ")), crate::input::name_of(*a)));
     }
     for (title, rows) in HELP {
         s.push_str(&format!("\n{title}\n"));
         for (k, d) in *rows {
-            s.push_str(&format!("  {k:<30} {d}\n"));
+            s.push_str(&format!("  {:<30} {}\n", crate::keys::disp(k), crate::keys::disp(d)));
         }
     }
     s

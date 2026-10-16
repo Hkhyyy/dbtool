@@ -372,7 +372,8 @@ impl Grid {
         // 구분선: 열 사이는 세로줄(열 사이 한 칸 간격 자리), 헤더·행 사이는 흐린 밑줄.
         // 가로줄을 줄로 따로 그리면 보이는 행이 절반이 되고, 일부 터미널(Orca 등)에서는 ─ 가 안 보인다
         let line_c = Color::Rgb(96, 99, 106);
-        let line = Style::default().fg(line_c);
+        // 세로줄 칸에는 밑줄을 긋지 않는다 (│ 와 밑줄이 겹치면 터미널에 따라 교차점에 돌기가 생기고 높이도 어긋난다)
+        let line = Style::default().fg(line_c).remove_modifier(Modifier::UNDERLINED);
         let under = Style::default().add_modifier(Modifier::UNDERLINED).underline_color(line_c);
         let buf = f.buffer_mut();
         // 잘린 마지막 열 뒤에는 선을 긋지 않는다 (테두리와 겹친다)

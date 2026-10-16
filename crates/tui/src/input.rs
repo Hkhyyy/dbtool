@@ -808,7 +808,7 @@ fn popup_key(app: &mut App, k: KeyEvent) {
             } else {
                 let a = crate::keys::DEFAULT_KEYS[sel].0;
                 match crate::keys::spec(&k).filter(|s| crate::keys::bindable(s)) {
-                    None => Some(format!("{} can't be a command key — use a Ctrl/Alt combination or an F key", crate::keys::spec(&k).unwrap_or_else(|| "That key".into()))),
+                    None => Some(format!("{} can't be a command key — use a {} combination or an F key", crate::keys::spec(&k).map(|s| crate::keys::disp(&s)).unwrap_or_else(|| "That key".into()), if cfg!(target_os = "macos") { "⌃/⌥" } else { "Ctrl/Alt" })),
                     Some(key) => {
                         let taken = app.keys.bind(a, key.clone(), add);
                         let mut m = format!("{} → {}", name_of(a), app.keys.label(a));

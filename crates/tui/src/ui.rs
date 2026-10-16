@@ -1,4 +1,5 @@
 //! 화면 그리기
+use crate::keys::disp;
 use crate::app::{App, Drag, DropTarget, FieldKind, Focus, Popup, SplitDir, TabKind};
 use crate::tree::NodeKind;
 use ratatui::prelude::*;
@@ -191,7 +192,7 @@ fn draw_tabs(f: &mut Frame, app: &mut App, area: Rect) {
             Line::styled("dbtool", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
             Line::raw(""),
             Line::raw("Enter on a data source to connect · Enter on a table to edit data"),
-            Line::raw("Ctrl+L new query console · Ctrl+P search everywhere · Ctrl+K actions · F1 keymap"),
+            Line::raw(disp("Ctrl+L new query console · Ctrl+P search everywhere · Ctrl+K actions · F1 keymap")),
         ])
         .alignment(Alignment::Center)
         .block(block("", false));
@@ -319,8 +320,8 @@ fn draw_pane(f: &mut Frame, app: &mut App, idx: usize, body: Rect, focused: bool
             let title = format!(
                 " {db} · Tx: {}{}{}{} ",
                 if c.tx_manual { "Manual" } else { "Auto" },
-                if c.in_tx { " (pending — Alt+C commit / Alt+R rollback)" } else { "" },
-                if c.running { " · running… Ctrl+C cancel" } else { "" },
+                if c.in_tx { disp(" (pending — Alt+C commit / Alt+R rollback)") } else { String::new() },
+                if c.running { disp(" · running… Ctrl+C cancel") } else { String::new() },
                 if ro { " · read-only" } else { "" }
             );
             let editing = focus == Focus::Editor;
@@ -348,12 +349,12 @@ fn draw_pane(f: &mut Frame, app: &mut App, idx: usize, body: Rect, focused: bool
                     .rev()
                     .map(|(e, s)| Line::styled(s.clone(), Style::default().fg(if *e { Color::Red } else if s.contains("> ") { ACCENT } else { Color::Gray })))
                     .collect();
-                let p = Paragraph::new(if lines.is_empty() { vec![Line::styled("Execute a statement (F5 / Ctrl+Enter) to see the output.", Style::default().fg(DIM))] } else { lines })
+                let p = Paragraph::new(if lines.is_empty() { vec![Line::styled(disp("Execute a statement (F5 / Ctrl+Enter) to see the output."), Style::default().fg(DIM))] } else { lines })
                     .wrap(Wrap { trim: false })
-                    .block(block(" Output (Alt+O: result) ", focus == Focus::Grid));
+                    .block(block(disp(" Output (Alt+O: result) "), focus == Focus::Grid));
                 f.render_widget(p, res);
             } else if let Some(g) = &mut c.grid {
-                let t = format!(" {} — {}{} rows (Alt+O: output) ", c.result_title, g.rows(), if g.result.truncated { "+" } else { "" });
+                let t = format!(" {} — {}{} rows ({}O: output) ", c.result_title, g.rows(), if g.result.truncated { "+" } else { "" }, disp("Alt+"));
                 g.render(f, res, t, focus == Focus::Grid);
             }
             if let (Some((x, y)), Some(cmp)) = (caret, &c.complete) {
@@ -378,7 +379,7 @@ fn draw_pane(f: &mut Frame, app: &mut App, idx: usize, body: Rect, focused: bool
             if let Some(e) = &tt.error {
                 f.render_widget(Paragraph::new(e.clone()).style(Style::default().fg(Color::Red)).wrap(Wrap { trim: false }).block(block(" Error ", focused)), grid);
             } else if let Some(g) = &mut tt.grid {
-                let pend = if g.dirty() { format!(" · {} pending (Ctrl+S submit, Ctrl+Z revert)", g.edits.len() + g.deleted.len() + g.added) } else { String::new() };
+                let pend = if g.dirty() { disp(&format!(" · {} pending (Ctrl+S submit, Ctrl+Z revert)", g.edits.len() + g.deleted.len() + g.added)) } else { String::new() };
                 let t = format!(" {}.{} — {}{} rows{}{}{} ", tt.schema, tt.table, g.rows(), if g.result.truncated { "+" } else { "" }, if tt.pk.is_empty() { " · no PK (read-only)" } else { "" }, if ro { " · read-only" } else { "" }, pend);
                 g.render(f, grid, t, focus == Focus::Grid);
             } else {
@@ -496,7 +497,7 @@ fn draw_completion(f: &mut Frame, cmp: &crate::app::Completion, x: u16, y: u16) 
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     let hints = match app.focus {
         Focus::Tree => "↑↓ move · → expand · Enter open · F4 console · Ctrl+B DDL · n new · e edit · / filter",
-        Focus::Editor => "F5/Ctrl+Enter run · Ctrl+Space complete · Alt+E explain · Alt+T tx · Tab→ result · Ctrl+O object · Ctrl+K actions",
+        Focus::Editor => "F5/Ctrl+Enter run · Ctrl+Space complete · Alt+E explain · Alt+T tx · Shift+Tab result · Ctrl+O object · Ctrl+K actions",
         Focus::Grid => match app.tabs.get(app.active).map(|t| &t.kind) {
             Some(TabKind::Table(_)) => "Enter edit · n NULL · a add · d delete · Ctrl+S submit · s sort · w where · o order · x export",
             Some(TabKind::Redis(_)) => "Enter value · / pattern · m more · e edit · x del item · D del key · t TTL · R rename · : command",
@@ -504,6 +505,8 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             _ => "arrows move · PgUp/PgDn · Home/End · s sort · Esc editor · x export",
         },
     };
+    let hints = disp(hints);
+    let hints = hints.as_str();
     // 새 버전 알림은 상태 글 앞에 계속 보인다
     let badge = app.update.as_ref().map(|v| format!(" ⬆ v{v} available — quit and run: dbtool-tui --update "));
     let bw = badge.as_ref().map(|b| b.chars().count() as u16).unwrap_or(0);
@@ -513,7 +516,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     if let Some(b) = badge {
         f.render_widget(Paragraph::new(b).style(Style::default().fg(Color::Black).bg(Color::Rgb(201, 162, 109))), u);
     }
-    f.render_widget(Paragraph::new(format!(" {}", app.status)).style(Style::default().fg(Color::Gray).bg(Color::Rgb(43, 45, 48))), l);
+    f.render_widget(Paragraph::new(format!(" {}", disp(&app.status))).style(Style::default().fg(Color::Gray).bg(Color::Rgb(43, 45, 48))), l);
     f.render_widget(Paragraph::new(hints).style(Style::default().fg(DIM).bg(Color::Rgb(43, 45, 48))), r);
 }
 
@@ -551,7 +554,7 @@ fn draw_popup(f: &mut Frame, app: &mut App) {
             for (title, rows) in crate::help::HELP {
                 lines.push(Line::styled(title.to_string(), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)));
                 for (k, d) in *rows {
-                    let mut l = Line::from(vec![Span::styled(format!("  {k:<30}"), Style::default().fg(ACCENT)), Span::raw(d.to_string())]);
+                    let mut l = Line::from(vec![Span::styled(format!("  {:<30}", disp(k)), Style::default().fg(ACCENT)), Span::raw(disp(d))]);
                     if i == *sel {
                         l = l.style(Style::default().bg(Color::Rgb(46, 67, 110)));
                         sel_line = lines.len();
@@ -629,7 +632,7 @@ fn draw_popup(f: &mut Frame, app: &mut App) {
                 })
                 .collect();
             p.sel = sel;
-            let hint = if p.title.starts_with("Go to") || p.title == "Search Everywhere" { " Enter open · Ctrl+B DDL · Esc " } else { " Enter · Esc " };
+            let hint = if p.title.starts_with("Go to") || p.title == "Search Everywhere" { disp(" Enter open · Ctrl+B DDL · Esc ") } else { " Enter · Esc ".into() };
             f.render_widget(List::new(items).block(block(hint, false)), list);
         }
         Popup::ConnForm(form) => {
@@ -666,7 +669,7 @@ fn draw_popup(f: &mut Frame, app: &mut App) {
             if let Some((ok, m)) = &form.message {
                 lines.push(Line::styled(m.clone(), Style::default().fg(if *ok { Color::Green } else { Color::Red })));
             }
-            lines.push(Line::styled("↑↓/Tab move · type to edit · Space/←→ toggle · Ctrl+T test · Ctrl+S / Enter save · Esc cancel", Style::default().fg(DIM)));
+            lines.push(Line::styled(disp("↑↓/Tab move · type to edit · Space/←→ toggle · Ctrl+T test · Ctrl+S / Enter save · Esc cancel"), Style::default().fg(DIM)));
             let t = if form.edit.is_some() { " Data Source Properties " } else { " New Data Source " };
             f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).block(block(t, true)), r);
         }
