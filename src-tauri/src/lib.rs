@@ -96,6 +96,8 @@ pub fn run() {
             commands::redis_key,
             commands::redis_exec,
             commands::redis_exec_line,
+            commands::load_keymap,
+            commands::save_keymap,
         ])
         .run(app_context())
         .expect("error while running tauri application");

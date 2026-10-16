@@ -9,32 +9,59 @@ export interface HistoryItem {
   ts: number;
 }
 const KEY = "dbtool.queryHistory";
+const MAX_ITEMS = 2000;
+/** 한 문장은 64KB 까지만 기록, 전체는 약 3MB (localStorage 한도 5MB 안쪽) */
+const MAX_SQL = 64 * 1024;
+const MAX_BYTES = 3 * 1024 * 1024;
+
+// 메모리에 들고 있다가 모아서 쓴다 (스크립트를 실행하면 문장마다 불려서, 매번 전체를 파싱·직렬화하지 않게)
+let mem: HistoryItem[] | null = null;
+let timer: ReturnType<typeof setTimeout> | undefined;
 const load = (): HistoryItem[] => {
-  try {
-    return JSON.parse(localStorage.getItem(KEY) ?? "[]");
-  } catch {
-    return [];
+  if (!mem) {
+    try {
+      mem = JSON.parse(localStorage.getItem(KEY) ?? "[]");
+    } catch {
+      mem = [];
+    }
   }
+  return mem!;
 };
-const store = (items: HistoryItem[]) => {
+const flush = () => {
+  timer = undefined;
+  if (!mem) return;
+  let items = mem.slice(-MAX_ITEMS);
+  let json = JSON.stringify(items);
+  // 너무 크면 오래된 것부터 버린다
+  while (json.length > MAX_BYTES && items.length > 1) {
+    items = items.slice(Math.ceil(items.length / 10));
+    json = JSON.stringify(items);
+  }
+  mem = items;
   try {
-    localStorage.setItem(KEY, JSON.stringify(items.slice(-2000)));
+    localStorage.setItem(KEY, json);
   } catch {
     /* 저장 실패 무시 */
   }
 };
+const store = (items: HistoryItem[]) => {
+  mem = items;
+  if (!timer) timer = setTimeout(flush, 1000);
+};
+window.addEventListener("beforeunload", () => timer && flush());
 
 export function pushHistory(h: Omit<HistoryItem, "id" | "ts">) {
   const items = load();
+  const sql = h.sql.length > MAX_SQL ? h.sql.slice(0, MAX_SQL) : h.sql;
   const last = items[items.length - 1];
-  if (last && last.connId === h.connId && last.sql === h.sql) {
+  if (last && last.connId === h.connId && last.sql === sql) {
     last.ts = Date.now();
-  } else items.push({ ...h, id: crypto.randomUUID(), ts: Date.now() });
+  } else items.push({ ...h, sql, id: crypto.randomUUID(), ts: Date.now() });
   store(items);
 }
 
 export function HistoryDialog({ connId, title, onPick, onClose }: { connId: string; title: string; onPick: (sql: string) => void; onClose: () => void }) {
-  const [all, setAll] = useState(load);
+  const [all, setAll] = useState(() => [...load()]);
   const [q, setQ] = useState("");
   const [idx, setIdx] = useState(0);
   const list = useMemo(

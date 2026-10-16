@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { api, QueryResult, redis, RedisKeyDetail, RedisKeyRow, RedisReply } from "../lib/api";
+
+/** 키 목록 한 줄 높이 (App.css .rd-key 와 같다) · 터미널 출력 최대 줄 수 */
+const KEY_ROW_H = 22;
+const TERM_MAX = 1000;
 
 /** Medis 식 Redis 브라우저: 왼쪽 키 목록(패턴·타입 필터, SCAN 더 보기), 오른쪽 Content / Terminal / Info / Config */
 interface Props {
@@ -74,15 +79,23 @@ export function RedisBrowser(p: Props) {
   const [adding, setAdding] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const listRef = useRef<HTMLDivElement>(null);
+  const keyVirt = useVirtualizer({ count: keys.length, getScrollElement: () => listRef.current, estimateSize: () => KEY_ROW_H, overscan: 20 });
+
   const scan = async (reset: boolean) => {
     setScanning(true);
     setError(null);
     try {
       const page = await redis.scan(p.target, reset ? "0" : cursor, pattern, 500, typeFilter);
       setKeys((ks) => {
-        const merged = reset ? page.keys : [...ks, ...page.keys];
-        const seen = new Set<string>();
-        return merged.filter((k) => (seen.has(k.key) ? false : (seen.add(k.key), true))).sort((a, b) => a.key.localeCompare(b.key));
+        // 이미 정렬된 목록에 새 페이지(정렬)만 합친다 (매번 전체를 다시 정렬하지 않게)
+        const have = new Set(reset ? [] : ks.map((k) => k.key));
+        const add = page.keys.filter((k) => (have.has(k.key) ? false : (have.add(k.key), true))).sort((a, b) => a.key.localeCompare(b.key));
+        const base = reset ? [] : ks;
+        const out: RedisKeyRow[] = [];
+        let i = 0, j = 0;
+        while (i < base.length || j < add.length) out.push(j >= add.length || (i < base.length && base[i].key.localeCompare(add[j].key) <= 0) ? base[i++] : add[j++]);
+        return out;
       });
       setCursor(page.cursor);
     } catch (e) {
@@ -150,18 +163,25 @@ export function RedisBrowser(p: Props) {
               <span className="grow" />
               <span>TTL</span>
             </div>
-            <div className="rd-keys-list" tabIndex={0} onKeyDown={(e) => {
+            <div className="rd-keys-list" ref={listRef} tabIndex={0} onKeyDown={(e) => {
               const i = keys.findIndex((k) => k.key === sel);
-              if (e.key === "ArrowDown" && i < keys.length - 1) { e.preventDefault(); setSel(keys[i + 1].key); }
-              if (e.key === "ArrowUp" && i > 0) { e.preventDefault(); setSel(keys[i - 1].key); }
+              const go = (j: number) => { e.preventDefault(); setSel(keys[j].key); keyVirt.scrollToIndex(j); };
+              if (e.key === "ArrowDown" && i < keys.length - 1) go(i + 1);
+              if (e.key === "ArrowUp" && i > 0) go(i - 1);
             }}>
-              {keys.map((k) => (
-                <div key={k.key} className={"rd-key" + (k.key === sel ? " sel" : "")} onClick={() => { setSel(k.key); setTab("content"); }} title={k.key}>
-                  <TypeBadge type={k.type} />
-                  <span className="rd-key-name">{k.key}</span>
-                  <span className="rd-ttl">{fmtTtl(k.ttl)}</span>
-                </div>
-              ))}
+              {/* 보이는 줄만 그린다 (키가 수만 개여도 가볍게) */}
+              <div style={{ height: keyVirt.getTotalSize(), position: "relative" }}>
+                {keyVirt.getVirtualItems().map((vi) => {
+                  const k = keys[vi.index];
+                  return (
+                    <div key={k.key} className={"rd-key" + (k.key === sel ? " sel" : "")} style={{ position: "absolute", top: 0, left: 0, right: 0, transform: `translateY(${vi.start}px)` }} onClick={() => { setSel(k.key); setTab("content"); }} title={k.key}>
+                      <TypeBadge type={k.type} />
+                      <span className="rd-key-name">{k.key}</span>
+                      <span className="rd-ttl">{fmtTtl(k.ttl)}</span>
+                    </div>
+                  );
+                })}
+              </div>
               {!keys.length && !scanning && <div className="popup-empty">{error ?? "No keys match"}</div>}
             </div>
             <div className="rd-keys-foot">
@@ -605,13 +625,15 @@ function Terminal({ target, prompt, onChanged }: { target: string; prompt: strin
     hi.current = -1;
     setInput("");
     if (line.toLowerCase() === "clear") return setLines([]);
-    setLines((l) => [...l, { kind: "in", text: `${prompt} ${line}` }]);
+    // 출력은 최근 TERM_MAX 줄만 남긴다
+    const push = (x: { kind: "in" | "out" | "err"; text: string }) => setLines((l) => [...l, x].slice(-TERM_MAX));
+    push({ kind: "in", text: `${prompt} ${line}` });
     try {
       const r = await redis.execLine(target, line);
-      setLines((l) => [...l, { kind: "out", text: formatReply(r) }]);
+      push({ kind: "out", text: formatReply(r) });
       if (!/^(get|hget|hgetall|lrange|smembers|zrange|scan|keys|type|ttl|pttl|exists|info|config|dbsize|ping|strlen|llen|scard|zcard|hlen|xrange|xlen|memory|object)\b/i.test(line)) onChanged();
     } catch (e) {
-      setLines((l) => [...l, { kind: "err", text: `(error) ${String(e).replace(/^Redis: /, "")}` }]);
+      push({ kind: "err", text: `(error) ${String(e).replace(/^Redis: /, "")}` });
     }
   };
   return (

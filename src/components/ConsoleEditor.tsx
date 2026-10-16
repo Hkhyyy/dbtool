@@ -2,10 +2,11 @@ import Editor from "@monaco-editor/react";
 import { useEffect, useRef } from "react";
 import { format as formatSql } from "sql-formatter";
 import { monaco } from "../lib/monaco";
-import { bindModel } from "../lib/completion";
+import { bindModel, unbindModel } from "../lib/completion";
 import { monacoTheme, useTheme } from "../lib/theme";
 import { editorFontSize } from "../lib/prefs";
 import { setStatusWidget } from "../lib/statusbar";
+import { bindings, onKeymapChange } from "../lib/shortcuts";
 
 /** 실행 요청: 에디터 내용·캐럿·선택 영역을 넘기고, 실제로 무엇을 실행할지는 콘솔이 정한다 (DataGrip 실행 규칙) */
 export interface RunRequest {
@@ -36,6 +37,23 @@ interface Props {
 }
 
 const { KeyMod: M, KeyCode: K } = monaco;
+
+const MONACO_KEYS: Record<string, number> = {
+  "/": K.Slash, "\\": K.Backslash, ";": K.Semicolon, "'": K.Quote, ",": K.Comma, ".": K.Period, "[": K.BracketLeft, "]": K.BracketRight, "`": K.Backquote, "-": K.Minus, "=": K.Equal,
+  Enter: K.Enter, Backspace: K.Backspace, Delete: K.Delete, Esc: K.Escape, Tab: K.Tab, Space: K.Space,
+  Up: K.UpArrow, Down: K.DownArrow, Left: K.LeftArrow, Right: K.RightArrow, Home: K.Home, End: K.End, PageUp: K.PageUp, PageDown: K.PageDown, Insert: K.Insert,
+};
+
+/** lib/shortcuts 표기 → Monaco 키 (Mod = ⌘/Ctrl, Ctrl = macOS ⌃) */
+function monacoKey(spec: string): number | null {
+  const parts = spec.split("+");
+  const key = parts.pop()!;
+  const code = /^[A-Z]$/.test(key) ? (K as any)["Key" + key] : /^\d$/.test(key) ? (K as any)["Digit" + key] : /^F\d{1,2}$/.test(key) ? (K as any)[key] : MONACO_KEYS[key];
+  if (code === undefined) return null;
+  const mods: Record<string, number> = { Mod: M.CtrlCmd, Ctrl: M.WinCtrl, Alt: M.Alt, Shift: M.Shift };
+  return parts.reduce((n, m) => n | (mods[m] ?? 0), code as number);
+}
+const keysOf = (id: string) => bindings(id).map(monacoKey).filter((n): n is number => n !== null);
 
 export function ConsoleEditor({ tabId, connId, initialSql, language, onChange, onRun, registerApi, readOnly }: Props) {
   const modelUri = useRef<string | null>(null);
@@ -105,43 +123,56 @@ export function ConsoleEditor({ tabId, connId, initialSql, language, onChange, o
             sel && !sel.isEmpty() ? { text: m.getValueInRange(sel), start: m.getOffsetAt(sel.getStartPosition()), end: m.getOffsetAt(sel.getEndPosition()) } : null;
           onRunRef.current({ text: m.getValue(), offset: m.getOffsetAt(ed.getPosition()!), selection, highlight, explain });
         };
-        const act = (id: string, label: string, keys: number[], fn: () => void) =>
-          ed.addAction({ id, label, keybindings: keys, run: fn });
-
-        // ── DataGrip 에디터 키맵 ──
-        ed.addAction({ id: "dbtool.run", label: "Execute", keybindings: [M.CtrlCmd | K.Enter], contextMenuGroupId: "navigation", contextMenuOrder: 0, run: () => run() });
-        ed.addAction({ id: "dbtool.explain", label: "Explain Plan", contextMenuGroupId: "navigation", contextMenuOrder: 1, run: () => run("plan") });
-        ed.addAction({ id: "dbtool.explainAnalyse", label: "Explain Analyse", contextMenuGroupId: "navigation", contextMenuOrder: 2, run: () => run("analyze") });
-        act("dbtool.reformat", "Reformat Code", [M.CtrlCmd | M.Alt | K.KeyL], () => {
-          const m = ed.getModel();
-          if (!m) return;
-          const sel = ed.getSelection();
-          const whole = !sel || sel.isEmpty();
-          const range = whole ? m.getFullModelRange() : sel!;
-          try {
-            const out = formatSql(m.getValueInRange(range), { language: language === "mysql" ? "mysql" : "postgresql", keywordCase: "upper", tabWidth: 4 });
-            ed.executeEdits("reformat", [{ range, text: out }]);
-          } catch {
-            /* 파싱 못 하는 SQL 은 그대로 둔다 */
-          }
+        // ── DataGrip 에디터 키맵 (키는 lib/shortcuts 의 editor.*, 바뀌면 다시 등록) ──
+        let registered: monaco.IDisposable[] = [];
+        const act = (id: string, label: string, shortcut: string, fn: () => void) =>
+          registered.push(ed.addAction({ id, label, keybindings: keysOf(shortcut), run: fn }));
+        const register = () => {
+          registered.forEach((d) => d.dispose());
+          registered = [];
+          registered.push(ed.addAction({ id: "dbtool.run", label: "Execute", keybindings: keysOf("editor.run"), contextMenuGroupId: "navigation", contextMenuOrder: 0, run: () => run() }));
+          registered.push(ed.addAction({ id: "dbtool.explain", label: "Explain Plan", contextMenuGroupId: "navigation", contextMenuOrder: 1, run: () => run("plan") }));
+          registered.push(ed.addAction({ id: "dbtool.explainAnalyse", label: "Explain Analyse", contextMenuGroupId: "navigation", contextMenuOrder: 2, run: () => run("analyze") }));
+          act("dbtool.reformat", "Reformat Code", "editor.reformat", () => {
+            const m = ed.getModel();
+            if (!m) return;
+            const sel = ed.getSelection();
+            const whole = !sel || sel.isEmpty();
+            const range = whole ? m.getFullModelRange() : sel!;
+            try {
+              const out = formatSql(m.getValueInRange(range), { language: language === "mysql" ? "mysql" : "postgresql", keywordCase: "upper", tabWidth: 4 });
+              ed.executeEdits("reformat", [{ range, text: out }]);
+            } catch {
+              /* 파싱 못 하는 SQL 은 그대로 둔다 */
+            }
+          });
+          act("dbtool.duplicate", "Duplicate Line or Selection", "editor.duplicate", () => ed.trigger("k", "editor.action.copyLinesDownAction", null));
+          act("dbtool.deleteLine", "Delete Line", "editor.deleteLine", () => ed.trigger("k", "editor.action.deleteLines", null));
+          act("dbtool.moveUp", "Move Line Up", "editor.moveUp", () => ed.trigger("k", "editor.action.moveLinesUpAction", null));
+          act("dbtool.moveDown", "Move Line Down", "editor.moveDown", () => ed.trigger("k", "editor.action.moveLinesDownAction", null));
+          act("dbtool.extend", "Extend Selection", "editor.extend", () => ed.trigger("k", "editor.action.smartSelect.expand", null));
+          act("dbtool.shrink", "Shrink Selection", "editor.shrink", () => ed.trigger("k", "editor.action.smartSelect.shrink", null));
+          act("dbtool.gotoLine", "Go to Line/Column", "editor.gotoLine", () => ed.trigger("k", "editor.action.gotoLine", null));
+          act("dbtool.nextOcc", "Add Selection for Next Occurrence", "editor.nextOcc", () => ed.trigger("k", "editor.action.addSelectionToNextFindMatch", null));
+          act("dbtool.allOcc", "Select All Occurrences", "editor.allOcc", () => ed.trigger("k", "editor.action.selectHighlights", null));
+          act("dbtool.toggleCase", "Toggle Case", "editor.toggleCase", () => {
+            const m = ed.getModel();
+            const sel = ed.getSelection();
+            if (!m || !sel || sel.isEmpty()) return;
+            const t = m.getValueInRange(sel);
+            ed.executeEdits("case", [{ range: sel, text: t === t.toUpperCase() ? t.toLowerCase() : t.toUpperCase() }]);
+          });
+          act("dbtool.blockComment", "Comment with Block Comment", "editor.blockComment", () => ed.trigger("k", "editor.action.blockComment", null));
+        };
+        register();
+        const offKeymap = onKeymapChange(register);
+        // addAction 의 명령·단축키·메뉴는 전역 레지스트리에 남으므로 에디터가 닫힐 때 직접 해제한다
+        ed.onDidDispose(() => {
+          offKeymap();
+          registered.forEach((d) => d.dispose());
+          registered = [];
+          if (modelUri.current) unbindModel(modelUri.current);
         });
-        act("dbtool.duplicate", "Duplicate Line or Selection", [M.CtrlCmd | K.KeyD], () => ed.trigger("k", "editor.action.copyLinesDownAction", null));
-        act("dbtool.deleteLine", "Delete Line", [M.CtrlCmd | K.Backspace], () => ed.trigger("k", "editor.action.deleteLines", null));
-        act("dbtool.moveUp", "Move Line Up", [M.Alt | M.Shift | K.UpArrow], () => ed.trigger("k", "editor.action.moveLinesUpAction", null));
-        act("dbtool.moveDown", "Move Line Down", [M.Alt | M.Shift | K.DownArrow], () => ed.trigger("k", "editor.action.moveLinesDownAction", null));
-        act("dbtool.extend", "Extend Selection", [M.Alt | K.UpArrow], () => ed.trigger("k", "editor.action.smartSelect.expand", null));
-        act("dbtool.shrink", "Shrink Selection", [M.Alt | K.DownArrow], () => ed.trigger("k", "editor.action.smartSelect.shrink", null));
-        act("dbtool.gotoLine", "Go to Line/Column", [M.CtrlCmd | K.KeyL], () => ed.trigger("k", "editor.action.gotoLine", null));
-        act("dbtool.nextOcc", "Add Selection for Next Occurrence", [M.WinCtrl | K.KeyG], () => ed.trigger("k", "editor.action.addSelectionToNextFindMatch", null));
-        act("dbtool.allOcc", "Select All Occurrences", [M.CtrlCmd | M.WinCtrl | K.KeyG], () => ed.trigger("k", "editor.action.selectHighlights", null));
-        act("dbtool.toggleCase", "Toggle Case", [M.CtrlCmd | M.Shift | K.KeyU], () => {
-          const m = ed.getModel();
-          const sel = ed.getSelection();
-          if (!m || !sel || sel.isEmpty()) return;
-          const t = m.getValueInRange(sel);
-          ed.executeEdits("case", [{ range: sel, text: t === t.toUpperCase() ? t.toLowerCase() : t.toUpperCase() }]);
-        });
-        act("dbtool.blockComment", "Comment with Block Comment", [M.CtrlCmd | M.Alt | K.Slash], () => ed.trigger("k", "editor.action.blockComment", null));
 
         registerApi(tabId, {
           run,

@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { api, ConnectionView, dialectOf, meta, QueryResult, redisDb, targetId } from "./lib/api";
 import { RedisBrowser } from "./components/RedisBrowser";
 import { KeymapDialog } from "./components/KeymapDialog";
+import { KeymapEditor } from "./components/KeymapEditor";
 import { ContextMenu, Explorer, MenuItem } from "./components/Explorer";
 import { ConnectionDialog } from "./components/ConnectionDialog";
 import { ConsoleEditor, EditorApi } from "./components/ConsoleEditor";
@@ -16,6 +17,8 @@ import { RecentFiles, Switcher, SwitchItem } from "./components/Switcher";
 import { ActionItem, DbObject, invalidateSearchIndex, SearchEverywhere, SeTab } from "./components/SearchEverywhere";
 import { FindPanel, FindRun, FtsScope, FullTextSearchDialog } from "./components/FullTextSearch";
 import { DEFAULT_FONT, editorFontSize, setEditorFontSize } from "./lib/prefs";
+import { bindings, eventSpec, formatSpec, hit, loadKeymap, onKeymapChange } from "./lib/shortcuts";
+import { invalidateCompletion } from "./lib/completion";
 import { useStatusWidgets } from "./lib/statusbar";
 import type { FtsRequest } from "./lib/api";
 import { isRelation, NodeInfo, revealInTree } from "./components/SchemaTree";
@@ -78,11 +81,26 @@ const snapKey = (t: { kind: string; connId: string; database?: string; title: st
   `${t.kind}|${t.connId}|${t.database ?? ""}|${t.edit ? t.edit.schema + "." + t.edit.table : t.title}`;
 
 const isMac = navigator.platform.toLowerCase().includes("mac");
+/** 결과 그리드에 쌓아 두는 최대 행 수 (TUI 와 같다). 그 이상은 CSV 로 내보낸다 */
+const MAX_ROWS = 100_000;
+const capMsg = (n: number) => `Showing the first ${n.toLocaleString()} rows — export to CSV for all of them`;
+/** 메뉴·Find Action 에 보일 단축키 (첫 번째 키) */
+const sk = (id: string) => {
+  const b = bindings(id);
+  return b.length ? formatSpec(b[0]) : undefined;
+};
 const last = <T,>(a: T[]): T | undefined => a[a.length - 1];
 
 export default function App() {
   const theme = useTheme();
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  // 키맵이 바뀌면 메뉴의 단축키 표시를 다시 그린다
+  const [, setKeymapVer] = useState(0);
+  useEffect(() => {
+    const off = onKeymapChange(() => setKeymapVer((n) => n + 1));
+    void loadKeymap();
+    return () => void off();
+  }, []);
+  const [settingsOpen, setSettingsOpen] = useState<false | "appearance" | "keymap">(false);
   const [schemeOpen, setSchemeOpen] = useState(false);
   const [keymapOpen, setKeymapOpen] = useState(false);
   const [conns, setConns] = useState<ConnectionView[]>([]);
@@ -101,9 +119,16 @@ export default function App() {
   const tabsRef = useRef(tabs);
   tabsRef.current = tabs;
 
+  // 쿼리를 실행할 때마다 불리므로, 실제로 바뀐 게 있을 때만 상태를 바꾼다 (트리 전체 다시 그리기·단축키 핸들러 재등록 방지)
+  const connsJson = useRef("");
   const refresh = useCallback(async () => {
     try {
-      setConns(await api.listConnections());
+      const cs = await api.listConnections();
+      const j = JSON.stringify(cs);
+      if (j !== connsJson.current) {
+        connsJson.current = j;
+        setConns(cs);
+      }
     } catch (e) {
       setStatus(String(e));
     }
@@ -124,6 +149,7 @@ export default function App() {
     let off: (() => void) | undefined;
     listen<string>("conn-disconnected", (e) => {
       invalidateSearchIndex(e.payload);
+      invalidateCompletion(e.payload);
       refresh();
       setStatus(`Disconnected (idle): ${e.payload}`);
     })
@@ -152,13 +178,16 @@ export default function App() {
   const mru = useRef<string[]>([]);
   const recent = useRef<TabSnapshot[]>([]);
   const closedStack = useRef<TabSnapshot[]>([]);
+  // 콘솔에서 치는 SQL 은 상태(setTabs)에 넣지 않고 여기 둔다 → 키 입력마다 앱 전체를 다시 그리지 않는다
+  const liveSql = useRef(new Map<string, string>());
+  const sqlOf = (t: Tab) => liveSql.current.get(t.id) ?? t.sql;
   const snapshot = (t: Tab): TabSnapshot => ({
     key: snapKey(t),
     kind: t.kind,
     title: t.title,
     connId: t.connId,
     database: t.database,
-    sql: t.sql,
+    sql: sqlOf(t),
     edit: t.edit,
     where: t.where,
     orderBy: t.orderBy,
@@ -355,9 +384,7 @@ export default function App() {
   };
 
   // ───────── Database Explorer 동작 (DataGrip 키맵) ─────────
-  const K = isMac
-    ? { edit: "⌘↓", props: "⌘;", refresh: "⌘R", deact: "⌘F2", jump: "⇧⌘F10", ddl: "⌘B", gen: "⌥⌘G", ddlClip: "⌥⇧⌘G", ddlCons: "⌥⇧⌘B", ref: "⌥⇧⌘C", doc: "F1", drop: "⌦", dup: "⌘D", console: "⇧⌘L", force: "⌥⇧⌘R", newK: "⌘N" }
-    : { edit: "F4", props: "Shift+Enter", refresh: "Ctrl+F5", deact: "Ctrl+F2", jump: "Ctrl+Shift+F10", ddl: "Ctrl+B", gen: "Ctrl+Alt+G", ddlClip: "Ctrl+Alt+Shift+G", ddlCons: "Ctrl+Alt+Shift+B", ref: "Ctrl+Alt+Shift+C", doc: "Ctrl+Q", drop: "Delete", dup: "Ctrl+D", console: "Ctrl+Shift+L", force: "Ctrl+Alt+Shift+R", newK: "Alt+Insert" };
+  const K = { edit: sk("tree.editData"), props: sk("tree.properties"), refresh: sk("tree.refresh"), deact: sk("tree.disconnect"), jump: sk("tree.jumpConsole"), ddl: sk("tree.ddl"), gen: sk("tree.sqlGen"), ddlClip: sk("tree.ddlCopy"), ddlCons: sk("tree.ddlConsole"), ref: sk("tree.copyRef"), doc: sk("tree.quickDoc"), drop: sk("tree.remove"), dup: sk("tree.duplicate"), console: sk("console.new"), force: bindings("tree.refresh")[1] ? formatSpec(bindings("tree.refresh")[1]) : undefined, newK: sk("tree.newDs") };
   const [quickDoc, setQuickDoc] = useState<{ title: string; text: string } | null>(null);
   const nodeTarget = (info: NodeInfo) => targetId(info.conn.id, info.db && info.db !== (info.conn.database || "postgres") ? info.db : undefined);
   const fqn = (info: NodeInfo) => [info.db, info.schema, info.name].filter(Boolean).join(".") || info.conn.name;
@@ -413,6 +440,7 @@ export default function App() {
   };
   const deactivate = async (c: ConnectionView) => {
     await api.disconnect(c.id);
+    invalidateCompletion(c.id);
     setStatus(`Deactivated ${c.name}`);
     refresh();
   };
@@ -620,6 +648,8 @@ export default function App() {
       updTab(tabId, (t) => ({ ...t, results: t.results.map((r) => (r.id === entryId && r.result ? { ...r, result: { ...r.result, truncated: false } } : r)) }));
       return;
     }
+    const shown = tab.results.find((x) => x.id === entryId)?.result?.rows.length ?? 0;
+    if (shown >= MAX_ROWS) return setStatus(capMsg(shown));
     updTab(tabId, (t) => ({ ...t, loadingMore: true }));
     try {
       const r = await api.fetchMore(tabId);
@@ -667,6 +697,8 @@ export default function App() {
   };
 
   const fetchMore = async (tab: Tab) => {
+    const shown = tab.result?.rows.length ?? 0;
+    if (shown >= MAX_ROWS) return setStatus(capMsg(shown));
     patch(tab.id, { loadingMore: true });
     try {
       const r = await api.fetchMore(tab.id);
@@ -702,6 +734,7 @@ export default function App() {
     mru.current = mru.current.filter((x) => !ids.includes(x));
     for (const id of ids) {
       editorApis.current.delete(id);
+      liveSql.current.delete(id);
       api.closeSession(id).catch(() => {});
     }
     setTabs((ts) => {
@@ -807,7 +840,7 @@ export default function App() {
     if (!c) return;
     setSplit(dir);
     if (t.kind === "table" && t.edit) openTableTab(c, t.edit.schema, t.edit.table, t.database, 1, t.where, t.orderBy);
-    else addTab(c, t.kind, { title: t.kind === "console" ? `${t.title} (copy)` : t.title, sql: t.sql, database: t.database, group: 1 });
+    else addTab(c, t.kind, { title: t.kind === "console" ? `${t.title} (copy)` : t.title, sql: sqlOf(t), database: t.database, group: 1 });
   };
 
   const togglePin = (t: Tab) => {
@@ -827,7 +860,7 @@ export default function App() {
     const other: Group = t.group === 0 ? 1 : 0;
     const c = conns.find((x) => x.id === t.connId);
     const items: MenuItem[] = [
-      { label: "Close", shortcut: isMac ? "⌘W" : "Ctrl+F4", action: () => closeTabs([t.id]) },
+      { label: "Close", shortcut: sk("tab.close"), action: () => closeTabs([t.id]) },
       { label: "Close Other Tabs", action: () => closeTabs(sameGroup.filter((x) => x.id !== t.id && !x.pinned).map((x) => x.id)) },
       { label: "Close All but Pinned", action: () => closeTabs(sameGroup.filter((x) => !x.pinned).map((x) => x.id)) },
       { label: "Close Tabs to the Left", action: () => closeTabs(sameGroup.slice(0, idx).filter((x) => !x.pinned).map((x) => x.id)), disabled: idx === 0 },
@@ -847,7 +880,7 @@ export default function App() {
       ...(split
         ? ([
             { label: "Move To Opposite Group", action: () => moveTo(t.id, other) },
-            { label: "Open In Opposite Group", action: () => { const cc = c; if (!cc) return; if (t.kind === "table" && t.edit) openTableTab(cc, t.edit.schema, t.edit.table, t.database, other, t.where, t.orderBy); else addTab(cc, t.kind, { title: t.title, sql: t.sql, database: t.database, group: other }); } },
+            { label: "Open In Opposite Group", action: () => { const cc = c; if (!cc) return; if (t.kind === "table" && t.edit) openTableTab(cc, t.edit.schema, t.edit.table, t.database, other, t.where, t.orderBy); else addTab(cc, t.kind, { title: t.title, sql: sqlOf(t), database: t.database, group: other }); } },
             { label: "Unsplit All", action: unsplit },
           ] as MenuItem[])
         : ([
@@ -860,7 +893,7 @@ export default function App() {
     if (t.kind === "console" && c)
       items.push(
         { separator: true },
-        { label: "Duplicate", action: () => addTab(c, "console", { title: `${t.title} (copy)`, sql: t.sql, database: t.database, group: t.group }) },
+        { label: "Duplicate", action: () => addTab(c, "console", { title: `${t.title} (copy)`, sql: sqlOf(t), database: t.database, group: t.group }) },
         {
           label: "Rename File…",
           shortcut: "⇧F6",
@@ -974,47 +1007,47 @@ export default function App() {
   const seActions = (): ActionItem[] => {
     const t = active;
     const c = treeSel?.conn ?? conns.find((x) => x.id === t?.connId);
-    const k = (mac: string, other: string) => (isMac ? mac : other);
     return [
-      { name: "New Query Console", shortcut: k("⇧⌘L", "Ctrl+Shift+L"), group: "File", run: () => c && openConsole(c, treeSel?.db ?? t?.database), disabled: !c },
+      { name: "New Query Console", shortcut: sk("console.new"), group: "File", run: () => c && openConsole(c, treeSel?.db ?? t?.database), disabled: !c },
       { name: "New Data Source…", group: "File", run: () => setDialog({}) },
-      { name: "Data Source Properties", shortcut: k("⌘;", "Shift+Enter"), group: "File", run: () => c && setDialog({ edit: c }), disabled: !c },
+      { name: "Data Source Properties", shortcut: sk("tree.properties"), group: "File", run: () => c && setDialog({ edit: c }), disabled: !c },
       { name: "Export Data Sources…", group: "File", run: () => exportConns() },
       { name: "Import Data Sources…", group: "File", run: () => importConns() },
-      { name: "Settings…", shortcut: k("⌘,", "Ctrl+Alt+S"), group: "File", run: () => setSettingsOpen(true) },
-      { name: "Keymap Reference", shortcut: k("⇧⌘/", "Ctrl+Shift+/"), group: "Help", run: () => setKeymapOpen(true) },
+      { name: "Settings…", shortcut: sk("settings"), group: "File", run: () => setSettingsOpen("appearance") },
+      { name: "Keymap Reference", shortcut: sk("keymap"), group: "Help", run: () => setKeymapOpen(true) },
+      { name: "Edit Keymap…", group: "Help", run: () => setSettingsOpen("keymap") },
       { name: "Theme: Dark", group: "Appearance", run: () => setThemePref("dark") },
       { name: "Theme: Light", group: "Appearance", run: () => setThemePref("light") },
       { name: "Theme: High contrast", group: "Appearance", run: () => setThemePref("hc") },
       { name: "Theme: Sync with OS", group: "Appearance", run: () => setThemePref("system") },
-      { name: "Quick Switch Theme…", shortcut: k("⌃`", "Ctrl+`"), group: "Appearance", run: () => setSchemeOpen(true) },
-      { name: "Execute", shortcut: k("⌘↩", "Ctrl+Enter"), group: "Run", run: () => t && editorApis.current.get(t.id)?.run(), disabled: t?.kind !== "console" },
+      { name: "Quick Switch Theme…", shortcut: sk("theme"), group: "Appearance", run: () => setSchemeOpen(true) },
+      { name: "Execute", shortcut: sk("editor.run"), group: "Run", run: () => t && editorApis.current.get(t.id)?.run(), disabled: t?.kind !== "console" },
       { name: "Explain Plan", group: "Run", run: () => t && editorApis.current.get(t.id)?.run("plan"), disabled: t?.kind !== "console" },
       { name: "Explain Analyse", group: "Run", run: () => t && editorApis.current.get(t.id)?.run("analyze"), disabled: t?.kind !== "console" },
-      { name: "Cancel Running Statements", shortcut: k("⌘F2", "Ctrl+F2"), group: "Run", run: () => t && cancel(t), disabled: !t?.running },
+      { name: "Cancel Running Statements", shortcut: sk("editor.cancel"), group: "Run", run: () => t && cancel(t), disabled: !t?.running },
       { name: "Commit", group: "Transaction", run: () => t && txEnd(t, "commit"), disabled: !t?.inTx },
       { name: "Roll Back", group: "Transaction", run: () => t && txEnd(t, "rollback"), disabled: !t?.inTx },
       { name: "Transaction Mode: Manual", group: "Transaction", run: () => t && setTxMode(t, true), disabled: t?.kind !== "console" },
       { name: "Transaction Mode: Auto", group: "Transaction", run: () => t && setTxMode(t, false), disabled: t?.kind !== "console" },
-      { name: "Browse Query History…", shortcut: k("⌥⌘E", "Ctrl+Alt+E"), group: "Run", run: () => t && setHistoryFor(t.id), disabled: t?.kind !== "console" },
-      { name: "Go to Database Object…", shortcut: k("⌘O", "Ctrl+N"), group: "Navigate", run: () => setTimeout(() => setSe("database")) },
-      { name: "Go to Symbol…", shortcut: k("⌥⌘O", "Ctrl+Alt+Shift+N"), group: "Navigate", run: () => setTimeout(() => setSe("symbols")) },
-      { name: "Go to File…", shortcut: k("⇧⌘O", "Ctrl+Shift+N"), group: "Navigate", run: () => setTimeout(() => setSe("files")) },
-      { name: "Full-text Search…", shortcut: k("⌥⇧⌘F", "Ctrl+Alt+Shift+F"), group: "Navigate", run: () => openFts() },
-      { name: "Recent Files", shortcut: k("⌘E", "Ctrl+E"), group: "Navigate", run: () => setRecentOpen(true) },
+      { name: "Browse Query History…", shortcut: sk("editor.history"), group: "Run", run: () => t && setHistoryFor(t.id), disabled: t?.kind !== "console" },
+      { name: "Go to Database Object…", shortcut: sk("goto.object"), group: "Navigate", run: () => setTimeout(() => setSe("database")) },
+      { name: "Go to Symbol…", shortcut: sk("goto.symbol"), group: "Navigate", run: () => setTimeout(() => setSe("symbols")) },
+      { name: "Go to File…", shortcut: sk("goto.file"), group: "Navigate", run: () => setTimeout(() => setSe("files")) },
+      { name: "Full-text Search…", shortcut: sk("fts"), group: "Navigate", run: () => openFts() },
+      { name: "Recent Files", shortcut: sk("recent"), group: "Navigate", run: () => setRecentOpen(true) },
       { name: "Switcher", shortcut: "⌃⇥", group: "Navigate", run: () => openSwitcher(false) },
-      { name: "Reopen Closed Tab", shortcut: k("⇧⌘T", "Ctrl+Shift+T"), group: "Window", run: reopenClosed },
-      { name: "Close Tab", shortcut: k("⌘W", "Ctrl+F4"), group: "Window", run: () => t && closeTabs([t.id]), disabled: !t },
+      { name: "Reopen Closed Tab", shortcut: sk("tab.reopen"), group: "Window", run: reopenClosed },
+      { name: "Close Tab", shortcut: sk("tab.close"), group: "Window", run: () => t && closeTabs([t.id]), disabled: !t },
       { name: "Close All Tabs", group: "Window", run: () => closeTabs(tabsRef.current.map((x) => x.id)) },
       { name: "Split Right", group: "Window", run: () => t && splitClone(t, "right"), disabled: !t },
       { name: "Split Down", group: "Window", run: () => t && splitClone(t, "down"), disabled: !t },
       { name: "Unsplit All", group: "Window", run: unsplit, disabled: !split },
-      { name: "Maximize Editor", shortcut: k("⇧⌘F12", "Ctrl+Shift+F12"), group: "Window", run: () => setMaximized((m) => !m) },
-      { name: "Database Explorer", shortcut: k("⌘1", "Alt+1"), group: "Tool Windows", run: () => toggleExplorer() },
-      { name: "Find (Full-text Search results)", shortcut: k("⌘3", "Alt+3"), group: "Tool Windows", run: () => setFindOpen((o) => !o) },
-      { name: "Refresh", shortcut: k("⌥⌘Y", "Ctrl+Alt+Y"), group: "Database", run: () => refresh() },
-      { name: "Increase Editor Font Size", shortcut: k("⌃⇧.", "Ctrl+Shift+."), group: "Editor", run: () => bumpFont(1) },
-      { name: "Decrease Editor Font Size", shortcut: k("⌃⇧,", "Ctrl+Shift+,"), group: "Editor", run: () => bumpFont(-1) },
+      { name: "Maximize Editor", shortcut: sk("maximize"), group: "Window", run: () => setMaximized((m) => !m) },
+      { name: "Database Explorer", shortcut: sk("explorer"), group: "Tool Windows", run: () => toggleExplorer() },
+      { name: "Find (Full-text Search results)", shortcut: sk("find.window"), group: "Tool Windows", run: () => setFindOpen((o) => !o) },
+      { name: "Refresh", shortcut: sk("refresh"), group: "Database", run: () => refresh() },
+      { name: "Increase Editor Font Size", shortcut: sk("font.bigger"), group: "Editor", run: () => bumpFont(1) },
+      { name: "Decrease Editor Font Size", shortcut: sk("font.smaller"), group: "Editor", run: () => bumpFont(-1) },
       { name: "Reset Editor Font Size", group: "Editor", run: () => bumpFont(0) },
     ];
   };
@@ -1030,9 +1063,8 @@ export default function App() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       // Switcher / Recent Files 팝업이 떠 있으면 팝업이 키를 처리한다
-      if (document.querySelector(".switcher, .search-everywhere, .modal.fts, .modal.keymap")) return;
+      if (document.querySelector(".switcher, .search-everywhere, .modal.fts, .modal.keymap, .keymap-recording")) return;
       const { treeSel, active, tabs } = keyState.current;
-      const mod = isMac ? e.metaKey : e.ctrlKey;
       const L = latest.current;
       // ⇧⇧: Search Everywhere
       if (e.key === "Shift") {
@@ -1046,97 +1078,86 @@ export default function App() {
         return;
       }
       lastShift.current = 0;
-      const k = e.key.toLowerCase();
-      // ⌘O Go to Database Object / ⌥⌘O Go to Symbol / ⇧⌘O Go to File / ⇧⌘A Find Action
-      if (mod && e.code === "KeyO" && !e.shiftKey && !e.altKey) return e.preventDefault(), L.setSe("database");
-      if (mod && e.code === "KeyO" && e.altKey && !e.shiftKey) return e.preventDefault(), L.setSe("symbols");
-      if (mod && e.code === "KeyO" && e.shiftKey && !e.altKey) return e.preventDefault(), L.setSe("files");
-      if (mod && e.code === "KeyA" && e.shiftKey && !e.altKey) return e.preventDefault(), L.setSe("actions");
-      // ⌥⇧⌘F Full-text Search
-      if (mod && e.altKey && e.shiftKey && e.code === "KeyF") return e.preventDefault(), void L.openFts();
-      // ⌘1 Database Explorer / ⌘3 Find
-      if (mod && !e.shiftKey && !e.altKey && e.code === "Digit1") return e.preventDefault(), L.toggleExplorer();
-      if (mod && !e.shiftKey && !e.altKey && e.code === "Digit3") return e.preventDefault(), L.setFindOpen((o) => !o);
+      // 명령 단축키는 lib/shortcuts.ts (Settings › Keymap 에서 바꾼다)
+      const spec = eventSpec(e);
+      const is = (id: string) => hit(spec, id);
+      if (is("goto.object")) return e.preventDefault(), L.setSe("database");
+      if (is("goto.symbol")) return e.preventDefault(), L.setSe("symbols");
+      if (is("goto.file")) return e.preventDefault(), L.setSe("files");
+      if (is("find.action")) return e.preventDefault(), L.setSe("actions");
+      if (is("fts")) return e.preventDefault(), void L.openFts();
+      if (is("explorer")) return e.preventDefault(), L.toggleExplorer();
+      if (is("find.window")) return e.preventDefault(), L.setFindOpen((o) => !o);
       // ⇧⎋ Hide Active Tool Window
       if (e.shiftKey && e.key === "Escape") {
         const ae = document.activeElement;
         if (ae?.closest?.("[data-toolwindow=find]")) return e.preventDefault(), L.setFindOpen(false);
         if (ae?.closest?.("[data-tree]")) return e.preventDefault(), L.toggleExplorer();
       }
-      // ⌃⇧. / ⌃⇧, 에디터 글꼴 크기
-      if (e.ctrlKey && e.shiftKey && !e.metaKey && (e.code === "Period" || e.code === "Comma"))
-        return e.preventDefault(), L.bumpFont(e.code === "Period" ? 1 : -1);
-      void k;
+      if (is("font.bigger")) return e.preventDefault(), L.bumpFont(1);
+      if (is("font.smaller")) return e.preventDefault(), L.bumpFont(-1);
       const inTree = (document.activeElement as HTMLElement | null)?.closest?.("[data-tree]");
       const inInput = ["INPUT", "TEXTAREA", "SELECT"].includes((document.activeElement as HTMLElement | null)?.tagName ?? "");
-      // ⇧⌘L: 새 쿼리 콘솔
-      if (mod && e.shiftKey && e.key.toLowerCase() === "l") {
+      if (is("console.new")) {
         e.preventDefault();
         const conn = treeSel?.conn ?? conns.find((c) => c.id === active?.connId);
         if (conn) openConsole(conn, treeSel?.db ?? active?.database);
         return;
       }
       if (inTree && treeSel && !inInput) {
-        const cmdOnly = mod && !e.shiftKey && !e.altKey;
         const act = (fn: () => void) => {
           e.preventDefault();
           e.stopPropagation();
           fn();
         };
-        // ⌘↓ Edit Data (데이터 소스에서는 기본 콘솔), F4 도 허용
-        if ((cmdOnly && e.key === "ArrowDown") || e.key === "F4")
+        // Edit Data (데이터 소스에서는 기본 콘솔)
+        if (is("tree.editData"))
           return act(() => ((treeSel.kind === "conn" || treeSel.kind === "db") && treeSel.conn.kind !== "redis" ? jumpToConsole(treeSel) : activateNode(treeSel)));
-        if (cmdOnly && e.key === ";" && treeSel.kind === "conn") return act(() => setDialog({ edit: treeSel.conn }));
-        if (cmdOnly && e.key.toLowerCase() === "r") return act(() => treeSel.refresh?.());
-        if (cmdOnly && e.key === "F2" && treeSel.conn.connected) return act(() => deactivate(treeSel.conn));
-        if (mod && e.shiftKey && e.key === "F10") return act(() => jumpToConsole(treeSel));
-        if (mod && e.altKey && !e.shiftKey && e.code === "KeyG" && treeSel.name) return act(() => sqlGenerator(treeSel));
-        if (mod && e.altKey && e.shiftKey && e.code === "KeyG" && treeSel.name) return act(() => ddlToClipboard(treeSel));
-        if (mod && e.altKey && e.shiftKey && e.code === "KeyB" && treeSel.name) return act(() => ddlToConsole(treeSel));
-        if (mod && e.altKey && e.shiftKey && e.code === "KeyR") return act(() => treeSel.refresh?.());
-        if (e.key === "F1") return act(() => showQuickDoc(treeSel));
-        if (cmdOnly && e.key.toLowerCase() === "n") return act(() => setDialog({}));
-        if (cmdOnly && e.key.toLowerCase() === "d" && treeSel.kind === "conn") return act(() => duplicateConn(treeSel.conn));
-        if (!mod && (e.key === "Delete" || (isMac && e.key === "Backspace" && e.metaKey)))
+        if (is("tree.properties") && treeSel.kind === "conn") return act(() => setDialog({ edit: treeSel.conn }));
+        if (is("tree.refresh")) return act(() => treeSel.refresh?.());
+        if (is("tree.disconnect") && treeSel.conn.connected) return act(() => deactivate(treeSel.conn));
+        if (is("tree.jumpConsole")) return act(() => jumpToConsole(treeSel));
+        if (is("tree.sqlGen") && treeSel.name) return act(() => sqlGenerator(treeSel));
+        if (is("tree.ddlCopy") && treeSel.name) return act(() => ddlToClipboard(treeSel));
+        if (is("tree.ddlConsole") && treeSel.name) return act(() => ddlToConsole(treeSel));
+        if (is("tree.quickDoc")) return act(() => showQuickDoc(treeSel));
+        if (is("tree.newDs")) return act(() => setDialog({}));
+        if (is("tree.duplicate") && treeSel.kind === "conn") return act(() => duplicateConn(treeSel.conn));
+        if (is("tree.remove"))
           return act(() => (treeSel.kind === "conn" ? removeConn(treeSel.conn) : treeSel.name ? dangerous(treeSel, "DROP") : undefined));
       }
-      // ⌘B: Go to DDL
-      if (mod && !e.shiftKey && e.key.toLowerCase() === "b" && inTree && treeSel && treeSel.name) {
+      if (is("tree.ddl") && inTree && treeSel && treeSel.name) {
         e.preventDefault();
         openDdl(treeSel);
         return;
       }
-      // ⌥⇧⌘C: Copy Reference
-      if (mod && e.shiftKey && e.altKey && e.code === "KeyC" && inTree && treeSel) {
+      if (is("tree.copyRef") && inTree && treeSel) {
         e.preventDefault();
         navigator.clipboard.writeText(treeSel.name ? `${treeSel.schema}.${treeSel.name}` : treeSel.schema ?? treeSel.db ?? treeSel.conn.name);
         return;
       }
-      // ⌥⌘Y: Refresh
-      if (mod && e.altKey && e.code === "KeyY") {
+      if (is("refresh")) {
         e.preventDefault();
         if (inTree && treeSel?.refresh) treeSel.refresh();
         else if (active?.kind === "table") applyTableFilter(active, active.where, active.orderBy);
         else {
           invalidateSearchIndex();
+          for (const c of conns) invalidateCompletion(c.id);
           refresh();
         }
         return;
       }
-      // ⌥⌘E: Browse Query History
-      if (mod && e.altKey && e.code === "KeyE" && active?.kind === "console") {
+      if (is("editor.history") && active?.kind === "console") {
         e.preventDefault();
         setHistoryFor(active.id);
         return;
       }
-      // ⌘F2: Cancel Running Statements
-      if (mod && e.key === "F2" && !inTree && active?.running) {
+      if (is("editor.cancel") && !inTree && active?.running) {
         e.preventDefault();
         cancel(active);
         return;
       }
-      // ⌘W: 탭 닫기
-      if (mod && !e.shiftKey && e.key.toLowerCase() === "w" && active) {
+      if (is("tab.close") && active) {
         e.preventDefault();
         closeTabs([active.id]);
         return;
@@ -1148,54 +1169,47 @@ export default function App() {
         openSwitcher(e.shiftKey);
         return;
       }
-      // ⇧⌘/ (⌘?): Keymap Reference
-      if (mod && e.shiftKey && (e.code === "Slash" || e.key === "?")) {
+      if (is("keymap")) {
         e.preventDefault();
         setKeymapOpen(true);
         return;
       }
-      // ⌘,: Settings
-      if (mod && !e.shiftKey && !e.altKey && e.key === ",") {
+      if (is("settings")) {
         e.preventDefault();
-        setSettingsOpen(true);
+        setSettingsOpen("appearance");
         return;
       }
-      // ⌃`: Quick Switch Scheme (테마)
-      if (e.ctrlKey && !e.metaKey && e.code === "Backquote") {
+      if (is("theme")) {
         e.preventDefault();
         setSchemeOpen(true);
         return;
       }
-      // ⌘E: Recent Files
-      if (mod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "e") {
+      if (is("recent")) {
         e.preventDefault();
         e.stopPropagation();
         setRecentOpen(true);
         return;
       }
-      // ⇧⌘] / ⇧⌘[: 다음 / 이전 탭
-      if (mod && e.shiftKey && (e.code === "BracketRight" || e.code === "BracketLeft") && active) {
+      if ((is("tab.next") || is("tab.prev")) && active) {
         e.preventDefault();
         const g = tabs.filter((t) => t.group === active.group);
         const i = g.findIndex((t) => t.id === active.id);
-        const n = g[(i + (e.code === "BracketLeft" ? -1 : 1) + g.length) % g.length];
+        const n = g[(i + (is("tab.prev") ? -1 : 1) + g.length) % g.length];
         if (n) activate(n);
         return;
       }
-      // ⇧⌘T: Reopen Closed Tab
-      if (mod && e.shiftKey && !e.altKey && e.key.toLowerCase() === "t") {
+      if (is("tab.reopen")) {
         e.preventDefault();
         reopenClosed();
         return;
       }
-      // ⇧⌘F12: Maximize Editor (툴 윈도우 숨기기)
-      if (mod && e.shiftKey && e.key === "F12") {
+      if (is("maximize")) {
         e.preventDefault();
         setMaximized((m) => !m);
         return;
       }
-      // ⌥⇥ / ⌥⇧⇥: 분할된 에디터 그룹 사이 이동 (Goto Next Splitter)
-      if (e.altKey && !mod && e.key === "Tab" && keyState.current.split) {
+      // 분할된 에디터 그룹 사이 이동 (Goto Next Splitter)
+      if (is("split.other") && keyState.current.split) {
         e.preventDefault();
         const g: Group = keyState.current.focused === 0 ? 1 : 0;
         const id = activeIdsRef.current[g];
@@ -1396,7 +1410,7 @@ export default function App() {
               <br />
               <span className="muted">Double-click a table ({isMac ? "⌘↓" : "F4"}) to edit data, {isMac ? "⌘B" : "Ctrl+B"} for DDL, {isMac ? "⌘↩" : "Ctrl+Enter"} to execute.</span>
               <br />
-              <span className="muted">All shortcuts: <b>Keymap Reference</b> ({isMac ? "⇧⌘/" : "Ctrl+Shift+/"}) · Search Everywhere ({isMac ? "⇧⇧" : "Shift Shift"})</span>
+              <span className="muted">All shortcuts: <b>Keymap Reference</b> ({sk("keymap")}) · Search Everywhere ({isMac ? "⇧⇧" : "Shift Shift"})</span>
             </div>
           )}
           {gTabs
@@ -1408,7 +1422,7 @@ export default function App() {
                   <ConsolePane
                     tabId={t.id}
                     target={t.target}
-                    initialSql={t.sql}
+                    initialSql={sqlOf(t)}
                     connName={c?.name ?? ""}
                     database={t.database || c?.database || (c?.kind === "mysql" ? "" : "postgres")}
                     schema={t.schema ?? (c?.kind === "mysql" ? t.database || c?.database || "" : "public")}
@@ -1422,7 +1436,7 @@ export default function App() {
                     output={t.output}
                     txManual={t.txManual}
                     inTx={t.inTx}
-                    onChange={(sql) => patch(t.id, { sql })}
+                    onChange={(sql) => liveSql.current.set(t.id, sql)}
                     onExecute={(stmts, explain) => executeConsole(t.id, stmts, explain)}
                     onCancel={() => cancel(t)}
                     onSetActiveResult={(id) => patch(t.id, { activeResult: id })}
@@ -1544,6 +1558,10 @@ export default function App() {
     );
   };
 
+  // Search Everywhere 의 파일·액션 목록은 열 때 한 번 만든다 (열려 있는 동안 App 이 다시 그려질 때마다 새로 만들면 안쪽 memo 가 매번 깨진다)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const seLists = useMemo(() => (se ? { files: seFiles(), actions: seActions() } : null), [se]);
+
   return (
     <div className="app">
       <div className="toolbar" style={activeConn?.color ? { boxShadow: `inset 4px 0 0 ${activeConn.color}` } : undefined}>
@@ -1560,7 +1578,7 @@ export default function App() {
         <button className="stop" disabled={!active?.running} onClick={() => active && cancel(active)} title="Cancel Running Statements">
           ■
         </button>
-        <button className="icon tb-settings" title={`Settings (${isMac ? "⌘," : "Ctrl+Alt+S"})`} onClick={() => setSettingsOpen(true)}>⚙</button>
+        <button className="icon tb-settings" title={`Settings (${sk("settings")})`} onClick={() => setSettingsOpen("appearance")}>⚙</button>
         <button className="icon tb-settings" title={`Keymap Reference (${isMac ? "⇧⌘/" : "Ctrl+Shift+/"})`} onClick={() => setKeymapOpen(true)}>⌨</button>
         <span className="tb-conn">
           {activeConn ? `${activeConn.name} · ${activeConn.user}@${activeConn.host} · ${active?.database || activeConn.database || "postgres"}` : "No console"}
@@ -1650,15 +1668,15 @@ export default function App() {
           }}
         />
       )}
-      {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} />}
-      {keymapOpen && <KeymapDialog onClose={() => setKeymapOpen(false)} />}
+      {settingsOpen && <SettingsDialog initialPage={settingsOpen} onClose={() => setSettingsOpen(false)} />}
+      {keymapOpen && <KeymapDialog onClose={() => setKeymapOpen(false)} onEdit={() => (setKeymapOpen(false), setSettingsOpen("keymap"))} />}
       {se && (
         <SearchEverywhere
           initialTab={se}
           conns={conns}
           contextConnId={treeSel?.conn.id ?? active?.connId}
-          files={seFiles()}
-          actions={seActions()}
+          files={seLists?.files ?? []}
+          actions={seLists?.actions ?? []}
           onClose={() => setSe(null)}
           onSelectInTree={(o) => {
             setExplorerHidden(false);
@@ -1749,7 +1767,8 @@ export default function App() {
 }
 
 /** Settings › Appearance */
-function SettingsDialog({ onClose }: { onClose: () => void }) {
+function SettingsDialog({ onClose, initialPage = "appearance" }: { onClose: () => void; initialPage?: "appearance" | "keymap" }) {
+  const [page, setPage] = useState(initialPage);
   const [pref, setPref] = useState<ThemePref>(getThemePref());
   const theme = useTheme();
   const pick = (p: ThemePref) => {
@@ -1759,13 +1778,15 @@ function SettingsDialog({ onClose }: { onClose: () => void }) {
   const sync = pref === "system";
   return (
     <div className="modal-backdrop" onMouseDown={onClose}>
-      <div className="modal settings" onMouseDown={(e) => e.stopPropagation()}>
+      <div className={"modal settings" + (page === "keymap" ? " wide" : "")} onMouseDown={(e) => e.stopPropagation()}>
         <div className="modal-title">Settings</div>
         <div className="settings-body">
           <div className="settings-nav">
-            <div className="on">Appearance</div>
+            <div className={page === "appearance" ? "on" : ""} onClick={() => setPage("appearance")}>Appearance</div>
+            <div className={page === "keymap" ? "on" : ""} onClick={() => setPage("keymap")}>Keymap</div>
           </div>
-          <div className="form settings-form">
+          {page === "keymap" && <KeymapEditor />}
+          {page === "appearance" && <div className="form settings-form">
             <label>Theme</label>
             <div className="row">
               <select value={sync ? theme : pref} disabled={sync} onChange={(e) => pick(e.target.value as ThemePref)}>
@@ -1778,9 +1799,9 @@ function SettingsDialog({ onClose }: { onClose: () => void }) {
                 Sync with OS
               </label>
             </div>
-          </div>
+          </div>}
         </div>
-        <div className="hint">Quick switch: {isMac ? "⌃`" : "Ctrl+`"}</div>
+        {page === "appearance" && <div className="hint">Quick switch: {sk("theme")}</div>}
         <div className="modal-actions">
           <span className="grow" />
           <button className="primary" onClick={onClose}>OK</button>

@@ -1,7 +1,8 @@
 import { connBg, useTheme } from "../lib/theme";
-import { createContext, useContext, useEffect, useId, useState } from "react";
+import { createContext, useContext, useEffect, useId, useRef, useState } from "react";
 import { ConnectionView, redisDb, dbVisible, meta, RelationInfo, RoutineInfo, SchemaInfo, schemaVisible, Scope, TableDetail, targetId } from "../lib/api";
 import { ScopePopup } from "./ScopePopup";
+import { invalidateCompletion } from "../lib/completion";
 import { TYPE_COLOR } from "./RedisBrowser";
 import { Chevron, ColumnIcon, DatabaseIcon, FkIcon, FolderIcon, IndexIcon, KeyIcon, MySqlIcon, PgIcon, RedisIcon, RoutineIcon, SchemaIcon, SequenceIcon, TableIcon, ViewIcon } from "./icons";
 
@@ -36,12 +37,15 @@ export function revealInTree(t: RevealTarget) {
   setTimeout(tick, 50);
 }
 function useReveal(fn: (t: RevealTarget) => void) {
+  // 리스너는 마운트 때 한 번만 단다 (렌더마다 다시 달지 않게). fn 은 ref 로 최신 것을 쓴다
+  const ref = useRef(fn);
+  ref.current = fn;
   useEffect(() => {
-    const h = () => pendingReveal && fn(pendingReveal);
+    const h = () => pendingReveal && ref.current(pendingReveal);
     h();
     window.addEventListener("dbtool-reveal", h);
     return () => window.removeEventListener("dbtool-reveal", h);
-  });
+  }, []);
 }
 
 export const isRelation = (k: NodeInfo["kind"]) => ["table", "view", "matview", "foreign", "partitioned"].includes(k);
@@ -169,6 +173,8 @@ export function SchemaTree({ conn, filter, showSystem, onActivate, onMenu, onSco
       return !o;
     });
   const refreshAll = () => {
+    // 스키마가 바뀌었을 수 있으니 자동완성 메타도 다시 읽게 한다
+    invalidateCompletion(conn.id);
     setGen((g) => g + 1);
     loadDbs(true);
   };
@@ -249,7 +255,6 @@ export function SchemaTree({ conn, filter, showSystem, onActivate, onMenu, onSco
                       })
                     }
                     info={{ kind: "db", conn, db, refresh: refreshAll }}
-                    onDoubleClick={conn.kind === "redis" ? () => onActivate({ kind: "db", conn, db }) : undefined}
                     onMenu={onMenu}
                   />
                   {dOpen && (
