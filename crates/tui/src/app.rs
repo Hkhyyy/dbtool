@@ -98,6 +98,8 @@ pub enum DropTarget {
 pub struct TableTab {
     pub schema: String,
     pub table: String,
+    /// table / view / matview / foreign (Ctrl+B DDL 용)
+    pub kind: String,
     pub where_: String,
     pub order: String,
     pub session: String,
@@ -226,6 +228,7 @@ pub enum Action {
     NextTab,
     PrevTab,
     GoToObject,
+    SearchEverywhere,
     RecentTabs,
     Ddl,
     EditData,
@@ -264,10 +267,11 @@ pub const ACTIONS: &[(Action, &str, &str)] = &[
     (Action::TxToggle, "Toggle Transaction Mode (Auto/Manual)", ""),
     (Action::Commit, "Commit", ""),
     (Action::Rollback, "Roll Back", ""),
+    (Action::SearchEverywhere, "Search Everywhere (objects · tabs · actions)", ""),
     (Action::GoToObject, "Go to Database Object", ""),
     (Action::RecentTabs, "Recent Tabs / Switcher", ""),
     (Action::EditData, "Edit Data (open table)", "F4 / Enter"),
-    (Action::Ddl, "Go to DDL", "Ctrl+B"),
+    (Action::Ddl, "Go to DDL", ""),
     (Action::Submit, "Submit Changes", ""),
     (Action::Revert, "Revert Changes", "Ctrl+Z (grid)"),
     (Action::AddRow, "Add Row", "Insert / a"),
@@ -729,7 +733,7 @@ impl App {
             }
             NodeKind::Conn | NodeKind::Db if f4 => self.open_console(&n.conn, n.db.clone()),
             NodeKind::Object(k) if k == "key" => self.open_redis(&n.conn, n.db.clone().unwrap(), n.name.clone()),
-            NodeKind::Object(_) if n.is_relation() => self.open_table(&n.conn, n.db.clone().unwrap(), n.schema.clone().unwrap(), n.name.clone().unwrap()),
+            NodeKind::Object(k) if n.is_relation() => self.open_table(&n.conn, n.db.clone().unwrap(), n.schema.clone().unwrap(), n.name.clone().unwrap(), k.clone()),
             NodeKind::Object(k) => {
                 let k = if k == "function" || k == "procedure" { "routine".to_string() } else { k.clone() };
                 self.open_ddl(&n.conn, n.db.clone().unwrap(), n.schema.clone().unwrap(), n.name.clone().unwrap(), k)
@@ -920,11 +924,11 @@ impl App {
         }
     }
 
-    pub fn open_table(&mut self, conn: &str, db: String, schema: String, table: String) {
+    pub fn open_table(&mut self, conn: &str, db: String, schema: String, table: String, kind: String) {
         if let Some(i) = self.tabs.iter().position(|t| t.conn == conn && t.db == db && matches!(&t.kind, TabKind::Table(tt) if tt.schema == schema && tt.table == table)) {
             return self.activate(i);
         }
-        let id = self.push_tab(conn, db, table.clone(), TabKind::Table(TableTab { schema, table, where_: String::new(), order: String::new(), session: uuid::Uuid::new_v4().to_string(), grid: None, running: false, pk: vec![], error: None }));
+        let id = self.push_tab(conn, db, table.clone(), TabKind::Table(TableTab { schema, table, kind, where_: String::new(), order: String::new(), session: uuid::Uuid::new_v4().to_string(), grid: None, running: false, pk: vec![], error: None }));
         self.reload_table(id);
     }
 
@@ -947,6 +951,7 @@ impl App {
         }
         tt.running = true;
         tt.error = None;
+        let order = tt.order.trim().to_string();
         let (session, schema, table) = (tt.session.clone(), tt.schema.clone(), tt.table.clone());
         let st = self.state.clone();
         self.spawn(
@@ -969,6 +974,11 @@ impl App {
                         g.more_session = Some(tt.session.clone());
                         g.row = row.min(n.saturating_sub(1));
                         g.col = col.min(g.cols().saturating_sub(1));
+                        // ORDER BY 가 한 열 ASC/DESC 면 헤더에 표시
+                        g.sort = g.result.columns.iter().enumerate().find_map(|(i, c)| {
+                            let q = sql::quote_ident(kind, &c.name);
+                            if order == format!("{q} ASC") { Some((i, false)) } else if order == format!("{q} DESC") { Some((i, true)) } else { None }
+                        });
                         tt.grid = Some(g);
                         a.status = format!("{n}{} rows", if more { "+" } else { "" });
                     }
@@ -979,6 +989,30 @@ impl App {
                 }
             },
         );
+    }
+
+    /// 테이블 탭 헤더 정렬: 선택 열로 ORDER BY ↑ → ↓ → 해제 (GUI 의 Sort via ORDER BY)
+    pub fn sort_table(&mut self, id: u64) {
+        let Some(conn) = self.tab_mut(id).map(|t| t.conn.clone()) else { return };
+        let kind = self.kind_of(&conn);
+        let Some(TabKind::Table(tt)) = self.tab_mut(id).map(|t| &mut t.kind) else { return };
+        let Some(g) = &tt.grid else { return };
+        if g.cols() == 0 {
+            return;
+        }
+        if g.dirty() {
+            self.status = "Save (Ctrl+S) or revert (Ctrl+Z) pending changes before sorting".into();
+            return;
+        }
+        let q = sql::quote_ident(kind, &g.result.columns[g.col].name);
+        tt.order = if tt.order == format!("{q} ASC") {
+            format!("{q} DESC")
+        } else if tt.order == format!("{q} DESC") {
+            String::new()
+        } else {
+            format!("{q} ASC")
+        };
+        self.reload_table(id);
     }
 
     pub fn open_ddl(&mut self, conn: &str, db: String, schema: String, name: String, kind: String) {
@@ -1656,8 +1690,18 @@ impl App {
         self.popup = Some(Popup::Palette(Palette { title: "Recent Tabs".into(), input: TextArea::default(), items, sel: 1, loading: 0, cache: Default::default() }));
     }
 
+    /// Search Everywhere (GUI 의 ⇧⇧): 최근 탭 + 액션 + DB 객체를 한 목록에서
+    pub fn palette_everywhere(&mut self) {
+        let mut items: Vec<PItem> = self.mru.iter().filter_map(|id| self.tabs.iter().find(|t| t.id == *id)).map(|t| PItem { label: t.title.clone(), hint: format!("tab · {}", t.db), action: PAction::Tab(t.id) }).collect();
+        items.extend(ACTIONS.iter().filter(|(a, ..)| *a != Action::SearchEverywhere).map(|(a, n, k)| {
+            let key = if k.is_empty() { self.keys.label(*a) } else { k.to_string() };
+            PItem { label: n.to_string(), hint: format!("action · {key}"), action: PAction::Act(*a) }
+        }));
+        self.palette_objects("Search Everywhere", items);
+    }
+
     /// Go to Database Object: 연결된 Data Source 의 기본 DB + 펼친 DB
-    pub fn palette_objects(&mut self) {
+    pub fn palette_objects(&mut self, title: &str, items: Vec<PItem>) {
         let mut targets: Vec<(String, String)> = vec![];
         for c in self.conns.iter().filter(|c| c.connected) {
             targets.push((c.config.id.clone(), sql::default_db(&c.config)));
@@ -1668,8 +1712,8 @@ impl App {
                 targets.push((parts[0].into(), parts[1].into()));
             }
         }
-        self.popup = Some(Popup::Palette(Palette { title: "Go to Database Object".into(), input: TextArea::default(), items: vec![], sel: 0, loading: targets.len(), cache: Default::default() }));
-        if targets.is_empty() {
+        self.popup = Some(Popup::Palette(Palette { title: title.into(), input: TextArea::default(), items, sel: 0, loading: targets.len(), cache: Default::default() }));
+        if targets.is_empty() && title.starts_with("Go to") {
             self.status = "Connect a data source first (Enter on it in the explorer)".into();
         }
         for (conn, db) in targets {
@@ -1725,7 +1769,7 @@ impl App {
                     return self.open_ddl(&conn, db, e.schema, e.name, kind);
                 }
                 match kind.as_str() {
-                    "table" | "view" | "matview" | "foreign" => self.open_table(&conn, db, e.schema, e.name),
+                    "table" | "view" | "matview" | "foreign" => self.open_table(&conn, db, e.schema, e.name, kind),
                     "key" => self.open_redis(&conn, db, Some(e.name)),
                     "schema" => {
                         self.explorer = true;
@@ -1812,9 +1856,18 @@ impl App {
             Action::CloseTab => self.close_tab(self.active),
             Action::NextTab => self.cycle_tab(1),
             Action::PrevTab => self.cycle_tab(-1),
-            Action::GoToObject => self.palette_objects(),
+            Action::GoToObject => self.palette_objects("Go to Database Object", vec![]),
+            Action::SearchEverywhere => self.palette_everywhere(),
             Action::RecentTabs => self.palette_tabs(),
             Action::Ddl => {
+                // 테이블 데이터 탭에서는 그 테이블의 DDL
+                if self.focus != Focus::Tree {
+                    if let Some(Tab { kind: TabKind::Table(tt), conn, db, .. }) = self.tabs.get(self.active) {
+                        return self.open_ddl(&conn.clone(), db.clone(), tt.schema.clone(), tt.table.clone(), tt.kind.clone());
+                    }
+                    self.status = "Go to DDL: select an object in the explorer or open a table".into();
+                    return;
+                }
                 if let Some(n) = sel.filter(|n| matches!(n.kind, NodeKind::Object(_))) {
                     let k = match &n.kind {
                         NodeKind::Object(k) if k == "function" || k == "procedure" => "routine".to_string(),

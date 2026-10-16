@@ -216,7 +216,9 @@ Ctrl+Enter is only distinguishable in terminals that support the kitty keyboard 
 | `Ctrl+Q` | Quit |
 | `F1` | Keymap |
 | `Ctrl+K` | Actions Palette |
+| `Ctrl+P` | Search Everywhere (objects · tabs · actions) |
 | `Ctrl+O` | Go to Database Object |
+| `Ctrl+B` | Go to DDL |
 | `Ctrl+E` | Recent Tabs / Switcher |
 | `Ctrl+L` | New Query Console |
 | `Ctrl+W` | Close Tab |
@@ -252,7 +254,6 @@ Ctrl+Enter is only distinguishable in terminals that support the kitty keyboard 
 | `→ / ←  (l h)` | Expand / collapse (← on a child jumps to its parent) |
 | `Enter / double-click` | Expand / collapse (connects) · open table data · open a Redis key · show DDL of routines |
 | `F4 / Ctrl+↓` | Open a query console for the data source / database (Redis: the key browser) |
-| `Ctrl+B` | Go to DDL |
 | `/` | Filter loaded nodes (/ again edits it · empty or Esc clears) |
 | `n / e / D` | New / edit / remove data source |
 | `c / X` | Connect / disconnect |
@@ -292,6 +293,7 @@ Ctrl+Enter is only distinguishable in terminals that support the kitty keyboard 
 | `a / Insert` | Add row |
 | `d / Delete` | Mark row deleted (again = undo) |
 | `Ctrl+Z` | Revert pending changes |
+| `s` | Sort by the selected column: ▲ → ▼ → off (table data: ORDER BY · results: loaded rows) |
 | `w / o` | Edit WHERE / ORDER BY |
 | `r` | Reload |
 | `x` | Export to CSV |
@@ -333,7 +335,7 @@ Ctrl+Enter is only distinguishable in terminals that support the kitty keyboard 
 
 | Key | Action |
 |---|---|
-| `Ctrl+B` | Go to DDL (in Go to Database Object) |
+| `Ctrl+B` | Go to DDL (in Search Everywhere / Go to Database Object) |
 | `type` | Filter (palettes) |
 | `↑ ↓ / PgUp PgDn` | Move / scroll |
 | `Enter` | Run / confirm |

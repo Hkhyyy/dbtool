@@ -392,7 +392,6 @@ fn tree_key(app: &mut App, k: KeyEvent) {
                 app.activate_node(&nd, true)
             }
         }
-        KeyCode::Char('b') if k.modifiers.contains(KeyModifiers::CONTROL) => app.run_action(Action::Ddl),
         KeyCode::Char('n') => app.run_action(Action::NewDataSource),
         KeyCode::Char('e') => app.run_action(Action::EditDataSource),
         KeyCode::Char('D') => app.run_action(Action::DeleteDataSource),
@@ -560,6 +559,7 @@ fn grid_key(app: &mut App, k: KeyEvent) {
                 KeyCode::Char('d') | KeyCode::Delete => app.run_action(Action::DeleteRow),
                 KeyCode::Char('z') if k.modifiers.contains(KeyModifiers::CONTROL) => app.run_action(Action::Revert),
                 KeyCode::Char('r') => app.reload_table(id),
+                KeyCode::Char('s') => app.sort_table(id),
                 KeyCode::Char('x') => app.run_action(Action::ExportCsv),
                 KeyCode::Char('/') => {
                     let w = tt.where_.clone();
@@ -600,6 +600,13 @@ fn nav(app: &mut App, k: KeyEvent) {
             return;
         }
         KeyCode::Char('x') => return app.run_action(Action::ExportCsv),
+        KeyCode::Char('s') => {
+            g.toggle_local_sort();
+            if g.result.truncated {
+                app.status = "Sorted the loaded rows only".into();
+            }
+            return;
+        }
         _ => return,
     }
     app.fetch_more();

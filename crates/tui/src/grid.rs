@@ -32,6 +32,10 @@ pub struct Grid {
     pub header: Rect,
     /// 마지막 열이 오른쪽 끝에 닿는 첫 열 (그보다 더 밀지 않는다)
     pub max_off: usize,
+    /// 정렬 표시: (열, 내림차순)
+    pub sort: Option<(usize, bool)>,
+    /// 화면 정렬 중이면 각 행의 원래 위치 (정렬 해제 때 되돌린다)
+    orig: Vec<usize>,
 }
 
 /// 결과 그리드에 쌓아 두는 최대 행 수. 그 이상은 CSV 로 내보낸다
@@ -52,9 +56,26 @@ pub fn raw_text(v: &Value) -> Option<String> {
     }
 }
 
+/// GUI 와 같은 비교: NULL 은 항상 끝, 둘 다 숫자면 숫자로, 아니면 글자로. desc 면 결과가 뒤집히므로 NULL 쪽도 미리 뒤집는다
+fn cmp_cell(a: Option<&Value>, b: Option<&Value>, desc: bool) -> std::cmp::Ordering {
+    use std::cmp::Ordering::*;
+    let null = |v: Option<&Value>| matches!(v, None | Some(Value::Null));
+    match (null(a), null(b)) {
+        (true, true) => return Equal,
+        (true, false) => return if desc { Less } else { Greater },
+        (false, true) => return if desc { Greater } else { Less },
+        _ => {}
+    }
+    let (a, b) = (raw_text(a.unwrap()).unwrap_or_default(), raw_text(b.unwrap()).unwrap_or_default());
+    match (a.parse::<f64>(), b.parse::<f64>()) {
+        (Ok(x), Ok(y)) if !a.is_empty() && !b.is_empty() => x.partial_cmp(&y).unwrap_or(Equal),
+        _ => a.cmp(&b),
+    }
+}
+
 impl Grid {
     pub fn new(result: QueryResult) -> Self {
-        let mut g = Grid { result, row: 0, col: 0, row_off: 0, col_off: 0, more_session: None, loading_more: false, edits: BTreeMap::new(), deleted: BTreeSet::new(), added: 0, widths: vec![], page: 10, body: Rect::default(), col_x: vec![], hbar: Rect::default(), header: Rect::default(), max_off: usize::MAX };
+        let mut g = Grid { result, row: 0, col: 0, row_off: 0, col_off: 0, more_session: None, loading_more: false, edits: BTreeMap::new(), deleted: BTreeSet::new(), added: 0, widths: vec![], page: 10, body: Rect::default(), col_x: vec![], hbar: Rect::default(), header: Rect::default(), max_off: usize::MAX, sort: None, orig: vec![] };
         g.compute_widths();
         g
     }
@@ -67,14 +88,52 @@ impl Grid {
             .enumerate()
             .map(|(i, c)| {
                 let body = r.rows.iter().take(300).map(|row| row.get(i).map(cell_text).unwrap_or_default().width()).max().unwrap_or(0);
-                (c.name.width().max(body).clamp(4, 40) + 1) as u16
+                // +2: 정렬 표시(▲▼) 자리
+                ((c.name.width() + 2).max(body).clamp(4, 40) + 1) as u16
             })
             .collect();
     }
 
     pub fn append(&mut self, more: QueryResult) {
+        let n = self.result.rows.len();
         self.result.rows.extend(more.rows);
         self.result.truncated = more.truncated;
+        if !self.orig.is_empty() {
+            self.orig.extend(n..self.result.rows.len());
+            self.apply_local_sort();
+        }
+    }
+
+    /// 화면 정렬 (불러온 행만): ↑ → ↓ → 해제. 편집 결과(테이블 탭)는 서버 ORDER BY 를 쓴다
+    pub fn toggle_local_sort(&mut self) {
+        if self.cols() == 0 {
+            return;
+        }
+        let col = self.col;
+        self.sort = match self.sort {
+            Some((c, false)) if c == col => Some((col, true)),
+            Some((c, true)) if c == col => None,
+            _ => Some((col, false)),
+        };
+        if self.orig.is_empty() {
+            self.orig = (0..self.rows()).collect();
+        }
+        self.apply_local_sort();
+        if self.sort.is_none() {
+            self.orig.clear();
+        }
+    }
+
+    fn apply_local_sort(&mut self) {
+        let mut rows: Vec<(usize, Vec<Value>)> = std::mem::take(&mut self.orig).into_iter().zip(std::mem::take(&mut self.result.rows)).collect();
+        match self.sort {
+            Some((c, desc)) => rows.sort_by(|a, b| {
+                let o = cmp_cell(a.1.get(c), b.1.get(c), desc);
+                if desc { o.reverse() } else { o }
+            }),
+            None => rows.sort_by_key(|r| r.0),
+        }
+        (self.orig, self.result.rows) = rows.into_iter().unzip();
     }
 
     pub fn rows(&self) -> usize {
@@ -255,7 +314,11 @@ impl Grid {
             std::iter::once(Cell::from("")).chain(cols.iter().map(|&c| {
                 let col = &self.result.columns[c];
                 let st = if c == self.col { Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD) } else { Style::default().add_modifier(Modifier::BOLD) };
-                Cell::from(col.name.clone()).style(st)
+                let mark = match self.sort {
+                    Some((sc, desc)) if sc == c => if desc { " ▼" } else { " ▲" },
+                    _ => "",
+                };
+                Cell::from(format!("{}{mark}", col.name)).style(st)
             })),
         )
         .style(Style::default().bg(Color::Rgb(43, 45, 48)));
@@ -339,5 +402,29 @@ impl Grid {
             }
             self.hbar = track;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn local_sort_cycles_and_restores() {
+        let col = |n: &str| dbtool_core::db::ColumnInfo { name: n.into(), type_name: String::new() };
+        let rows = vec![vec![json!(10)], vec![Value::Null], vec![json!("9")], vec![json!(100)]];
+        let mut g = Grid::new(QueryResult { columns: vec![col("a")], rows, rows_affected: 0, truncated: true, elapsed_ms: 0, has_result_set: true, in_transaction: false });
+        let vals = |g: &Grid| g.result.rows.iter().map(|r| cell_text(&r[0])).collect::<Vec<_>>();
+        g.toggle_local_sort();
+        assert_eq!(vals(&g), ["9", "10", "100", "<null>"]);
+        g.toggle_local_sort();
+        assert_eq!(vals(&g), ["100", "10", "9", "<null>"]);
+        // 정렬 중에 더 불러온 행도 정렬된다
+        g.append(QueryResult { columns: vec![], rows: vec![vec![json!(50)]], rows_affected: 0, truncated: false, elapsed_ms: 0, has_result_set: true, in_transaction: false });
+        assert_eq!(vals(&g), ["100", "50", "10", "9", "<null>"]);
+        g.toggle_local_sort();
+        assert_eq!(g.sort, None);
+        assert_eq!(vals(&g), ["10", "<null>", "9", "100", "50"]);
     }
 }

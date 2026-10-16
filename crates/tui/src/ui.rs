@@ -191,7 +191,7 @@ fn draw_tabs(f: &mut Frame, app: &mut App, area: Rect) {
             Line::styled("dbtool", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
             Line::raw(""),
             Line::raw("Enter on a data source to connect · Enter on a table to edit data"),
-            Line::raw("Ctrl+L new query console · Ctrl+O go to object · Ctrl+K actions · F1 keymap"),
+            Line::raw("Ctrl+L new query console · Ctrl+P search everywhere · Ctrl+K actions · F1 keymap"),
         ])
         .alignment(Alignment::Center)
         .block(block("", false));
@@ -481,9 +481,10 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         Focus::Tree => "↑↓ move · → expand · Enter open · F4 console · Ctrl+B DDL · n new · e edit · / filter",
         Focus::Editor => "F5/Ctrl+Enter run · Ctrl+Space complete · Alt+E explain · Alt+T tx · Tab→ result · Ctrl+O object · Ctrl+K actions",
         Focus::Grid => match app.tabs.get(app.active).map(|t| &t.kind) {
-            Some(TabKind::Table(_)) => "Enter edit · n NULL · a add · d delete · Ctrl+S submit · w where · o order · x export",
+            Some(TabKind::Table(_)) => "Enter edit · n NULL · a add · d delete · Ctrl+S submit · s sort · w where · o order · x export",
             Some(TabKind::Redis(_)) => "Enter value · / pattern · m more · e edit · x del item · D del key · t TTL · R rename · : command",
-            _ => "arrows move · PgUp/PgDn · Home/End · Esc editor · x export",
+            Some(TabKind::Text(_)) => "arrows move · PgUp/PgDn · y copy · Esc explorer",
+            _ => "arrows move · PgUp/PgDn · Home/End · s sort · Esc editor · x export",
         },
     };
     // 새 버전 알림은 상태 글 앞에 계속 보인다
@@ -611,7 +612,7 @@ fn draw_popup(f: &mut Frame, app: &mut App) {
                 })
                 .collect();
             p.sel = sel;
-            let hint = if p.title.starts_with("Go to") { " Enter open · Ctrl+B DDL · Esc " } else { " Enter · Esc " };
+            let hint = if p.title.starts_with("Go to") || p.title == "Search Everywhere" { " Enter open · Ctrl+B DDL · Esc " } else { " Enter · Esc " };
             f.render_widget(List::new(items).block(block(hint, false)), list);
         }
         Popup::ConnForm(form) => {
