@@ -223,6 +223,17 @@ pub async fn completion_meta(state: State<'_, AppState>, id: String) -> AppResul
     state.completion_meta(id).await
 }
 
+/// 열어 둔 탭·화면 분할 (workspace-gui.json). 다시 켜면 그대로
+#[tauri::command]
+pub fn load_workspace(state: State<'_, AppState>) -> Option<serde_json::Value> {
+    state.store.workspace("gui")
+}
+
+#[tauri::command]
+pub fn save_workspace(state: State<'_, AppState>, ws: serde_json::Value) -> AppResult<()> {
+    state.store.save_workspace("gui", &ws)
+}
+
 /// 단축키 사용자 설정 (keymap.json 의 "gui" 구역)
 #[tauri::command]
 pub fn load_keymap(state: State<'_, AppState>) -> AppResult<crate::store::Keymap> {

@@ -64,6 +64,8 @@ interface Tab {
   pinned?: boolean;
   /** Redis 브라우저: 처음 선택할 키 */
   redisKey?: string;
+  /** 다시 켤 때 되살린 탭: 아직 불러오지 않았다 (처음 보일 때 불러온다) */
+  stale?: boolean;
 }
 
 /** 닫은 탭 / 최근 파일 (Reopen Closed Tab, ⌘E Recent Files) */
@@ -113,6 +115,7 @@ export default function App() {
         getCurrentWindow().onCloseRequested((e) => {
           const n = tabsRef.current.filter((t) => t.inTx).length;
           if (n && !confirm(`${n} console(s) have uncommitted changes. Quit and roll them back?`)) e.preventDefault();
+          else saveWs();
         }),
       )
       .then((u) => (off = u))
@@ -141,6 +144,8 @@ export default function App() {
   panesRef.current = panes;
   const split = panes.t === "split";
   const [focused, setFocused] = useState<Group>(0);
+  const focusedRef = useRef(focused);
+  focusedRef.current = focused;
   const [dialog, setDialog] = useState<{ edit?: ConnectionView } | null>(null);
   const [status, setStatus] = useState("Ready");
   const [treeSel, setTreeSel] = useState<NodeInfo | null>(null);
@@ -228,6 +233,8 @@ export default function App() {
     recent.current = [snap, ...recent.current.filter((r) => r.key !== snap.key)].slice(0, 50);
   };
   const activate = (t: Tab) => {
+    const cur = tabsRef.current.find((x) => x.id === t.id);
+    if (cur?.stale) loadStale(cur);
     setFocused(t.group);
     setActiveIds((a) => a.map((x, g) => (g === t.group ? t.id : x)));
     mru.current = [t.id, ...mru.current.filter((x) => x !== t.id)];
@@ -245,30 +252,7 @@ export default function App() {
     const n = tabsRef.current.filter((t) => t.kind === "console" && t.connId === c.id && t.database === database).length;
     const ls = leaves(panesRef.current);
     const group: Group = opts.group ?? (ls.includes(focused) ? focused : ls[0]);
-    const tab: Tab = {
-      id: crypto.randomUUID(),
-      kind,
-      group,
-      connId: c.id,
-      database,
-      target: targetId(c.id, database),
-      title: opts.title ?? (n === 0 ? `console [${base}]` : `console_${n + 1} [${base}]`),
-      sql: opts.sql ?? "",
-      running: false,
-      result: null,
-      error: null,
-      lastSql: null,
-      loadingMore: false,
-      where: opts.where ?? "",
-      orderBy: opts.orderBy ?? "",
-      tableSql: opts.tableSql,
-      edit: opts.edit,
-      results: [],
-      activeResult: "output",
-      output: [],
-      txManual: kind === "console" && !!c.options?.txManual,
-      inTx: false,
-    };
+    const tab = buildTab(c, kind, opts, group, opts.title ?? (n === 0 ? `console [${base}]` : `console_${n + 1} [${base}]`));
     // Transaction control: Manual 이 기본이면 세션도 Manual 로 연다
     if (tab.txManual) api.setTxMode(tab.target, tab.id, true).catch((e) => setStatus(String(e)));
     setTabs((ts) => [...ts, tab]);
@@ -287,6 +271,143 @@ export default function App() {
     });
     return tab;
   };
+
+  /** 탭 하나 (상태만. 열기·실행은 하지 않는다) */
+  const buildTab = (
+    c: ConnectionView,
+    kind: Tab["kind"],
+    opts: { sql?: string; database?: string; tableSql?: string; edit?: EditTarget; where?: string; orderBy?: string },
+    group: Group,
+    title: string,
+  ): Tab => {
+    const database = opts.database && opts.database !== (c.database || "postgres") ? opts.database : undefined;
+    return {
+      id: crypto.randomUUID(),
+      kind,
+      group,
+      connId: c.id,
+      database,
+      target: targetId(c.id, database),
+      title,
+      sql: opts.sql ?? "",
+      running: false,
+      result: null,
+      error: null,
+      lastSql: null,
+      loadingMore: false,
+      where: opts.where ?? "",
+      orderBy: opts.orderBy ?? "",
+      tableSql: opts.tableSql,
+      edit: opts.edit,
+      results: [],
+      activeResult: "output",
+      output: [],
+      txManual: kind === "console" && !!c.options?.txManual,
+      inTx: false,
+    };
+  };
+
+  // ───────── 다시 켤 때 되살리기 (workspace-gui.json) ─────────
+  const restored = useRef(false);
+  const savedWs = useRef("");
+  /** 저장할 내용: 탭(콘솔 SQL·테이블 WHERE/ORDER BY·DDL·Redis)과 분할·칸마다 보이는 탭·포커스 */
+  const wsJson = () => {
+    const ts = tabsRef.current;
+    return JSON.stringify({
+      version: 1,
+      tabs: ts.map((t) => ({
+        kind: t.kind,
+        title: t.title,
+        connId: t.connId,
+        database: t.database,
+        group: t.group,
+        sql: t.kind === "console" || t.kind === "ddl" ? sqlOf(t) : "",
+        where: t.where,
+        orderBy: t.orderBy,
+        edit: t.edit ? { schema: t.edit.schema, table: t.edit.table } : undefined,
+        pinned: t.pinned,
+        redisKey: t.redisKey,
+      })),
+      panes: panesRef.current,
+      activeIds: activeIdsRef.current.map((id) => ts.findIndex((t) => t.id === id)),
+      focused: focusedRef.current,
+    });
+  };
+  const saveWs = () => {
+    if (!restored.current) return;
+    const j = wsJson();
+    if (j === savedWs.current) return;
+    savedWs.current = j;
+    api.saveWorkspace(JSON.parse(j)).catch(() => {});
+  };
+  /** 되살린 탭을 처음 볼 때: 테이블은 데이터를 불러오고, 콘솔은 트랜잭션 모드를 맞춘다 (Redis 는 화면이 스스로 불러온다) */
+  const loadStale = async (t: Tab) => {
+    patch(t.id, { stale: false });
+    if (t.kind === "console" && t.txManual) api.setTxMode(t.target, t.id, true).catch((e) => setStatus(String(e)));
+    if (t.kind === "table" && t.edit && t.tableSql) {
+      try {
+        const d = await meta.table(t.target, t.edit.schema, t.edit.table);
+        patch(t.id, { edit: { ...t.edit, pk: d.columns.filter((x) => x.isPk).map((x) => x.name) } });
+      } catch {
+        /* 메타 조회 실패 시 읽기 전용 */
+      }
+      run(t, t.tableSql);
+    }
+  };
+  const restoreWs = (ws: any) => {
+    if (!ws || !Array.isArray(ws.tabs)) return;
+    const okPane = (p: any): boolean => p && (p.t === "leaf" ? Number.isInteger(p.g) && p.g >= 0 && p.g < MAX_PANES : p.t === "split" && okPane(p.a) && okPane(p.b));
+    const pane0: Pane = okPane(ws.panes) ? ws.panes : leaf(0);
+    const ls0 = leaves(pane0);
+    const built: (Tab | null)[] = ws.tabs.map((x: any) => {
+      const c = conns.find((cc) => cc.id === x.connId);
+      if (!c || !["console", "table", "ddl", "redis"].includes(x.kind)) return null;
+      const group = ls0.includes(x.group) ? x.group : ls0[0];
+      let tableSql: string | undefined;
+      if (x.kind === "table" && x.edit) {
+        const { q } = dialectOf(c.kind);
+        tableSql = `SELECT * FROM ${q(x.edit.schema)}.${q(x.edit.table)}${x.where ? ` WHERE ${x.where}` : ""}${x.orderBy ? ` ORDER BY ${x.orderBy}` : ""};`;
+      }
+      const t = buildTab(c, x.kind, { sql: x.kind === "table" ? tableSql : x.sql, database: x.database, tableSql, edit: x.edit ? { ...x.edit, pk: [] } : undefined, where: x.where, orderBy: x.orderBy }, group, x.title);
+      return { ...t, pinned: x.pinned, redisKey: x.redisKey, stale: x.kind !== "ddl" };
+    });
+    const ts = built.filter((t): t is Tab => !!t);
+    if (!ts.length) return;
+    const pane = prunePanes(pane0, new Set(ts.map((t) => t.group)));
+    const ls = leaves(pane);
+    const act = [0, 1, 2, 3].map((g) => {
+      if (!ls.includes(g)) return null;
+      const want = built[ws.activeIds?.[g]];
+      return want && want.group === g ? want.id : ts.find((t) => t.group === g)?.id ?? null;
+    });
+    setTabs(ts);
+    setPanes(pane);
+    setActiveIds(act);
+    setFocused(ls.includes(ws.focused) ? ws.focused : ls[0]);
+    mru.current = act.filter((x): x is string => !!x);
+    // 칸마다 보이는 탭만 불러온다 (나머지는 고를 때)
+    for (const id of act) {
+      const t = ts.find((x) => x.id === id);
+      if (t?.stale) loadStale(t);
+    }
+  };
+  useEffect(() => {
+    if (restored.current || !conns.length) return;
+    restored.current = true;
+    api
+      .loadWorkspace()
+      .then(restoreWs)
+      .catch(() => {});
+  }, [conns]);
+  // 바뀌면 저장 (콘솔에 친 SQL 은 상태가 아니라 주기적으로도 본다)
+  useEffect(() => {
+    const h = setTimeout(saveWs, 800);
+    return () => clearTimeout(h);
+  }, [tabs, panes, activeIds, focused]);
+  useEffect(() => {
+    const h = setInterval(saveWs, 5000);
+    return () => clearInterval(h);
+  }, []);
 
   const openConsole = (c: ConnectionView, db?: string, sql?: string) => addTab(c, "console", { database: db, sql });
 

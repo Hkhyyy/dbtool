@@ -108,6 +108,8 @@ const handlers: Record<string, (a: any) => unknown> = {
   close_session: () => null,
   execute_batch: (a: any) => a.statements.length,
   load_keymap: () => ({}),
+  load_workspace: () => JSON.parse(localStorage.getItem("mock-ws") ?? "null"),
+  save_workspace: (a: any) => (localStorage.setItem("mock-ws", JSON.stringify(a.ws)), null),
   tx_state: () => (globalThis as any).__mockManual === true,
   unsafe_reason: (a: any) => (/^\s*(delete|update)\b(?![\s\S]*\bwhere\b)/i.test(a.sql) ? "DELETE without WHERE changes every row" : /^\s*(drop|truncate)\b/i.test(a.sql) ? "DROP removes data" : null),
   trust_ssh_host: () => "Trusted",

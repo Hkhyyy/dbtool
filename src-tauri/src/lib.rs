@@ -104,6 +104,8 @@ pub fn run() {
             commands::redis_exec,
             commands::redis_exec_line,
             commands::load_keymap,
+            commands::load_workspace,
+            commands::save_workspace,
             commands::save_keymap,
             commands::check_update,
         ])

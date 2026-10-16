@@ -112,6 +112,9 @@ export const setUpdateCheckEnabled = (on: boolean) => {
 
 export const api = {
   checkUpdate: (force = false) => invoke<UpdateInfo>("check_update", { force }),
+  /** 열어 둔 탭·분할 (다시 켜면 그대로) */
+  loadWorkspace: () => invoke<unknown>("load_workspace"),
+  saveWorkspace: (ws: unknown) => invoke<void>("save_workspace", { ws }),
   listConnections: () => invoke<ConnectionView[]>("list_connections"),
   saveConnection: (config: ConnectionConfig, password?: string, sshSecret?: string) =>
     invoke<ConnectionConfig>("save_connection", { config, password: password ?? null, sshSecret: sshSecret ?? null }),
