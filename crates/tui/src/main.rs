@@ -5,6 +5,7 @@ mod grid;
 mod help;
 mod input;
 mod keys;
+mod panes;
 mod selfupdate;
 mod tree;
 mod ui;

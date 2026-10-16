@@ -198,30 +198,18 @@ fn draw_tabs(f: &mut Frame, app: &mut App, area: Rect) {
         f.render_widget(p, area);
         return;
     }
-    for r in [&mut app.hits.editor, &mut app.hits.results, &mut app.hits.redis_keys, &mut app.hits.redis_value, &mut app.hits.console, &mut app.hits.divider, &mut app.hits.split_area, &mut app.hits.split_divider] {
+    for r in [&mut app.hits.editor, &mut app.hits.results, &mut app.hits.redis_keys, &mut app.hits.redis_value, &mut app.hits.console, &mut app.hits.divider] {
         *r = Rect::default();
     }
     app.hits.tabs.clear();
     app.hits.groups.clear();
-    let both = app.split.filter(|_| (0..2).all(|g| app.tabs.iter().any(|t| t.group == g)));
-    match both {
-        None => draw_group(f, app, None, area, true),
-        Some(sp) => {
-            let (p, q) = (Constraint::Percentage(sp.pct), Constraint::Percentage(100 - sp.pct));
-            let [a, b] = match sp.dir {
-                SplitDir::Right => Layout::horizontal([p, q]).areas(area),
-                SplitDir::Down => Layout::vertical([p, q]).areas(area),
-            };
-            app.hits.split_area = area;
-            // 두 칸 사이 경계선: 좌우면 맞닿은 두 테두리, 상하면 첫 칸의 아래 테두리 (탭 바 줄은 빼고)
-            app.hits.split_divider = match sp.dir {
-                SplitDir::Right => Rect { x: a.right().saturating_sub(1), y: a.y + 1, width: 2, height: a.height.saturating_sub(1) },
-                SplitDir::Down => Rect { x: a.x, y: a.bottom().saturating_sub(1), width: a.width, height: 1 },
-            };
-            let fg = app.focused_group();
-            draw_group(f, app, Some(0), a, fg == 0);
-            draw_group(f, app, Some(1), b, fg == 1);
-        }
+    app.hits.splits.clear();
+    if app.panes.is_split() {
+        let panes = app.panes.clone();
+        let fg = app.focused_group();
+        draw_panes(f, app, &panes, area, &mut vec![], fg);
+    } else {
+        draw_group(f, app, None, area, true);
     }
     // 탭을 끄는 중: 놓일 곳을 칠한다
     if let Some(Drag::Tab { id, moved: true }) = app.drag {
@@ -229,14 +217,43 @@ fn draw_tabs(f: &mut Frame, app: &mut App, area: Rect) {
         let r = crate::input::drop_target(app, id, x, y).and_then(|t| {
             let body = |g: usize| app.hits.groups.iter().find(|x| x.0 == g).map(|x| (x.1, x.2));
             match t {
-                DropTarget::NewSplit(SplitDir::Right) => body(0).map(|(_, b)| Rect { x: b.x + b.width / 2, width: b.width - b.width / 2, ..b }),
-                DropTarget::NewSplit(SplitDir::Down) => body(0).map(|(_, b)| Rect { y: b.y + b.height / 2, height: b.height - b.height / 2, ..b }),
+                DropTarget::NewSplit(g, SplitDir::Right) => body(g).map(|(_, b)| Rect { x: b.x + b.width / 2, width: b.width - b.width / 2, ..b }),
+                DropTarget::NewSplit(g, SplitDir::Down) => body(g).map(|(_, b)| Rect { y: b.y + b.height / 2, height: b.height - b.height / 2, ..b }),
                 DropTarget::Group(g, None) => body(g).map(|(bar, b)| if bar.y == y { bar } else { b }),
                 DropTarget::Group(_, Some(before)) => app.hits.tabs.iter().find(|t| t.0 == before).map(|t| Rect { x: t.1, y: t.3, width: t.2 - t.1, height: 1 }),
             }
         });
         if let Some(r) = r {
             f.buffer_mut().set_style(r, Style::default().bg(Color::Rgb(40, 70, 120)));
+        }
+    }
+}
+
+/// 나눈 화면: 가지는 둘로 나누고 잎(칸)은 그린다. 경계선 위치를 기록한다 (끌어서 비율 조절)
+fn draw_panes(f: &mut Frame, app: &mut App, p: &crate::panes::Pane, area: Rect, path: &mut Vec<bool>, fg: usize) {
+    use crate::panes::Pane;
+    match p {
+        Pane::Leaf(g) => draw_group(f, app, Some(*g), area, *g == fg),
+        Pane::Split { dir, pct, a, b } => {
+            let (p, q) = (Constraint::Percentage(*pct), Constraint::Percentage(100 - pct));
+            let [ra, rb] = match dir {
+                SplitDir::Right => Layout::horizontal([p, q]).areas(area),
+                SplitDir::Down => Layout::vertical([p, q]).areas(area),
+            };
+            // 경계선: 좌우면 맞닿은 두 테두리, 상하면 첫 칸의 아래 테두리 (탭 바 줄은 빼고)
+            let divider = match dir {
+                SplitDir::Right => Rect { x: ra.right().saturating_sub(1), y: ra.y + 1, width: 2, height: ra.height.saturating_sub(1) },
+                SplitDir::Down => Rect { x: ra.x, y: ra.bottom().saturating_sub(1), width: ra.width, height: 1 },
+            };
+            // 위아래: 아래 첫 칸의 탭 바 (빈 곳을 잡으면 경계선처럼 끈다. 테두리 한 줄만으로는 맞히기 어렵다)
+            let grab = if *dir == SplitDir::Down { Rect { height: 1, ..rb } } else { Rect::default() };
+            app.hits.splits.push((path.clone(), area, divider, grab, *dir));
+            path.push(false);
+            draw_panes(f, app, a, ra, path, fg);
+            path.pop();
+            path.push(true);
+            draw_panes(f, app, b, rb, path, fg);
+            path.pop();
         }
     }
 }

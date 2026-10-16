@@ -226,9 +226,9 @@ Ctrl+Enter is only distinguishable in terminals that support the kitty keyboard 
 | `Alt+Left / Ctrl+PgUp` | Previous Tab |
 | `Alt+1` | Database Explorer |
 | `F6` | Cycle Focus (explorer → editor → results) |
-| `Alt+\` | Split Right |
-| `Alt+-` | Split Down |
-| `Alt+Tab` | Go to the Other Split |
+| `Alt+\` | Split Right (focused pane, up to 4) |
+| `Alt+-` | Split Down (focused pane, up to 4) |
+| `Alt+Tab` | Go to the Next Split |
 | `Alt+Shift+Left` | Move Split Divider Left / Up |
 | `Alt+Shift+Right` | Move Split Divider Right / Down |
 | `Alt+[` | Database Explorer Narrower |
@@ -275,8 +275,8 @@ Ctrl+Enter is only distinguishable in terminals that support the kitty keyboard 
 
 | Key | Action |
 |---|---|
-| `drag a tab` | Onto the right / bottom edge = split · onto the other pane or tab bar = move · within a bar = reorder |
-| `drag the border` | Resize the Database Explorer (its right border) or the two panes (the border between them; in a top/bottom split also the empty part of the lower tab bar) |
+| `drag a tab` | Onto a pane's right / bottom edge = split it (up to 4 panes) · onto another pane or tab bar = move · within a bar = reorder |
+| `drag the border` | Resize the Database Explorer (its right border) or the panes (the border between them; in a top/bottom split also the empty part of the lower tab bar) |
 | `click a pane` | Focus it |
 | `Shift+wheel / trackpad` | Scroll the grid and the explorer sideways (Shift+← / Shift+→ in the explorer) |
 

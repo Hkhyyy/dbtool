@@ -21,8 +21,8 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
         ("mouse drag", "Drag the editor/result border to resize"),
     ]),
     ("Tabs & split (mouse)", &[
-        ("drag a tab", "Onto the right / bottom edge = split · onto the other pane or tab bar = move · within a bar = reorder"),
-        ("drag the border", "Resize the Database Explorer (its right border) or the two panes (the border between them; in a top/bottom split also the empty part of the lower tab bar)"),
+        ("drag a tab", "Onto a pane's right / bottom edge = split it (up to 4 panes) · onto another pane or tab bar = move · within a bar = reorder"),
+        ("drag the border", "Resize the Database Explorer (its right border) or the panes (the border between them; in a top/bottom split also the empty part of the lower tab bar)"),
         ("click a pane", "Focus it"),
         ("Shift+wheel / trackpad", "Scroll the grid and the explorer sideways (Shift+← / Shift+→ in the explorer)"),
     ]),

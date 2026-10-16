@@ -64,20 +64,14 @@ pub enum SplitDir {
     Right,
     Down,
 }
-#[derive(Clone, Copy, Debug)]
-pub struct Split {
-    pub dir: SplitDir,
-    /// 첫 번째 칸(왼쪽/위)이 차지하는 비율(%)
-    pub pct: u16,
-}
 
 /// 마우스로 끄는 것
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Drag {
     /// 콘솔 에디터/결과 경계선
     Console,
-    /// 분할된 두 칸 사이 경계선
-    Split,
+    /// 칸 사이 경계선 (Hits.splits 의 순번)
+    Split(usize),
     /// 그리드 가로 스크롤바
     HBar,
     /// Database Explorer 오른쪽 경계선
@@ -91,8 +85,8 @@ pub enum Drag {
 pub enum DropTarget {
     /// 그 칸으로 옮긴다 (before = 그 탭 앞에 끼운다)
     Group(usize, Option<u64>),
-    /// 화면을 나누고 새 칸으로
-    NewSplit(SplitDir),
+    /// 그 칸을 나누고 새 칸으로
+    NewSplit(usize, SplitDir),
 }
 
 pub struct TableTab {
@@ -290,10 +284,10 @@ pub const ACTIONS: &[(Action, &str, &str)] = &[
     (Action::ToggleExplorer, "Database Explorer", ""),
     (Action::ToggleOutput, "Toggle Output / Result", ""),
     (Action::Complete, "Code Completion", ""),
-    (Action::SplitRight, "Split Right", ""),
-    (Action::SplitDown, "Split Down", ""),
-    (Action::Unsplit, "Unsplit", "split key again"),
-    (Action::OtherSplit, "Go to the Other Split", ""),
+    (Action::SplitRight, "Split Right (focused pane, up to 4)", ""),
+    (Action::SplitDown, "Split Down (focused pane, up to 4)", ""),
+    (Action::Unsplit, "Unsplit All", ""),
+    (Action::OtherSplit, "Go to the Next Split", ""),
     (Action::SplitShrink, "Move Split Divider Left / Up", ""),
     (Action::SplitGrow, "Move Split Divider Right / Down", ""),
     (Action::ExplorerNarrower, "Database Explorer Narrower", ""),
@@ -339,9 +333,8 @@ pub struct Hits {
     pub tabs: Vec<(u64, u16, u16, u16)>,
     /// 칸마다: (칸, 탭 바, 본문)
     pub groups: Vec<(usize, ratatui::layout::Rect, ratatui::layout::Rect)>,
-    /// 분할된 영역 전체와 두 칸 사이 경계선
-    pub split_area: ratatui::layout::Rect,
-    pub split_divider: ratatui::layout::Rect,
+    /// 나눈 곳마다: (가지 위치, 나눈 영역, 경계선, 방향). 위아래로 나눈 곳은 아래 첫 칸 탭 바의 빈 곳도 경계선으로 잡는다 (grab)
+    pub splits: Vec<(crate::panes::Path, ratatui::layout::Rect, ratatui::layout::Rect, ratatui::layout::Rect, SplitDir)>,
     /// Database Explorer 오른쪽 경계선과 화면 본문 (끌어서 폭 조절)
     pub explorer_divider: ratatui::layout::Rect,
     pub main: ratatui::layout::Rect,
@@ -372,9 +365,10 @@ pub struct App {
     pub popup: Option<Popup>,
     pub status: String,
     pub quit: bool,
-    pub split: Option<Split>,
+    /// 화면 분할 (최대 4칸)
+    pub panes: crate::panes::Pane,
     /// 칸마다 보이는 탭
-    pub group_active: [Option<u64>; 2],
+    pub group_active: [Option<u64>; crate::panes::MAX],
     /// 콘솔에서 에디터가 차지하는 비율(%)
     pub console_pct: u16,
     /// Database Explorer 폭 (None = 화면 폭에 맞춰 자동)
@@ -453,8 +447,8 @@ impl App {
             popup: None,
             status: "Ready — F1 keymap · Ctrl+K actions · Ctrl+O go to object".into(),
             quit: false,
-            split: None,
-            group_active: [None, None],
+            panes: crate::panes::Pane::Leaf(0),
+            group_active: [None; crate::panes::MAX],
             console_pct: 42,
             explorer_w: None,
             drag: None,
@@ -776,10 +770,7 @@ impl App {
 
     /// 포커스가 있는 칸
     pub fn focused_group(&self) -> usize {
-        if self.split.is_none() {
-            return 0;
-        }
-        self.tabs.get(self.active).map(|t| t.group).unwrap_or(0)
+        self.tabs.get(self.active).map(|t| t.group).unwrap_or_else(|| self.panes.leaves()[0])
     }
 
     /// 칸에 보이는 탭 (index)
@@ -857,11 +848,11 @@ impl App {
         if self.tabs.is_empty() {
             self.active = 0;
             self.focus = Focus::Tree;
-            self.split = None;
-            self.group_active = [None, None];
+            self.panes = crate::panes::Pane::Leaf(0);
+            self.group_active = [None; crate::panes::MAX];
             return;
         }
-        // 칸이 비면 분할을 푼다
+        // 칸이 비면 그 칸을 없앤다
         let emptied = !self.tabs.iter().any(|x| x.group == t.group);
         // 같은 칸에서 최근에 쓴 탭으로
         let next = self
@@ -873,7 +864,7 @@ impl App {
             .unwrap_or(0);
         self.activate(next);
         if emptied {
-            self.unsplit();
+            self.panes.remove(t.group);
         }
     }
 
@@ -882,8 +873,9 @@ impl App {
         for t in &mut self.tabs {
             t.group = 0;
         }
-        self.split = None;
-        self.group_active = [self.tabs.get(self.active).map(|t| t.id), None];
+        self.panes = crate::panes::Pane::Leaf(0);
+        self.group_active = [None; crate::panes::MAX];
+        self.group_active[0] = self.tabs.get(self.active).map(|t| t.id);
     }
 
     /// 탭을 다른 칸으로 옮기거나 (before 앞으로) 순서를 바꾸고, 새로 나눠 그 칸으로 보낸다
@@ -891,14 +883,19 @@ impl App {
         let Some(i) = self.tab_index(id) else { return };
         let from = self.tabs[i].group;
         let (g, before) = match target {
-            DropTarget::NewSplit(dir) => {
+            DropTarget::NewSplit(g, dir) => {
                 if self.tabs.len() < 2 {
                     // 탭이 하나면 새 콘솔을 만들어 나눈다
                     self.activate(i);
-                    return self.split_toggle(dir);
+                    return self.split_focused(dir);
                 }
-                self.split = Some(Split { dir, pct: 50 });
-                (1, None)
+                match self.panes.split(g, dir) {
+                    Some(new) => (new, None),
+                    None => {
+                        self.status = format!("Up to {} panes", crate::panes::MAX);
+                        return;
+                    }
+                }
             }
             DropTarget::Group(g, before) => (g, before),
         };
@@ -914,8 +911,8 @@ impl App {
             self.group_active[from] = self.mru.iter().copied().find(|x| *x != id && self.tab_index(*x).is_some_and(|j| self.tabs[j].group == from));
         }
         self.activate(at);
-        if self.split.is_some() && !self.tabs.iter().any(|x| x.group == from) {
-            self.unsplit();
+        if !self.tabs.iter().any(|x| x.group == from) {
+            self.panes.remove(from);
         }
     }
 
@@ -2006,12 +2003,15 @@ impl App {
                     c.show_output = !c.show_output;
                 }
             }
-            Action::SplitRight => self.split_toggle(SplitDir::Right),
-            Action::SplitDown => self.split_toggle(SplitDir::Down),
+            Action::SplitRight => self.split_focused(SplitDir::Right),
+            Action::SplitDown => self.split_focused(SplitDir::Down),
             Action::Unsplit => self.unsplit(),
             Action::OtherSplit => {
-                if self.split.is_some() {
-                    if let Some(i) = self.group_tab(1 - self.focused_group()) {
+                // 다음 칸으로 (왼쪽/위부터 차례로 돈다)
+                let ls = self.panes.leaves();
+                if ls.len() > 1 {
+                    let p = ls.iter().position(|&g| g == self.focused_group()).unwrap_or(0);
+                    if let Some(i) = self.group_tab(ls[(p + 1) % ls.len()]) {
                         self.activate(i);
                     }
                 }
@@ -2021,8 +2021,10 @@ impl App {
                 self.set_explorer_width(w);
             }
             Action::SplitShrink | Action::SplitGrow => {
-                if let Some(sp) = &mut self.split {
-                    sp.pct = (sp.pct as i16 + if a == Action::SplitGrow { 5 } else { -5 }).clamp(15, 85) as u16;
+                // 포커스 있는 칸을 감싼 경계선을 옮긴다
+                let path = self.panes.parent_of(self.focused_group());
+                if let Some(pct) = path.and_then(|p| self.panes.pct_mut(&p)) {
+                    *pct = (*pct as i16 + if a == Action::SplitGrow { 5 } else { -5 }).clamp(15, 85) as u16;
                 }
             }
             Action::Complete => {
@@ -2075,24 +2077,21 @@ impl App {
         self.activate(idx[(p as isize + d).rem_euclid(n) as usize]);
     }
 
-    /// 같은 방향으로 다시 누르면 분할 해제. 지금 탭을 새 칸(오른쪽/아래)으로 옮긴다
-    fn split_toggle(&mut self, dir: SplitDir) {
-        if let Some(sp) = &mut self.split {
-            if sp.dir == dir {
-                self.unsplit();
-            } else {
-                sp.dir = dir;
-            }
-            return;
-        }
+    /// 포커스 있는 칸을 나눈다 (최대 4칸): 지금 탭을 새 칸(오른쪽/아래)으로 옮긴다
+    fn split_focused(&mut self, dir: SplitDir) {
         let Some(cur) = self.tabs.get(self.active).map(|t| t.id) else {
             self.status = "Open a tab to split".into();
             return;
         };
-        if self.tabs.len() >= 2 {
-            return self.drop_tab(cur, DropTarget::NewSplit(dir));
+        if self.panes.leaves().len() >= crate::panes::MAX {
+            self.status = format!("Up to {} panes — close or move a tab to merge one", crate::panes::MAX);
+            return;
         }
-        // 탭이 하나뿐이면 같은 DB 의 새 콘솔을 오른쪽/아래 칸에 연다
+        let g = self.focused_group();
+        if self.tabs.iter().filter(|t| t.group == g).count() >= 2 {
+            return self.drop_tab(cur, DropTarget::NewSplit(g, dir));
+        }
+        // 칸에 탭이 하나뿐이면 같은 DB 의 새 콘솔을 오른쪽/아래 칸에 연다
         let (conn, db) = (self.tabs[self.active].conn.clone(), self.tabs[self.active].db.clone());
         if self.kind_of(&conn) == DbKind::Redis {
             self.status = "Open another tab to split".into();
@@ -2100,7 +2099,7 @@ impl App {
         }
         self.open_console(&conn, Some(db));
         let id = self.tabs[self.active].id;
-        self.drop_tab(id, DropTarget::NewSplit(dir));
+        self.drop_tab(id, DropTarget::NewSplit(g, dir));
     }
 
     /// Database Explorer 폭: 정한 값이 없으면 화면 폭의 1/4 (26~48)

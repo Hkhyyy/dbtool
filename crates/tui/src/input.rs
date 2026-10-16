@@ -68,17 +68,17 @@ pub fn drop_target(app: &App, id: u64, x: u16, y: u16) -> Option<DropTarget> {
             return Some(DropTarget::Group(g, before));
         }
         if inside(body, x, y) {
-            if app.split.is_some() {
-                return (g != from).then_some(DropTarget::Group(g, None));
+            // 칸의 오른쪽 / 아래쪽 가장자리에 놓으면 그 칸을 나눈다 (최대 4칸. 제 칸에 하나뿐인 탭은 나눠도 그대로라 빼고)
+            let alone = g == from && app.tabs.iter().filter(|t| t.group == g).count() < 2;
+            if app.panes.leaves().len() < crate::panes::MAX && !alone {
+                if x >= body.x + body.width * 2 / 3 {
+                    return Some(DropTarget::NewSplit(g, SplitDir::Right));
+                }
+                if y >= body.y + body.height * 2 / 3 {
+                    return Some(DropTarget::NewSplit(g, SplitDir::Down));
+                }
             }
-            // 나뉘지 않은 화면: 오른쪽 / 아래쪽 가장자리에 놓으면 나눈다
-            if x >= body.x + body.width * 2 / 3 {
-                return Some(DropTarget::NewSplit(SplitDir::Right));
-            }
-            if y >= body.y + body.height * 2 / 3 {
-                return Some(DropTarget::NewSplit(SplitDir::Down));
-            }
-            return None;
+            return (g != from).then_some(DropTarget::Group(g, None));
         }
     }
     None
@@ -90,8 +90,8 @@ fn mouse_down(app: &mut App, x: u16, y: u16) {
             app.drag = Some(Drag::Console);
             return;
         }
-        if inside(app.hits.split_divider, x, y) {
-            app.drag = Some(Drag::Split);
+        if let Some(i) = app.hits.splits.iter().position(|s| inside(s.2, x, y)) {
+            app.drag = Some(Drag::Split(i));
             return;
         }
         if inside(app.hits.explorer_divider, x, y) {
@@ -113,8 +113,8 @@ fn mouse_down(app: &mut App, x: u16, y: u16) {
             return;
         }
         // 상하 분할: 아래 칸 탭 바의 빈 곳도 경계선처럼 잡을 수 있다 (테두리 한 줄만으로는 맞히기 어렵다)
-        if app.split.is_some_and(|sp| sp.dir == SplitDir::Down) && app.hits.groups.iter().any(|(g, bar, _)| *g == 1 && inside(*bar, x, y)) {
-            app.drag = Some(Drag::Split);
+        if let Some(i) = app.hits.splits.iter().position(|s| inside(s.3, x, y)) {
+            app.drag = Some(Drag::Split(i));
             return;
         }
         // 포커스 없는 칸을 누르면 그 칸으로
@@ -137,16 +137,14 @@ fn mouse_drag(app: &mut App, x: u16, y: u16) {
                 app.console_pct = ((y.saturating_sub(c.y) as u32 * 100 / c.height as u32) as u16).clamp(10, 90);
             }
         }
-        Some(Drag::Split) => {
-            let a = app.hits.split_area;
-            if let Some(sp) = &mut app.split {
-                let (p, start, len) = match sp.dir {
-                    SplitDir::Right => (x, a.x, a.width),
-                    SplitDir::Down => (y, a.y, a.height),
-                };
-                if len > 0 {
-                    sp.pct = ((p.saturating_sub(start) as u32 * 100 / len as u32) as u16).clamp(15, 85);
-                }
+        Some(Drag::Split(i)) => {
+            let Some((path, a, _, _, dir)) = app.hits.splits.get(i).cloned() else { return };
+            let (p, start, len) = match dir {
+                SplitDir::Right => (x, a.x, a.width),
+                SplitDir::Down => (y, a.y, a.height),
+            };
+            if let (Some(pct), true) = (app.panes.pct_mut(&path), len > 0) {
+                *pct = ((p.saturating_sub(start) as u32 * 100 / len as u32) as u16).clamp(15, 85);
             }
         }
         Some(Drag::Explorer) => {
