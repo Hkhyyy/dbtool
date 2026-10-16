@@ -307,6 +307,21 @@ pub const ACTIONS: &[(Action, &str, &str)] = &[
     (Action::Quit, "Quit", ""),
 ];
 
+/// 트리에 보이는 DB (GUI 와 같은 표시 범위: Data Source › Schemas 탭, 시스템 DB 숨김)
+fn visible_dbs(cfg: &ConnectionConfig, dbs: Vec<String>, def: &str) -> Vec<String> {
+    let hidden: &[&str] = match cfg.kind {
+        DbKind::Postgres => &["template0", "template1", "rdsadmin"],
+        DbKind::Mysql => &dbtool_core::mysql::SYSTEM_DBS,
+        DbKind::Redis => &[],
+    };
+    let scoped = cfg.scope.databases.as_ref().map(|d| !d.is_empty()).unwrap_or(false);
+    dbs.into_iter()
+        .filter(|d| scoped || d == def || !hidden.contains(&d.as_str()))
+        .filter(|d| !cfg.options.single_db || d == def)
+        .filter(|d| cfg.options.single_db || cfg.scope.db_visible(d, def))
+        .collect()
+}
+
 /// 마지막으로 그린 화면 영역 (마우스 클릭 판정)
 #[derive(Default)]
 pub struct Hits {
@@ -546,17 +561,8 @@ impl App {
                     },
                     move |a, r: Result<(Vec<String>, String), String>| {
                         let r = r.map(|(dbs, def)| {
-                            let hidden: &[&str] = match cfg.kind {
-                                DbKind::Postgres => &["template0", "template1", "rdsadmin"],
-                                DbKind::Mysql => &dbtool_core::mysql::SYSTEM_DBS,
-                                DbKind::Redis => &[],
-                            };
-                            // GUI 와 같은 표시 범위 (Data Source › Schemas 탭)
-                            let scoped = cfg.scope.databases.as_ref().map(|d| !d.is_empty()).unwrap_or(false);
-                            dbs.into_iter()
-                                .filter(|d| scoped || d == &def || !hidden.contains(&d.as_str()))
-                                .filter(|d| !cfg.options.single_db || d == &def)
-                                .filter(|d| cfg.options.single_db || cfg.scope.db_visible(d, &def))
+                            visible_dbs(&cfg, dbs, &def)
+                                .into_iter()
                                 .map(|d| Node {
                                     key: format!("{}|{d}", cfg.id),
                                     label: d.clone(),
@@ -1701,25 +1707,43 @@ impl App {
     }
 
     /// Go to Database Object: 연결된 Data Source 의 기본 DB + 펼친 DB
+    /// Go to Database Object / Search Everywhere: GUI 처럼 연결된 Data Source 마다 보이는 DB (최대 8개) 의 객체.
+    /// Redis 와 single DB 는 기본 DB 만
     pub fn palette_objects(&mut self, title: &str, items: Vec<PItem>) {
-        let mut targets: Vec<(String, String)> = vec![];
-        for c in self.conns.iter().filter(|c| c.connected) {
-            targets.push((c.config.id.clone(), sql::default_db(&c.config)));
-        }
-        for k in &self.tree.expanded {
-            let parts: Vec<&str> = k.split('|').collect();
-            if parts.len() == 2 && !targets.iter().any(|(c, d)| c == parts[0] && d == parts[1]) {
-                targets.push((parts[0].into(), parts[1].into()));
-            }
-        }
-        self.popup = Some(Popup::Palette(Palette { title: title.into(), input: TextArea::default(), items, sel: 0, loading: targets.len(), cache: Default::default() }));
-        if targets.is_empty() && title.starts_with("Go to") {
+        let conns: Vec<ConnectionConfig> = self.conns.iter().filter(|c| c.connected).map(|c| c.config.clone()).collect();
+        self.popup = Some(Popup::Palette(Palette { title: title.into(), input: TextArea::default(), items, sel: 0, loading: conns.len(), cache: Default::default() }));
+        if conns.is_empty() && title.starts_with("Go to") {
             self.status = "Connect a data source first (Enter on it in the explorer)".into();
         }
-        for (conn, db) in targets {
+        for cfg in conns {
+            let def = sql::default_db(&cfg);
+            if cfg.kind == DbKind::Redis || cfg.options.single_db {
+                self.index_into_palette(&cfg, vec![def]);
+                continue;
+            }
             let st = self.state.clone();
-            let target = sql::target_id(&conn, Some(&db));
-            let name = self.conn(&conn).map(|c| c.config.name.clone()).unwrap_or_default();
+            let id = cfg.id.clone();
+            self.spawn(async move { st.list_databases(id).await.map_err(err) }, move |a, r: Result<Vec<String>, String>| {
+                let mut dbs = r.map(|dbs| visible_dbs(&cfg, dbs, &def)).unwrap_or_default();
+                // 기본 DB 먼저 (DB 목록을 못 읽어도 기본 DB 는 찾는다)
+                dbs.retain(|d| d != &def);
+                dbs.insert(0, def);
+                dbs.truncate(8);
+                a.index_into_palette(&cfg, dbs);
+            });
+        }
+    }
+
+    /// 열린 팔레트에 DB 들의 객체를 더한다 (Data Source 하나 몫의 loading 을 DB 수로 바꾼다)
+    fn index_into_palette(&mut self, cfg: &ConnectionConfig, dbs: Vec<String>) {
+        match &mut self.popup {
+            Some(Popup::Palette(p)) => p.loading = (p.loading + dbs.len()).saturating_sub(1),
+            _ => return,
+        }
+        for db in dbs {
+            let st = self.state.clone();
+            let target = sql::target_id(&cfg.id, Some(&db));
+            let (conn, name) = (cfg.id.clone(), cfg.name.clone());
             self.spawn(async move { st.object_index(target).await.map_err(err) }, move |a, r: Result<Vec<IndexEntry>, String>| {
                 if let Err(e) = &r {
                     a.status = format!("{name}/{db}: {e}");
