@@ -103,6 +103,8 @@ const handlers: Record<string, (a: any) => unknown> = {
   cancel_query: () => true,
   close_session: () => null,
   execute_batch: (a: any) => a.statements.length,
+  load_keymap: () => ({}),
+  save_keymap: () => null,
 };
 (window as any).__TAURI_INTERNALS__ = {
   invoke: async (cmd: string, args: unknown) => {

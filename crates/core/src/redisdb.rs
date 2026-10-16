@@ -727,15 +727,13 @@ pub async fn key_ddl(m: &RedisConn, key: &str) -> AppResult<String> {
 }
 
 pub async fn export_csv(m: &RedisConn, line: &str, path: &std::path::Path) -> AppResult<u64> {
-    use std::io::Write;
     let r = run(m, line, 1_000_000).await?;
-    let mut out = std::io::BufWriter::new(std::fs::File::create(path)?);
-    out.write_all("\u{FEFF}".as_bytes())?;
-    writeln!(out, "{}", r.columns.iter().map(|c| crate::db::csv_field(&c.name)).collect::<Vec<_>>().join(","))?;
+    let mut out = crate::db::CsvOut::create(path).await?;
+    out.row(&r.columns.iter().map(|c| crate::db::csv_field(&c.name)).collect::<Vec<_>>()).await?;
     for row in &r.rows {
-        writeln!(out, "{}", row.iter().map(|v| crate::db::csv_field(&crate::db::cell_text(v))).collect::<Vec<_>>().join(","))?;
+        out.row(&row.iter().map(|v| crate::db::csv_field(&crate::db::cell_text(v))).collect::<Vec<_>>()).await?;
     }
-    out.flush()?;
+    out.finish().await?;
     Ok(r.rows.len() as u64)
 }
 

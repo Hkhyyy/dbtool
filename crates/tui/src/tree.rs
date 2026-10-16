@@ -46,6 +46,17 @@ pub struct Tree {
     pub offset: usize,
     /// 스피드 서치 (/)
     pub filter: String,
+    /// 가로 스크롤 (긴 이름)
+    pub hoff: usize,
+}
+
+/// 대소문자 무시 포함 검사. ASCII 이름은 새 문자열을 만들지 않는다 (트리를 그릴 때마다 노드마다 불린다)
+fn contains_ci(hay: &str, lower_needle: &str) -> bool {
+    if hay.is_ascii() && lower_needle.is_ascii() {
+        let (h, n) = (hay.as_bytes(), lower_needle.as_bytes());
+        return n.is_empty() || h.windows(n.len()).any(|w| w.iter().zip(n).all(|(a, b)| a.to_ascii_lowercase() == *b));
+    }
+    hay.to_lowercase().contains(lower_needle)
 }
 
 impl Tree {
@@ -58,7 +69,7 @@ impl Tree {
                 let open = t.expanded.contains(&n.key);
                 let kids = if open { t.children.get(&n.key) } else { None };
                 // 필터: 이름이 맞거나 펼쳐진 자식 중에 맞는 게 있으면 보인다
-                if !f.is_empty() && !matches!(n.kind, NodeKind::Conn | NodeKind::Db | NodeKind::Schema | NodeKind::Group) && !n.label.to_lowercase().contains(f) {
+                if !f.is_empty() && !matches!(n.kind, NodeKind::Conn | NodeKind::Db | NodeKind::Schema | NodeKind::Group) && !contains_ci(&n.label, f) {
                     continue;
                 }
                 out.push((depth, n));
@@ -108,5 +119,19 @@ impl Tree {
             return None;
         }
         (0..self.sel).rev().find(|&i| vis[i].0 == depth - 1)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::contains_ci;
+
+    #[test]
+    fn contains_ignoring_case() {
+        assert!(contains_ci("Customer_Company", "company"));
+        assert!(contains_ci("orders", ""));
+        assert!(!contains_ci("orders", "user"));
+        assert!(contains_ci("결제_Payment", "payment"));
+        assert!(contains_ci("ÄRGER", "ärg"));
     }
 }

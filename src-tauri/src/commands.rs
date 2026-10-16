@@ -168,6 +168,17 @@ pub async fn completion_meta(state: State<'_, AppState>, id: String) -> AppResul
     state.completion_meta(id).await
 }
 
+/// 단축키 사용자 설정 (keymap.json 의 "gui" 구역)
+#[tauri::command]
+pub fn load_keymap(state: State<'_, AppState>) -> AppResult<crate::store::Keymap> {
+    state.store.keymap("gui")
+}
+
+#[tauri::command]
+pub fn save_keymap(state: State<'_, AppState>, map: crate::store::Keymap) -> AppResult<()> {
+    state.store.save_keymap("gui", &map)
+}
+
 #[cfg(test)]
 mod ipc_tests {
     use super::*;

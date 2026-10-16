@@ -66,7 +66,8 @@ pub async fn connect(cfg: &ConnectionConfig, password: Option<&str>, host: &str,
     }
     let script = cfg.options.startup_script.trim().to_string();
     let pool = MySqlPoolOptions::new()
-        .max_connections(12)
+        // 콘솔·테이블 탭마다 연결을 하나씩 전용으로 쓴다. 연결은 필요할 때만 열리므로 상한만 넉넉히
+        .max_connections(crate::db::POOL_MAX)
         .acquire_timeout(Duration::from_secs(10))
         .after_connect(move |conn, _| {
             let init = init.clone();
@@ -178,9 +179,7 @@ pub async fn run_on(conn: &mut sqlx::MySqlConnection, sql: &str, limit: usize) -
 }
 
 pub async fn export_csv(p: &MySqlPool, sql: &str, path: &std::path::Path) -> AppResult<u64> {
-    use std::io::Write;
-    let mut out = std::io::BufWriter::new(std::fs::File::create(path)?);
-    out.write_all("\u{FEFF}".as_bytes())?;
+    let mut out = crate::db::CsvOut::create(path).await?;
     let mut count = 0u64;
     let mut header = false;
     let mut conn = p.acquire().await?;
@@ -188,14 +187,15 @@ pub async fn export_csv(p: &MySqlPool, sql: &str, path: &std::path::Path) -> App
     while let Some(row) = stream.try_next().await? {
         if !header {
             let names: Vec<String> = row.columns().iter().map(|c| crate::db::csv_field(c.name())).collect();
-            writeln!(out, "{}", names.join(","))?;
+            out.row(&names).await?;
             header = true;
         }
         let fields: Vec<String> = (0..row.len()).map(|i| crate::db::csv_field(&crate::db::cell_text(&value(&row, i)))).collect();
-        writeln!(out, "{}", fields.join(","))?;
+        out.row(&fields).await?;
         count += 1;
     }
-    out.flush()?;
+    drop(stream);
+    out.finish().await?;
     Ok(count)
 }
 
@@ -239,6 +239,19 @@ impl MySession {
 
     pub fn close_cursor(&mut self) {
         self.more = None;
+    }
+
+    /// 탭을 닫을 때: 열린 트랜잭션을 되돌리고 autocommit 을 원래대로 (풀의 다른 사용자가 물려받지 않게)
+    pub async fn discard(&mut self) {
+        self.more = None;
+        if self.manual || self.in_tx {
+            let _ = self.conn.execute("ROLLBACK").await;
+            self.in_tx = false;
+        }
+        if self.manual {
+            let _ = self.conn.execute("SET autocommit = 1").await;
+            self.manual = false;
+        }
     }
 
     pub async fn set_manual(&mut self, manual: bool) -> AppResult<()> {

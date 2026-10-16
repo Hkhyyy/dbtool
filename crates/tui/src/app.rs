@@ -1,4 +1,5 @@
 //! TUI 상태와 동작. 실제 DB 작업은 전부 dbtool_core::app::AppState (GUI 와 같은 엔진).
+use crate::complete::{self, Item};
 use crate::grid::{raw_text, Grid};
 use crate::tree::{Node, NodeKind, Tree};
 use dbtool_core::app::{AppState, ConnectionView};
@@ -8,6 +9,7 @@ use dbtool_core::redisdb::{KeyDetail, KeyRow};
 use dbtool_core::sql;
 use dbtool_core::store::{ConnectionConfig, DbKind, RedisMode, SshAuth, SshConfig, SslConfig};
 use serde_json::Value;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedSender;
@@ -32,6 +34,65 @@ pub struct Console {
     pub running: bool,
     pub tx_manual: bool,
     pub in_tx: bool,
+    /// 열린 자동완성 목록
+    pub complete: Option<Completion>,
+}
+
+/// 콘솔 Output 로그에 남기는 최대 줄 수 (GUI 와 같다)
+const OUTPUT_MAX: usize = 1000;
+
+impl Console {
+    /// Output 로그에 한 줄 (오래된 줄은 버린다)
+    pub fn log(&mut self, err: bool, s: String) {
+        self.output.push((err, s));
+        if self.output.len() > OUTPUT_MAX {
+            self.output.drain(..self.output.len() - OUTPUT_MAX);
+        }
+    }
+}
+
+pub struct Completion {
+    pub items: Vec<Item>,
+    pub sel: usize,
+    /// 바꿀 접두어(커서 앞 단어)의 글자 수
+    pub prefix: usize,
+}
+
+/// 에디터 화면 분할 (GUI 의 Split Right / Split Down). 칸(그룹)마다 탭 바가 따로 있다
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum SplitDir {
+    Right,
+    Down,
+}
+#[derive(Clone, Copy, Debug)]
+pub struct Split {
+    pub dir: SplitDir,
+    /// 첫 번째 칸(왼쪽/위)이 차지하는 비율(%)
+    pub pct: u16,
+}
+
+/// 마우스로 끄는 것
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Drag {
+    /// 콘솔 에디터/결과 경계선
+    Console,
+    /// 분할된 두 칸 사이 경계선
+    Split,
+    /// 그리드 가로 스크롤바
+    HBar,
+    /// Database Explorer 오른쪽 경계선
+    Explorer,
+    /// 탭 (moved = 실제로 끌었는지. 그냥 클릭이면 false)
+    Tab { id: u64, moved: bool },
+}
+
+/// 탭을 놓을 곳
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum DropTarget {
+    /// 그 칸으로 옮긴다 (before = 그 탭 앞에 끼운다)
+    Group(usize, Option<u64>),
+    /// 화면을 나누고 새 칸으로
+    NewSplit(SplitDir),
 }
 
 pub struct TableTab {
@@ -59,6 +120,8 @@ pub struct RedisTab {
     pub sel: usize,
     pub off: usize,
     pub detail: Option<(String, KeyDetail)>,
+    /// 문자열 값을 보기 좋게 정리한 것 (JSON 은 들여쓰기). 그릴 때마다 다시 파싱하지 않게 불러올 때 만든다
+    pub text: Option<String>,
     pub value: Option<Grid>,
     pub focus_value: bool,
     pub scanning: bool,
@@ -80,6 +143,8 @@ pub struct Tab {
     pub db: String,
     pub target: String,
     pub kind: TabKind,
+    /// 분할된 화면에서 속한 칸 (0 = 왼쪽/위, 1 = 오른쪽/아래)
+    pub group: usize,
 }
 
 // ───────── 팝업 ─────────
@@ -108,6 +173,8 @@ pub struct Palette {
     pub items: Vec<PItem>,
     pub sel: usize,
     pub loading: usize,
+    /// 거른 결과 캐시: (검색어, 항목 수) 가 같으면 다시 거르고 정렬하지 않는다 (그릴 때마다·키마다 불린다)
+    pub cache: std::cell::RefCell<Option<(String, usize, Vec<usize>)>>,
 }
 
 #[derive(Clone, PartialEq)]
@@ -130,7 +197,9 @@ pub struct ConnForm {
 }
 
 pub enum Popup {
-    Help { scroll: u16 },
+    /// F1 키맵. 위쪽 Commands 는 고를 수 있다 (sel). record = 새 키를 기다리는 중 (true = 기존 키에 더하기)
+    /// sel 은 위쪽 Commands 와 아래 고정 키 목록을 이어서 센다 (Commands 만 바꿀 수 있다)
+    Help { sel: usize, scroll: u16, record: Option<bool>, message: Option<String> },
     Message { title: String, text: String },
     Input { title: String, input: TextArea<'static>, on_ok: Box<dyn FnOnce(&mut App, String)> },
     Confirm { text: String, on_yes: Box<dyn FnOnce(&mut App)> },
@@ -138,7 +207,7 @@ pub enum Popup {
     ConnForm(ConnForm),
 }
 
-#[derive(Clone, Copy, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Action {
     NewConsole,
     NewDataSource,
@@ -168,23 +237,37 @@ pub enum Action {
     ExportCsv,
     ToggleExplorer,
     ToggleOutput,
+    SplitRight,
+    SplitDown,
+    Unsplit,
+    OtherSplit,
+    Complete,
+    Palette,
+    CycleFocus,
+    ShrinkEditor,
+    GrowEditor,
+    SplitShrink,
+    SplitGrow,
+    ExplorerNarrower,
+    ExplorerWider,
     Help,
     Quit,
 }
 
+/// 액션 팔레트 목록: (액션, 이름, 힌트). 바꿀 수 있는 명령(keys::DEFAULT_KEYS)의 힌트는 현재 키맵에서 가져온다
 pub const ACTIONS: &[(Action, &str, &str)] = &[
-    (Action::NewConsole, "New Query Console", "Ctrl+L"),
-    (Action::Execute, "Execute", "F5 / Ctrl+Enter / Alt+Enter"),
-    (Action::Explain, "Explain Plan", "Alt+E"),
-    (Action::Cancel, "Cancel Running Statement", "Ctrl+C"),
-    (Action::TxToggle, "Toggle Transaction Mode (Auto/Manual)", "Alt+T"),
-    (Action::Commit, "Commit", "Alt+C"),
-    (Action::Rollback, "Roll Back", "Alt+R"),
-    (Action::GoToObject, "Go to Database Object", "Ctrl+O"),
-    (Action::RecentTabs, "Recent Tabs / Switcher", "Ctrl+E"),
+    (Action::NewConsole, "New Query Console", ""),
+    (Action::Execute, "Execute", ""),
+    (Action::Explain, "Explain Plan", ""),
+    (Action::Cancel, "Cancel Running Statement", ""),
+    (Action::TxToggle, "Toggle Transaction Mode (Auto/Manual)", ""),
+    (Action::Commit, "Commit", ""),
+    (Action::Rollback, "Roll Back", ""),
+    (Action::GoToObject, "Go to Database Object", ""),
+    (Action::RecentTabs, "Recent Tabs / Switcher", ""),
     (Action::EditData, "Edit Data (open table)", "F4 / Enter"),
     (Action::Ddl, "Go to DDL", "Ctrl+B"),
-    (Action::Submit, "Submit Changes", "Ctrl+S"),
+    (Action::Submit, "Submit Changes", ""),
     (Action::Revert, "Revert Changes", "Ctrl+Z (grid)"),
     (Action::AddRow, "Add Row", "Insert / a"),
     (Action::DeleteRow, "Delete Row", "Delete / d"),
@@ -194,30 +277,53 @@ pub const ACTIONS: &[(Action, &str, &str)] = &[
     (Action::EditDataSource, "Data Source Properties…", "e (explorer)"),
     (Action::DeleteDataSource, "Remove Data Source", "D (explorer)"),
     (Action::Connect, "Connect", "c (explorer)"),
-    (Action::Disconnect, "Disconnect", "Ctrl+F2 / X (explorer)"),
+    (Action::Disconnect, "Disconnect", ""),
     (Action::Refresh, "Refresh", "r (explorer) / F5 (table)"),
-    (Action::CloseTab, "Close Tab", "Ctrl+W"),
-    (Action::NextTab, "Next Tab", "Alt+→ / Ctrl+PgDn"),
-    (Action::PrevTab, "Previous Tab", "Alt+← / Ctrl+PgUp"),
-    (Action::ToggleExplorer, "Database Explorer", "Alt+1"),
-    (Action::ToggleOutput, "Toggle Output / Result", "Alt+O"),
-    (Action::Help, "Keymap", "F1"),
-    (Action::Quit, "Quit", "Ctrl+Q"),
+    (Action::CloseTab, "Close Tab", ""),
+    (Action::NextTab, "Next Tab", ""),
+    (Action::PrevTab, "Previous Tab", ""),
+    (Action::ToggleExplorer, "Database Explorer", ""),
+    (Action::ToggleOutput, "Toggle Output / Result", ""),
+    (Action::Complete, "Code Completion", ""),
+    (Action::SplitRight, "Split Right", ""),
+    (Action::SplitDown, "Split Down", ""),
+    (Action::Unsplit, "Unsplit", "split key again"),
+    (Action::OtherSplit, "Go to the Other Split", ""),
+    (Action::SplitShrink, "Move Split Divider Left / Up", ""),
+    (Action::SplitGrow, "Move Split Divider Right / Down", ""),
+    (Action::ExplorerNarrower, "Database Explorer Narrower", ""),
+    (Action::ExplorerWider, "Database Explorer Wider", ""),
+    (Action::ShrinkEditor, "Shrink Editor (console)", ""),
+    (Action::GrowEditor, "Grow Editor (console)", ""),
+    (Action::CycleFocus, "Cycle Focus (explorer → editor → results)", ""),
+    (Action::Palette, "Actions Palette", ""),
+    (Action::Help, "Keymap", ""),
+    (Action::Quit, "Quit", ""),
 ];
 
 /// 마지막으로 그린 화면 영역 (마우스 클릭 판정)
 #[derive(Default)]
 pub struct Hits {
     pub tree: ratatui::layout::Rect,
-    /// (탭 id, x 시작, x 끝)
-    pub tabs: Vec<(u64, u16, u16)>,
-    pub tab_bar_y: u16,
+    /// (탭 id, x 시작, x 끝, y)
+    pub tabs: Vec<(u64, u16, u16, u16)>,
+    /// 칸마다: (칸, 탭 바, 본문)
+    pub groups: Vec<(usize, ratatui::layout::Rect, ratatui::layout::Rect)>,
+    /// 분할된 영역 전체와 두 칸 사이 경계선
+    pub split_area: ratatui::layout::Rect,
+    pub split_divider: ratatui::layout::Rect,
+    /// Database Explorer 오른쪽 경계선과 화면 본문 (끌어서 폭 조절)
+    pub explorer_divider: ratatui::layout::Rect,
+    pub main: ratatui::layout::Rect,
     pub editor: ratatui::layout::Rect,
     pub results: ratatui::layout::Rect,
     pub redis_keys: ratatui::layout::Rect,
     pub redis_value: ratatui::layout::Rect,
     pub palette: ratatui::layout::Rect,
     pub palette_off: usize,
+    /// 콘솔 본문(에디터+결과)과 그 경계선 (드래그로 비율 조절)
+    pub console: ratatui::layout::Rect,
+    pub divider: ratatui::layout::Rect,
     /// 더블클릭 판정: (시각, x, y)
     pub last_click: Option<(std::time::Instant, u16, u16)>,
 }
@@ -236,6 +342,21 @@ pub struct App {
     pub popup: Option<Popup>,
     pub status: String,
     pub quit: bool,
+    pub split: Option<Split>,
+    /// 칸마다 보이는 탭
+    pub group_active: [Option<u64>; 2],
+    /// 콘솔에서 에디터가 차지하는 비율(%)
+    pub console_pct: u16,
+    /// Database Explorer 폭 (None = 화면 폭에 맞춰 자동)
+    pub explorer_w: Option<u16>,
+    /// 마우스로 끄는 중인 것과 지금 위치
+    pub drag: Option<Drag>,
+    pub drag_pos: (u16, u16),
+    /// 자동완성 메타 (target → 테이블·컬럼)
+    pub completion: HashMap<String, Arc<complete::Meta>>,
+    completion_loading: HashSet<String>,
+    /// 명령 단축키 (keymap.json 의 "tui")
+    pub keys: crate::keys::Keymap,
     next_id: u64,
 }
 
@@ -282,6 +403,10 @@ fn color_of(c: &ConnectionView) -> Option<String> {
 
 impl App {
     pub fn new(state: Arc<AppState>, tx: UnboundedSender<Apply>) -> Self {
+        let (user_keys, keys_err) = match state.store.keymap("tui") {
+            Ok(k) => (k, None),
+            Err(e) => (Default::default(), Some(format!("keymap.json ignored: {e}"))),
+        };
         let mut a = App {
             hits: Hits::default(),
             state,
@@ -296,8 +421,20 @@ impl App {
             popup: None,
             status: "Ready — F1 keymap · Ctrl+K actions · Ctrl+O go to object".into(),
             quit: false,
+            split: None,
+            group_active: [None, None],
+            console_pct: 42,
+            explorer_w: None,
+            drag: None,
+            drag_pos: (0, 0),
+            completion: HashMap::new(),
+            completion_loading: HashSet::new(),
+            keys: crate::keys::Keymap::new(&user_keys),
             next_id: 1,
         };
+        if let Some(e) = keys_err {
+            a.status = e;
+        }
         a.reload_conns();
         a
     }
@@ -579,9 +716,13 @@ impl App {
     /// Enter / F4 / 더블클릭
     pub fn activate_node(&mut self, n: &Node, f4: bool) {
         let kind = self.kind_of(&n.conn);
+        // 연결·DB·스키마·폴더는 Enter/더블클릭 = 펼치기 (DB 종류와 상관없이). F4 / Ctrl+↓ = 콘솔, Redis 는 키 브라우저
         match &n.kind {
-            NodeKind::Conn | NodeKind::Db if f4 && kind != DbKind::Redis => self.open_console(&n.conn, n.db.clone()),
-            NodeKind::Db if kind == DbKind::Redis => self.open_redis(&n.conn, n.db.clone().unwrap(), None),
+            NodeKind::Conn | NodeKind::Db if f4 && kind == DbKind::Redis => {
+                let db = n.db.clone().unwrap_or_else(|| self.default_db(&n.conn));
+                self.open_redis(&n.conn, db, None)
+            }
+            NodeKind::Conn | NodeKind::Db if f4 => self.open_console(&n.conn, n.db.clone()),
             NodeKind::Object(k) if k == "key" => self.open_redis(&n.conn, n.db.clone().unwrap(), n.name.clone()),
             NodeKind::Object(_) if n.is_relation() => self.open_table(&n.conn, n.db.clone().unwrap(), n.schema.clone().unwrap(), n.name.clone().unwrap()),
             NodeKind::Object(k) => {
@@ -599,17 +740,36 @@ impl App {
         let id = self.next_id;
         self.next_id += 1;
         let target = sql::target_id(conn, Some(&db));
-        self.tabs.push(Tab { id, title, conn: conn.into(), db, target, kind });
+        // 새 탭은 포커스가 있는 칸에 연다
+        let group = self.focused_group();
+        self.tabs.push(Tab { id, title, conn: conn.into(), db, target, kind, group });
         self.activate(self.tabs.len() - 1);
         id
+    }
+
+    /// 포커스가 있는 칸
+    pub fn focused_group(&self) -> usize {
+        if self.split.is_none() {
+            return 0;
+        }
+        self.tabs.get(self.active).map(|t| t.group).unwrap_or(0)
+    }
+
+    /// 칸에 보이는 탭 (index)
+    pub fn group_tab(&self, g: usize) -> Option<usize> {
+        self.group_active[g]
+            .and_then(|id| self.tab_index(id))
+            .filter(|&i| self.tabs[i].group == g)
+            .or_else(|| self.tabs.iter().position(|t| t.group == g))
     }
 
     pub fn activate(&mut self, i: usize) {
         if i >= self.tabs.len() {
             return;
         }
-        self.active = i;
         let id = self.tabs[i].id;
+        self.active = i;
+        self.group_active[self.tabs[i].group] = Some(id);
         self.mru.retain(|x| *x != id);
         self.mru.insert(0, id);
         self.focus = match &self.tabs[i].kind {
@@ -642,12 +802,71 @@ impl App {
             });
         }
         self.mru.retain(|x| *x != t.id);
+        if self.group_active[t.group] == Some(t.id) {
+            self.group_active[t.group] = None;
+        }
         if self.tabs.is_empty() {
             self.active = 0;
             self.focus = Focus::Tree;
-        } else {
-            let next = self.mru.first().and_then(|id| self.tab_index(*id)).unwrap_or(i.min(self.tabs.len() - 1));
-            self.activate(next);
+            self.split = None;
+            self.group_active = [None, None];
+            return;
+        }
+        // 칸이 비면 분할을 푼다
+        let emptied = !self.tabs.iter().any(|x| x.group == t.group);
+        // 같은 칸에서 최근에 쓴 탭으로
+        let next = self
+            .mru
+            .iter()
+            .filter_map(|id| self.tab_index(*id))
+            .find(|&j| self.tabs[j].group == t.group)
+            .or_else(|| self.mru.first().and_then(|id| self.tab_index(*id)))
+            .unwrap_or(0);
+        self.activate(next);
+        if emptied {
+            self.unsplit();
+        }
+    }
+
+    /// 분할 해제: 모든 탭을 한 칸으로
+    pub fn unsplit(&mut self) {
+        for t in &mut self.tabs {
+            t.group = 0;
+        }
+        self.split = None;
+        self.group_active = [self.tabs.get(self.active).map(|t| t.id), None];
+    }
+
+    /// 탭을 다른 칸으로 옮기거나 (before 앞으로) 순서를 바꾸고, 새로 나눠 그 칸으로 보낸다
+    pub fn drop_tab(&mut self, id: u64, target: DropTarget) {
+        let Some(i) = self.tab_index(id) else { return };
+        let from = self.tabs[i].group;
+        let (g, before) = match target {
+            DropTarget::NewSplit(dir) => {
+                if self.tabs.len() < 2 {
+                    // 탭이 하나면 새 콘솔을 만들어 나눈다
+                    self.activate(i);
+                    return self.split_toggle(dir);
+                }
+                self.split = Some(Split { dir, pct: 50 });
+                (1, None)
+            }
+            DropTarget::Group(g, before) => (g, before),
+        };
+        if before == Some(id) {
+            return self.activate(i);
+        }
+        let mut t = self.tabs.remove(i);
+        t.group = g;
+        let at = before.and_then(|b| self.tab_index(b)).unwrap_or(self.tabs.len());
+        self.tabs.insert(at, t);
+        if from != g && self.group_active[from] == Some(id) {
+            // 떠난 칸에는 그 칸에서 최근에 쓴 탭을 보인다
+            self.group_active[from] = self.mru.iter().copied().find(|x| *x != id && self.tab_index(*x).is_some_and(|j| self.tabs[j].group == from));
+        }
+        self.activate(at);
+        if self.split.is_some() && !self.tabs.iter().any(|x| x.group == from) {
+            self.unsplit();
         }
     }
 
@@ -660,7 +879,9 @@ impl App {
         editor.set_cursor_line_style(ratatui::style::Style::default());
         let manual = self.conn(conn).map(|c| c.config.options.tx_manual).unwrap_or(false);
         let session = uuid::Uuid::new_v4().to_string();
-        let id = self.push_tab(conn, db, title, TabKind::Console(Console { editor, session: session.clone(), grid: None, result_title: String::new(), output: vec![], show_output: true, running: false, tx_manual: manual, in_tx: false }));
+        let id = self.push_tab(conn, db, title, TabKind::Console(Console { editor, session: session.clone(), grid: None, result_title: String::new(), output: vec![], show_output: true, running: false, tx_manual: manual, in_tx: false, complete: None }));
+        let target = self.tabs[self.tab_index(id).unwrap()].target.clone();
+        self.load_completion(target);
         if manual {
             let st = self.state.clone();
             let target = self.tabs[self.tab_index(id).unwrap()].target.clone();
@@ -758,7 +979,7 @@ impl App {
             }
             None => {
                 let name = self.conn(conn).map(|c| c.config.name.clone()).unwrap_or_default();
-                let id = self.push_tab(conn, db.clone(), format!("{name} [{db}]"), TabKind::Redis(RedisTab { pattern: "*".into(), keys: vec![], cursor: "0".into(), sel: 0, off: 0, detail: None, value: None, focus_value: false, scanning: false, want: key.clone() }));
+                let id = self.push_tab(conn, db.clone(), format!("{name} [{db}]"), TabKind::Redis(RedisTab { pattern: "*".into(), keys: vec![], cursor: "0".into(), sel: 0, off: 0, detail: None, text: None, value: None, focus_value: false, scanning: false, want: key.clone() }));
                 self.redis_scan(id, true);
                 id
             }
@@ -794,8 +1015,9 @@ impl App {
                         r.sel = 0;
                         r.off = 0;
                     }
+                    let mut seen: HashSet<String> = r.keys.iter().map(|k| k.key.clone()).collect();
                     for k in page.keys {
-                        if !r.keys.iter().any(|x| x.key == k.key) {
+                        if seen.insert(k.key.clone()) {
                             r.keys.push(k);
                         }
                     }
@@ -834,6 +1056,10 @@ impl App {
             match res {
                 Ok(d) => {
                     r.value = redis_grid(&d);
+                    r.text = d.value.as_str().map(|s| match serde_json::from_str::<Value>(s) {
+                        Ok(v) if v.is_object() || v.is_array() => serde_json::to_string_pretty(&v).unwrap_or_default(),
+                        _ => s.to_string(),
+                    });
                     r.detail = Some((key, d));
                 }
                 Err(e) => {
@@ -941,13 +1167,15 @@ impl App {
                 let mut status = String::new();
                 let n = out.len();
                 for (i, (s, r)) in out.into_iter().enumerate() {
-                    c.output.push((false, format!("{conn_name}> {}", s.replace('\n', " "))));
+                    // 실행한 문장은 한 줄로, 너무 길면 앞부분만
+                    let echo: String = s.replace('\n', " ").chars().take(300).collect();
+                    c.log(false, format!("{conn_name}> {echo}{}", if s.chars().count() > 300 { "…" } else { "" }));
                     match r {
                         Ok(res) => {
                             c.in_tx = res.in_transaction;
                             if res.has_result_set {
                                 let msg = format!("{}{} row(s) retrieved in {} ms", res.rows.len(), if res.truncated { "+" } else { "" }, res.elapsed_ms);
-                                c.output.push((false, msg.clone()));
+                                c.log(false, msg.clone());
                                 status = msg;
                                 c.result_title = format!("Result {}: {}", i + 1, s.split_whitespace().take(6).collect::<Vec<_>>().join(" "));
                                 let mut g = Grid::new(res);
@@ -956,7 +1184,7 @@ impl App {
                                 c.show_output = false;
                             } else {
                                 let msg = format!("{} row(s) affected in {} ms", res.rows_affected, res.elapsed_ms);
-                                c.output.push((false, msg.clone()));
+                                c.log(false, msg.clone());
                                 status = msg;
                                 if i + 1 == n && c.grid.is_none() {
                                     c.show_output = true;
@@ -964,7 +1192,7 @@ impl App {
                             }
                         }
                         Err(e) => {
-                            c.output.push((true, e.clone()));
+                            c.log(true, e.clone());
                             c.show_output = true;
                             status = format!("Error: {}", e.lines().next().unwrap_or(""));
                         }
@@ -1002,7 +1230,11 @@ impl App {
             match r {
                 Ok(more) => {
                     g.append(more);
-                    a.status = format!("{}{} rows", g.rows(), if g.result.truncated { "+" } else { "" });
+                    a.status = if g.result.truncated && g.rows() >= crate::grid::MAX_ROWS {
+                        format!("Showing the first {} rows — export to CSV (x) for all of them", g.rows())
+                    } else {
+                        format!("{}{} rows", g.rows(), if g.result.truncated { "+" } else { "" })
+                    };
                 }
                 Err(e) => {
                     g.result.truncated = false;
@@ -1060,7 +1292,7 @@ impl App {
                         Ok(()) => {
                             if let Some(TabKind::Console(c)) = a.tab_mut(id).map(|t| &mut t.kind) {
                                 c.in_tx = false;
-                                c.output.push((false, if commit { "Committed".into() } else { "Rolled back".into() }));
+                                c.log(false, if commit { "Committed".into() } else { "Rolled back".into() });
                             }
                             a.status = if commit { "Committed".into() } else { "Rolled back".into() };
                         }
@@ -1197,6 +1429,7 @@ impl App {
         self.spawn(async move { st.disconnect(c).await.map_err(err) }, {
             let conn = conn.to_string();
             move |a, r| {
+                a.forget_completion(&conn);
                 a.tree.forget(&conn);
                 a.tree.expanded.retain(|k| !(k == &conn || k.starts_with(&format!("{conn}|"))));
                 a.tree.clamp();
@@ -1211,6 +1444,8 @@ impl App {
 
     pub fn refresh_node(&mut self, n: &Node) {
         let key = n.key.clone();
+        // 스키마가 바뀌었을 수 있으니 자동완성 메타도 다시 읽게 한다
+        self.forget_completion(&n.conn.clone());
         self.tree.forget(&key);
         if self.tree.expanded.contains(&key) {
             self.load_children(n.clone());
@@ -1243,9 +1478,15 @@ impl App {
         };
         let f = |label, value: String, kind| Field { label, value, kind };
         let saved = |b: bool| if b { "<saved>".to_string() } else { String::new() };
+        let color = crate::ui::color_name(c.color.as_deref());
+        let mut colors: Vec<&'static str> = std::iter::once("none").chain(crate::ui::COLOR_PRESETS.iter().map(|p| p.0)).collect();
+        if color == "custom" {
+            colors.push("custom");
+        }
         self.popup = Some(Popup::ConnForm(ConnForm {
             fields: vec![
                 f("Name", c.name.clone(), FieldKind::Text),
+                f("Color", color.into(), FieldKind::Choice(colors)),
                 f("Type", kind.into(), FieldKind::Choice(vec!["postgres", "mysql", "redis"])),
                 f("Host", c.host.clone(), FieldKind::Text),
                 f("Port", c.port.to_string(), FieldKind::Text),
@@ -1305,6 +1546,11 @@ impl App {
         c.database = v("Database").trim().into();
         c.name = if v("Name").trim().is_empty() { format!("{}@{}", c.user, c.host) } else { v("Name").trim().into() };
         c.read_only = v("Read-only") == "on";
+        // custom = GUI 에서 고른 프리셋 밖의 색: 그대로 둔다
+        match v("Color").as_str() {
+            "custom" => {}
+            name => c.color = crate::ui::COLOR_PRESETS.iter().find(|p| p.0 == name).map(|p| p.1.to_string()),
+        }
         c.ssh = Some(SshConfig {
             enabled: v("SSH tunnel") == "on",
             host: v("SSH host").trim().into(),
@@ -1322,13 +1568,17 @@ impl App {
     // ───────── 팝업: 팔레트 ─────────
 
     pub fn palette_actions(&mut self) {
-        let items = ACTIONS.iter().map(|(a, n, k)| PItem { label: n.to_string(), hint: k.to_string(), action: PAction::Act(*a) }).collect();
-        self.popup = Some(Popup::Palette(Palette { title: "Actions".into(), input: TextArea::default(), items, sel: 0, loading: 0 }));
+        let items = ACTIONS
+            .iter()
+            .filter(|(a, ..)| *a != Action::Palette)
+            .map(|(a, n, k)| PItem { label: n.to_string(), hint: if k.is_empty() { self.keys.label(*a) } else { k.to_string() }, action: PAction::Act(*a) })
+            .collect();
+        self.popup = Some(Popup::Palette(Palette { title: "Actions".into(), input: TextArea::default(), items, sel: 0, loading: 0, cache: Default::default() }));
     }
 
     pub fn palette_tabs(&mut self) {
         let items = self.mru.iter().filter_map(|id| self.tabs.iter().find(|t| t.id == *id)).map(|t| PItem { label: t.title.clone(), hint: t.db.clone(), action: PAction::Tab(t.id) }).collect();
-        self.popup = Some(Popup::Palette(Palette { title: "Recent Tabs".into(), input: TextArea::default(), items, sel: 1, loading: 0 }));
+        self.popup = Some(Popup::Palette(Palette { title: "Recent Tabs".into(), input: TextArea::default(), items, sel: 1, loading: 0, cache: Default::default() }));
     }
 
     /// Go to Database Object: 연결된 Data Source 의 기본 DB + 펼친 DB
@@ -1343,7 +1593,7 @@ impl App {
                 targets.push((parts[0].into(), parts[1].into()));
             }
         }
-        self.popup = Some(Popup::Palette(Palette { title: "Go to Database Object".into(), input: TextArea::default(), items: vec![], sel: 0, loading: targets.len() }));
+        self.popup = Some(Popup::Palette(Palette { title: "Go to Database Object".into(), input: TextArea::default(), items: vec![], sel: 0, loading: targets.len(), cache: Default::default() }));
         if targets.is_empty() {
             self.status = "Connect a data source first (Enter on it in the explorer)".into();
         }
@@ -1371,11 +1621,15 @@ impl App {
 
     pub fn palette_matches(p: &Palette) -> Vec<&PItem> {
         let q = p.input.lines().join("");
-        let mut v: Vec<(i64, &PItem)> = p.items.iter().filter_map(|i| fuzzy(&q, &i.label).map(|s| (s, i))).collect();
-        if !q.is_empty() {
-            v.sort_by(|a, b| b.0.cmp(&a.0));
+        let mut cache = p.cache.borrow_mut();
+        if !cache.as_ref().is_some_and(|(cq, n, _)| *cq == q && *n == p.items.len()) {
+            let mut v: Vec<(i64, usize)> = p.items.iter().enumerate().filter_map(|(i, it)| fuzzy(&q, &it.label).map(|s| (s, i))).collect();
+            if !q.is_empty() {
+                v.sort_by(|a, b| b.0.cmp(&a.0));
+            }
+            *cache = Some((q, p.items.len(), v.into_iter().take(300).map(|x| x.1).collect()));
         }
-        v.into_iter().take(300).map(|x| x.1).collect()
+        cache.as_ref().map(|c| c.2.iter().map(|&i| &p.items[i]).collect()).unwrap_or_default()
     }
 
     pub fn run_palette(&mut self, item: PItem, ddl: bool) {
@@ -1481,16 +1735,8 @@ impl App {
             Action::Cancel => self.cancel(),
             Action::TxToggle | Action::Commit | Action::Rollback => self.tx(a),
             Action::CloseTab => self.close_tab(self.active),
-            Action::NextTab => {
-                if !self.tabs.is_empty() {
-                    self.activate((self.active + 1) % self.tabs.len())
-                }
-            }
-            Action::PrevTab => {
-                if !self.tabs.is_empty() {
-                    self.activate((self.active + self.tabs.len() - 1) % self.tabs.len())
-                }
-            }
+            Action::NextTab => self.cycle_tab(1),
+            Action::PrevTab => self.cycle_tab(-1),
             Action::GoToObject => self.palette_objects(),
             Action::RecentTabs => self.palette_tabs(),
             Action::Ddl => {
@@ -1562,9 +1808,171 @@ impl App {
                     c.show_output = !c.show_output;
                 }
             }
-            Action::Help => self.popup = Some(Popup::Help { scroll: 0 }),
+            Action::SplitRight => self.split_toggle(SplitDir::Right),
+            Action::SplitDown => self.split_toggle(SplitDir::Down),
+            Action::Unsplit => self.unsplit(),
+            Action::OtherSplit => {
+                if self.split.is_some() {
+                    if let Some(i) = self.group_tab(1 - self.focused_group()) {
+                        self.activate(i);
+                    }
+                }
+            }
+            Action::ExplorerNarrower | Action::ExplorerWider => {
+                let w = self.explorer_width(self.hits.main.width) as i16 + if a == Action::ExplorerWider { 4 } else { -4 };
+                self.set_explorer_width(w);
+            }
+            Action::SplitShrink | Action::SplitGrow => {
+                if let Some(sp) = &mut self.split {
+                    sp.pct = (sp.pct as i16 + if a == Action::SplitGrow { 5 } else { -5 }).clamp(15, 85) as u16;
+                }
+            }
+            Action::Complete => {
+                if matches!(self.tabs.get(self.active).map(|t| &t.kind), Some(TabKind::Console(_))) {
+                    self.focus = Focus::Editor;
+                    self.update_completion(true);
+                }
+            }
+            Action::Palette => self.palette_actions(),
+            Action::CycleFocus => {
+                self.focus = match self.focus {
+                    Focus::Tree if !self.tabs.is_empty() => match self.tabs[self.active].kind {
+                        TabKind::Console(_) => Focus::Editor,
+                        _ => Focus::Grid,
+                    },
+                    Focus::Editor => Focus::Grid,
+                    _ => Focus::Tree,
+                };
+                if self.focus == Focus::Tree {
+                    self.explorer = true;
+                }
+            }
+            Action::ShrinkEditor => self.resize_console(-5),
+            Action::GrowEditor => self.resize_console(5),
+            Action::Help => self.popup = Some(Popup::Help { sel: 0, scroll: 0, record: None, message: None }),
             Action::Quit => self.quit = true,
         }
+    }
+
+    /// 다음/이전 탭 (포커스가 있는 칸 안에서)
+    fn cycle_tab(&mut self, d: isize) {
+        let g = self.focused_group();
+        let idx: Vec<usize> = (0..self.tabs.len()).filter(|&i| self.tabs[i].group == g).collect();
+        let Some(p) = idx.iter().position(|&i| i == self.active) else { return };
+        let n = idx.len() as isize;
+        self.activate(idx[(p as isize + d).rem_euclid(n) as usize]);
+    }
+
+    /// 같은 방향으로 다시 누르면 분할 해제. 지금 탭을 새 칸(오른쪽/아래)으로 옮긴다
+    fn split_toggle(&mut self, dir: SplitDir) {
+        if let Some(sp) = &mut self.split {
+            if sp.dir == dir {
+                self.unsplit();
+            } else {
+                sp.dir = dir;
+            }
+            return;
+        }
+        let Some(cur) = self.tabs.get(self.active).map(|t| t.id) else {
+            self.status = "Open a tab to split".into();
+            return;
+        };
+        if self.tabs.len() >= 2 {
+            return self.drop_tab(cur, DropTarget::NewSplit(dir));
+        }
+        // 탭이 하나뿐이면 같은 DB 의 새 콘솔을 오른쪽/아래 칸에 연다
+        let (conn, db) = (self.tabs[self.active].conn.clone(), self.tabs[self.active].db.clone());
+        if self.kind_of(&conn) == DbKind::Redis {
+            self.status = "Open another tab to split".into();
+            return;
+        }
+        self.open_console(&conn, Some(db));
+        let id = self.tabs[self.active].id;
+        self.drop_tab(id, DropTarget::NewSplit(dir));
+    }
+
+    /// Database Explorer 폭: 정한 값이 없으면 화면 폭의 1/4 (26~48)
+    pub fn explorer_width(&self, total: u16) -> u16 {
+        let auto = (total / 4).clamp(26, 48);
+        self.explorer_w.unwrap_or(auto).clamp(12, total.saturating_sub(20).max(12))
+    }
+
+    pub fn set_explorer_width(&mut self, w: i16) {
+        let max = self.hits.main.width.saturating_sub(20).max(12) as i16;
+        self.explorer_w = Some(w.clamp(12, max) as u16);
+    }
+
+    /// 콘솔 에디터/결과 비율 조절
+    pub fn resize_console(&mut self, d: i16) {
+        self.console_pct = (self.console_pct as i16 + d).clamp(10, 90) as u16;
+    }
+
+    // ───────── 자동완성 ─────────
+
+    /// Data Source 의 자동완성 메타를 버린다 (끊기·새로 고침)
+    pub fn forget_completion(&mut self, conn: &str) {
+        self.completion.retain(|t, _| dbtool_core::app::split_target(t).0 != conn);
+    }
+
+    pub fn load_completion(&mut self, target: String) {
+        if self.completion.contains_key(&target) || !self.completion_loading.insert(target.clone()) {
+            return;
+        }
+        let st = self.state.clone();
+        let t2 = target.clone();
+        self.spawn(async move { st.completion_meta(t2).await.map_err(err) }, move |a, r| {
+            a.completion_loading.remove(&target);
+            match r {
+                Ok(v) => {
+                    a.completion.insert(target, Arc::new(complete::Meta::new(v)));
+                }
+                Err(e) => a.status = format!("Completion metadata: {e}"),
+            }
+        });
+    }
+
+    /// 커서 위치로 후보를 다시 계산한다. explicit = Ctrl+Space (아니면 '.' 입력·목록이 열린 채 타이핑)
+    pub fn update_completion(&mut self, explicit: bool) {
+        let Some(t) = self.tabs.get(self.active) else { return };
+        let kind = self.kind_of(&t.conn);
+        let (target, db) = (t.target.clone(), t.db.clone());
+        let meta = self.completion.get(&target).cloned();
+        if meta.is_none() {
+            self.load_completion(target);
+        }
+        let Some(TabKind::Console(c)) = self.tabs.get_mut(self.active).map(|t| &mut t.kind) else { return };
+        let (row, col) = c.editor.cursor();
+        let lines = c.editor.lines();
+        let before: String = lines.get(row).map(|l| l.chars().take(col).collect()).unwrap_or_default();
+        // 키마다 불리므로 커서 주변 줄만 본다 (긴 스크립트 전체를 매번 나누지 않게)
+        let (from, to) = (row.saturating_sub(200), (row + 50).min(lines.len()));
+        let window = &lines[from..to];
+        let text = window.join("\n");
+        let stmt = sql::statement_at(&text, byte_offset(window, row - from, col), kind).unwrap_or_default();
+        let empty = complete::Meta::new(vec![]);
+        let (prefix, items) = complete::suggest(meta.as_deref().unwrap_or(&empty), &stmt, &before, &db);
+        // 자동으로 열 때는 '.' 뒤이거나 단어를 치는 중일 때만
+        let keep = explicit || prefix > 0 || before.ends_with('.');
+        c.complete = if items.is_empty() || !keep { None } else { Some(Completion { items, sel: 0, prefix }) };
+        if explicit && c.complete.is_none() {
+            self.status = if meta.is_none() { "Loading completion metadata… try again in a moment".into() } else { "No suggestions".into() };
+        }
+    }
+
+    /// 고른 후보로 커서 앞 단어를 바꾼다
+    pub fn accept_completion(&mut self) {
+        let Some(TabKind::Console(c)) = self.tabs.get_mut(self.active).map(|t| &mut t.kind) else { return };
+        let Some(cmp) = c.complete.take() else { return };
+        let Some(item) = cmp.items.get(cmp.sel) else { return };
+        for _ in 0..cmp.prefix {
+            c.editor.delete_char();
+        }
+        c.editor.insert_str(&item.insert);
+    }
+
+    /// 키맵을 keymap.json 에 저장
+    pub fn save_keys(&mut self) -> Result<(), String> {
+        self.state.store.save_keymap("tui", &self.keys.overrides()).map_err(err)
     }
 
     pub fn grid_mut(&mut self) -> Option<&mut Grid> {

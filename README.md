@@ -11,6 +11,7 @@ A DataGrip-style database client. One engine (`dbtool-core`), three ways to use 
 All three share the same data sources and passwords, so a connection created in one shows up in the others.
 
 - Config folder: `~/Library/Application Support/com.hyunkyo.dbtool` (macOS), `~/.config/com.hyunkyo.dbtool` (Linux)
+- Custom shortcuts are stored in `keymap.json` in that folder (`"gui"` and `"tui"` sections, only the ones you changed)
 - Passwords are stored in `secrets.json` in that folder, encrypted with AES-GCM (key in `secret.key`, mode 0600). The macOS Keychain is not used.
 
 ## Download
@@ -71,6 +72,8 @@ crates/mcp    MCP server (stdio JSON-RPC)
 Inside the app the same list is searchable via **Help › Keymap Reference**, the ⌨ toolbar button, or `⇧⌘/`. **Find Action** (`⇧⌘A`) lists every command together with its shortcut.
 On Windows/Linux read `⌘` as `Ctrl` and `⌥` as `Alt`.
 
+Command shortcuts can be changed in **Settings › Keymap** (or **Edit Keymap…** in the Keymap Reference): click *Change* and press the new keys. The tables below show the defaults. Navigation keys inside the tree, grid and popups are fixed.
+
 <!-- keymap:gui:start -->
 
 #### Search & Navigation
@@ -106,7 +109,8 @@ On Windows/Linux read `⌘` as `Ctrl` and `⌥` as `Alt`.
 | `⇧⌘F12` | Maximize editor (also: double-click a tab) |
 | `⌘,` | Settings (theme) |
 | `⌃`` | Quick switch theme (Dark / Light / High contrast / Sync with OS) |
-| `⌃⇧. / ⌃⇧,` | Editor font size bigger / smaller |
+| `⌃⇧.` | Editor font size bigger |
+| `⌃⇧,` | Editor font size smaller |
 
 #### Editor tabs
 
@@ -115,7 +119,8 @@ On Windows/Linux read `⌘` as `Ctrl` and `⌥` as `Alt`.
 | `⌘W` | Close tab (middle-click also closes) |
 | `⌥ + click ×` | Close other tabs |
 | `⇧⌘T` | Reopen closed tab |
-| `⇧⌘] / ⇧⌘[` | Next / previous tab |
+| `⇧⌘]` | Next tab |
+| `⇧⌘[` | Previous tab |
 | `⌥⇥` | Go to the other split |
 | `right-click tab` | Pin, Split Right/Down, Move to Opposite Group, Close others… |
 | `drag tab` | Reorder, or drop on the right/bottom edge to split |
@@ -124,7 +129,7 @@ On Windows/Linux read `⌘` as `Ctrl` and `⌥` as `Alt`.
 
 | macOS | Action |
 |---|---|
-| `⌘↓ / F4` | Edit data (table) / open console (data source) |
+| `⌘↓ / F4` | Edit data (table) / open console (data source; Redis: key browser) |
 | `⇧⌘L` | New query console |
 | `⇧⌘F10` | Jump to query console |
 | `⌘B` | Go to DDL |
@@ -136,7 +141,8 @@ On Windows/Linux read `⌘` as `Ctrl` and `⌥` as `Alt`.
 | `⌘;` | Data source properties |
 | `⌘N` | New data source |
 | `⌘D` | Duplicate data source |
-| `⌘R / ⌥⌘Y` | Refresh |
+| `⌘R` | Refresh |
+| `⌥⌘Y` | Refresh (anywhere) |
 | `⌘F2` | Disconnect |
 | `⌦` | Remove data source / drop object (asks first) |
 | `type letters` | Speed search in the tree |
@@ -150,12 +156,16 @@ On Windows/Linux read `⌘` as `Ctrl` and `⌥` as `Alt`.
 | `⌥⌘E` | Query history |
 | `⌃Space` | Code completion |
 | `⌥⌘L` | Reformat code |
-| `⌘/ · ⌥⌘/` | Line comment · block comment |
+| `⌘/` | Line comment |
+| `⌥⌘/` | Block comment |
 | `⌘D` | Duplicate line |
 | `⌘⌫` | Delete line |
-| `⌥⇧↑ / ⌥⇧↓` | Move line up / down |
-| `⌥↑ / ⌥↓` | Extend / shrink selection |
-| `⌃G · ⌃⌘G` | Select next occurrence · all occurrences |
+| `⌥⇧↑` | Move line up |
+| `⌥⇧↓` | Move line down |
+| `⌥↑` | Extend selection |
+| `⌥↓` | Shrink selection |
+| `⌃G` | Select next occurrence |
+| `⌃⌘G` | Select all occurrences |
 | `⇧⌘U` | Toggle case |
 | `⌘L` | Go to line |
 | `⌘F` | Find in editor |
@@ -184,25 +194,45 @@ On Windows/Linux read `⌘` as `Ctrl` and `⌥` as `Alt`.
 
 ## TUI keyboard shortcuts
 
-Press **F1** inside `dbtool-tui`, or run `dbtool-tui --help`, to see the same list. The mouse works too: click to select, double-click to open or edit, scroll with the wheel.
+Press **F1** inside `dbtool-tui`, or run `dbtool-tui --help`, to see the same list. In the F1 window the **Commands** at the top can be changed: select one, press Enter and then the new key (`a` adds a second key, `Del` resets it). The mouse works too: click to select, double-click to open or edit, scroll with the wheel.
 Ctrl+Enter is only distinguishable in terminals that support the kitty keyboard protocol (iTerm2, kitty, WezTerm, Ghostty). Elsewhere use F5 or Alt+Enter.
 
 <!-- keymap:tui:start -->
 
-#### Global
+#### Commands (default keys — change them in the F1 window)
 
 | Key | Action |
 |---|---|
 | `Ctrl+Q` | Quit |
-| `F1` | This keymap |
-| `Ctrl+K` | Actions palette (run any command by name) |
-| `Ctrl+O` | Go to Database Object (Ctrl+B in the list = DDL) |
-| `Ctrl+E` | Recent tabs |
-| `Ctrl+L` | New query console |
-| `Ctrl+W` | Close tab |
-| `Alt+← / Alt+→` | Previous / next tab (also Ctrl+PgUp / Ctrl+PgDn) |
-| `Alt+1` | Database Explorer: focus / hide |
-| `F6` | Cycle focus: explorer → editor → results |
+| `F1` | Keymap |
+| `Ctrl+K` | Actions Palette |
+| `Ctrl+O` | Go to Database Object |
+| `Ctrl+E` | Recent Tabs / Switcher |
+| `Ctrl+L` | New Query Console |
+| `Ctrl+W` | Close Tab |
+| `Alt+Right / Ctrl+PgDn` | Next Tab |
+| `Alt+Left / Ctrl+PgUp` | Previous Tab |
+| `Alt+1` | Database Explorer |
+| `F6` | Cycle Focus (explorer → editor → results) |
+| `Alt+\` | Split Right |
+| `Alt+-` | Split Down |
+| `Alt+Tab` | Go to the Other Split |
+| `Alt+Shift+Left` | Move Split Divider Left / Up |
+| `Alt+Shift+Right` | Move Split Divider Right / Down |
+| `Alt+[` | Database Explorer Narrower |
+| `Alt+]` | Database Explorer Wider |
+| `F5 / Ctrl+Enter / Alt+Enter` | Execute |
+| `Alt+E` | Explain Plan |
+| `Ctrl+Space` | Code Completion |
+| `Ctrl+C` | Cancel Running Statement |
+| `Alt+T` | Toggle Transaction Mode (Auto/Manual) |
+| `Alt+C` | Commit |
+| `Alt+R` | Roll Back |
+| `Alt+O` | Toggle Output / Result |
+| `Alt+Up` | Shrink Editor (console) |
+| `Alt+Down` | Grow Editor (console) |
+| `Ctrl+S` | Submit Changes |
+| `Ctrl+F2` | Disconnect |
 
 #### Database Explorer
 
@@ -210,12 +240,12 @@ Ctrl+Enter is only distinguishable in terminals that support the kitty keyboard 
 |---|---|
 | `↑ ↓  (j k)` | Move |
 | `→ / ←  (l h)` | Expand / collapse (← on a child jumps to its parent) |
-| `Enter` | Connect · open table data · open Redis browser · show DDL of routines |
-| `F4 / Ctrl+↓` | Open a query console for the data source / database |
+| `Enter / double-click` | Expand / collapse (connects) · open table data · open a Redis key · show DDL of routines |
+| `F4 / Ctrl+↓` | Open a query console for the data source / database (Redis: the key browser) |
 | `Ctrl+B` | Go to DDL |
 | `/` | Filter loaded nodes (Esc clears) |
 | `n / e / D` | New / edit / remove data source |
-| `c / X` | Connect / disconnect (also Ctrl+F2) |
+| `c / X` | Connect / disconnect |
 | `r / F5` | Refresh |
 | `y` | Copy name (OSC 52 clipboard) |
 | `Tab / Esc` | Go to the open tab |
@@ -224,15 +254,20 @@ Ctrl+Enter is only distinguishable in terminals that support the kitty keyboard 
 
 | Key | Action |
 |---|---|
-| `F5 / Ctrl+Enter / Alt+Enter` | Execute statement at caret (or the selection) |
-| `Alt+E` | Explain plan |
-| `Ctrl+C` | Cancel running statement |
-| `Alt+T` | Transaction mode Auto / Manual |
-| `Alt+C / Alt+R` | Commit / roll back |
-| `Alt+O` | Toggle result grid / output log |
+| `completion list` | Opens as you type (or Ctrl+Space) · ↑↓ choose · Enter/Tab insert · Esc close |
 | `Shift+Tab` | Go to the result grid (Esc / Tab returns) |
 | `Esc` | Go to the explorer |
 | `Ctrl+U / Ctrl+R` | Undo / redo (editor) |
+| `mouse drag` | Drag the editor/result border to resize |
+
+#### Tabs & split (mouse)
+
+| Key | Action |
+|---|---|
+| `drag a tab` | Onto the right / bottom edge = split · onto the other pane or tab bar = move · within a bar = reorder |
+| `drag the border` | Resize the Database Explorer (its right border) or the two panes (the border between them; in a top/bottom split also the empty part of the lower tab bar) |
+| `click a pane` | Focus it |
+| `Shift+wheel / trackpad` | Scroll the grid and the explorer sideways (Shift+← / Shift+→ in the explorer) |
 
 #### Data grid (results & table data)
 
@@ -241,11 +276,11 @@ Ctrl+Enter is only distinguishable in terminals that support the kitty keyboard 
 | `arrows  (h j k l)` | Move |
 | `PgUp / PgDn · g / G` | Page · first / last row (more rows load automatically) |
 | `Home / End` | First / last column |
+| `Shift+← / Shift+→` | Scroll columns sideways (mouse: wheel over the header row, ⌥+wheel, or click / drag the bar on the bottom border) |
 | `Enter / F2` | Edit cell (table data) |
 | `n` | Set NULL |
 | `a / Insert` | Add row |
 | `d / Delete` | Mark row deleted (again = undo) |
-| `Ctrl+S` | Submit changes (one transaction) |
 | `Ctrl+Z` | Revert pending changes |
 | `w / o` | Edit WHERE / ORDER BY |
 | `r` | Reload |
@@ -278,7 +313,7 @@ Ctrl+Enter is only distinguishable in terminals that support the kitty keyboard 
 |---|---|
 | `↑ ↓ / Tab` | Move between fields |
 | `type / Backspace` | Edit text fields |
-| `Space / ← →` | Toggle on/off · change choice (Type, SSL mode, Redis mode…) |
+| `Space / ← →` | Toggle on/off · change choice (Type, Color, SSL mode, Redis mode…) |
 | `Ctrl+T` | Test connection |
 | `Enter / Ctrl+S` | Save |
 | `Esc` | Cancel |
@@ -287,6 +322,7 @@ Ctrl+Enter is only distinguishable in terminals that support the kitty keyboard 
 
 | Key | Action |
 |---|---|
+| `Ctrl+B` | Go to DDL (in Go to Database Object) |
 | `type` | Filter (palettes) |
 | `↑ ↓ / PgUp PgDn` | Move / scroll |
 | `Enter` | Run / confirm |

@@ -22,7 +22,15 @@ pub struct PgSession {
     manual: bool,
     /// Manual 모드에서 열린 트랜잭션이 있는지
     pub in_tx: bool,
+    /// 커서를 마지막으로 쓴 시각 (오래 안 쓰면 닫는다)
+    cursor_used: Instant,
+    /// 오래 안 써서 커서를 닫았는지 (더 불러오기 안내용)
+    idle_closed: bool,
 }
+
+/// Auto 모드에서 결과를 끝까지 안 읽은 커서를 이만큼 안 쓰면 닫는다.
+/// 커서가 열린 동안은 트랜잭션도 열려 있어서 (idle in transaction) VACUUM·DDL 을 막는다
+pub const CURSOR_IDLE: std::time::Duration = std::time::Duration::from_secs(60);
 
 pub fn strip_comments_lead(sql: &str) -> String {
     let mut s = sql.trim_start();
@@ -50,7 +58,7 @@ impl PgSession {
     pub async fn open(pool: &PgPool) -> AppResult<Self> {
         let mut conn = pool.acquire().await?;
         let pid: i32 = sqlx::query_scalar("select pg_backend_pid()").fetch_one(&mut *conn).await?;
-        Ok(Self { conn, pid, cursor_open: false, cursor_sql: String::new(), columns: Vec::new(), manual: false, in_tx: false })
+        Ok(Self { conn, pid, cursor_open: false, cursor_sql: String::new(), columns: Vec::new(), manual: false, in_tx: false, cursor_used: Instant::now(), idle_closed: false })
     }
 
     /// keep-alive: 유휴 세션 연결이 끊기지 않도록
@@ -69,6 +77,25 @@ impl PgSession {
             let sql = if self.manual { "CLOSE dbtool_cur" } else { "CLOSE dbtool_cur; COMMIT" };
             let _ = self.conn.execute(sql).await;
             self.cursor_open = false;
+        }
+    }
+
+    /// Auto 모드에서 오래 안 쓴 커서를 닫고 트랜잭션을 끝낸다 (Manual 은 사용자 트랜잭션이라 두지 않는다)
+    pub async fn close_idle_cursor(&mut self, idle: std::time::Duration) -> bool {
+        if self.cursor_open && !self.manual && self.cursor_used.elapsed() >= idle {
+            self.close_cursor().await;
+            self.idle_closed = true;
+            return true;
+        }
+        false
+    }
+
+    /// 탭을 닫을 때: 커서·트랜잭션을 정리해서 깨끗한 연결로 풀에 돌려준다
+    pub async fn discard(&mut self) {
+        self.close_cursor().await;
+        if self.manual || self.in_tx {
+            let _ = self.conn.execute("ROLLBACK").await;
+            self.in_tx = false;
         }
     }
 
@@ -141,6 +168,8 @@ impl PgSession {
             match self.conn.execute(declare.as_str()).await {
                 Ok(_) => {
                     self.cursor_open = true;
+                    self.cursor_used = Instant::now();
+                    self.idle_closed = false;
                     self.cursor_sql = sql.to_string();
                     self.columns.clear();
                     let mut r = self.fetch(limit).await?;
@@ -194,8 +223,13 @@ impl PgSession {
     /// 열린 커서에서 다음 `limit`행을 가져온다.
     pub async fn fetch(&mut self, limit: usize) -> AppResult<QueryResult> {
         if !self.cursor_open {
-            return Err(AppError::Msg("No more rows".into()));
+            return Err(AppError::Msg(if self.idle_closed {
+                format!("The result was closed after {} s without use (it kept a transaction open). Run the query again to load more rows.", CURSOR_IDLE.as_secs())
+            } else {
+                "No more rows".into()
+            }));
         }
+        self.cursor_used = Instant::now();
         let start = Instant::now();
         let rows: Vec<PgRow> = match sqlx::query(&format!("FETCH {limit} FROM {CURSOR}")).persistent(false).fetch_all(&mut *self.conn).await {
             Ok(r) => r,
@@ -289,6 +323,20 @@ impl Session {
             Session::Pg(s) => s.close_cursor().await,
             Session::My(s) => s.close_cursor(),
             Session::Redis(_) => {}
+        }
+    }
+    /// 탭을 닫을 때: 열린 트랜잭션을 되돌리고 세션 설정을 풀어서 풀에 돌려준다
+    pub async fn discard(&mut self) {
+        match self {
+            Session::Pg(s) => s.discard().await,
+            Session::My(s) => s.discard().await,
+            Session::Redis(_) => {}
+        }
+    }
+    pub async fn close_idle_cursor(&mut self, idle: std::time::Duration) -> bool {
+        match self {
+            Session::Pg(s) => s.close_idle_cursor(idle).await,
+            _ => false,
         }
     }
     pub async fn ping(&mut self) {

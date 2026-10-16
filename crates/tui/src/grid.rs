@@ -26,7 +26,16 @@ pub struct Grid {
     /// 마지막 렌더 위치 (마우스 클릭): 본문 영역, 보이는 열의 (열 번호, x 시작, x 끝)
     pub body: Rect,
     pub col_x: Vec<(usize, u16, u16)>,
+    /// 가로 스크롤바 (아래 테두리 줄). 열이 다 보이면 비어 있다
+    pub hbar: Rect,
+    /// 헤더 + 구분선 (여기서 휠 = 가로 스크롤)
+    pub header: Rect,
+    /// 마지막 열이 오른쪽 끝에 닿는 첫 열 (그보다 더 밀지 않는다)
+    pub max_off: usize,
 }
+
+/// 결과 그리드에 쌓아 두는 최대 행 수. 그 이상은 CSV 로 내보낸다
+pub const MAX_ROWS: usize = 100_000;
 
 pub fn cell_text(v: &Value) -> String {
     match v {
@@ -45,7 +54,7 @@ pub fn raw_text(v: &Value) -> Option<String> {
 
 impl Grid {
     pub fn new(result: QueryResult) -> Self {
-        let mut g = Grid { result, row: 0, col: 0, row_off: 0, col_off: 0, more_session: None, loading_more: false, edits: BTreeMap::new(), deleted: BTreeSet::new(), added: 0, widths: vec![], page: 10, body: Rect::default(), col_x: vec![] };
+        let mut g = Grid { result, row: 0, col: 0, row_off: 0, col_off: 0, more_session: None, loading_more: false, edits: BTreeMap::new(), deleted: BTreeSet::new(), added: 0, widths: vec![], page: 10, body: Rect::default(), col_x: vec![], hbar: Rect::default(), header: Rect::default(), max_off: usize::MAX };
         g.compute_widths();
         g
     }
@@ -130,9 +139,42 @@ impl Grid {
         }
     }
 
-    /// 끝 근처면 더 불러올 때
+    /// 가로 스크롤 (트랙패드·Shift+휠): 보이는 첫 열을 옮기고 선택도 그 열로
+    pub fn hscroll(&mut self, d: isize) {
+        if self.cols() == 0 {
+            return;
+        }
+        self.col_off = (self.col_off as isize + d).clamp(0, self.max_off.min(self.cols() - 1) as isize) as usize;
+        self.col = self.col_off;
+    }
+
+    /// 스크롤바를 누른·끈 위치로
+    pub fn hscroll_to(&mut self, x: u16) {
+        let b = self.hbar;
+        if b.width == 0 || self.cols() == 0 {
+            return;
+        }
+        let c = (x.saturating_sub(b.x) as usize * self.cols() / b.width as usize).min(self.max_off).min(self.cols() - 1);
+        self.col_off = c;
+        self.col = c;
+    }
+
+    /// 끝 근처면 더 불러올 때 (MAX_ROWS 까지만: 그 이상은 CSV 로 내보낸다)
     pub fn wants_more(&self) -> bool {
-        self.result.truncated && self.more_session.is_some() && !self.loading_more && self.row + 5 >= self.rows()
+        self.result.truncated && self.more_session.is_some() && !self.loading_more && self.row + 5 >= self.rows() && self.rows() < MAX_ROWS
+    }
+
+    /// 그릴 칸의 글자: 폭(max 글자)까지만 만든다 (큰 text·jsonb 를 프레임마다 통째로 복사하지 않게)
+    fn shown(&self, r: usize, c: usize, max: usize) -> Option<String> {
+        let clip = |s: &str| -> String { s.chars().take(max).map(|ch| match ch { '\n' => '↵', '\t' => '→', ch => ch }).collect() };
+        if let Some(v) = self.edits.get(&(r, c)) {
+            return v.as_deref().map(clip);
+        }
+        match self.result.rows.get(r)?.get(c)? {
+            Value::Null => None,
+            Value::String(s) => Some(clip(s)),
+            other => Some(clip(&other.to_string())),
+        }
     }
 
     pub fn render(&mut self, f: &mut Frame, area: Rect, title: String, focused: bool) {
@@ -145,6 +187,7 @@ impl Grid {
         if inner.height < 2 || self.cols() == 0 {
             return;
         }
+        // 헤더 아래가 본문 (행 구분은 줄을 따로 쓰지 않고 밑줄로 긋는다)
         let body_h = (inner.height - 1) as usize;
         self.page = body_h.max(1);
         // 세로 스크롤
@@ -156,6 +199,19 @@ impl Grid {
         // 가로 스크롤: 선택 열이 보이도록
         let num_w = (self.rows().max(1).to_string().len() + 1) as u16;
         let avail = inner.width.saturating_sub(num_w + 1);
+        // 끝까지 밀었을 때 오른쪽이 비지 않도록: 마지막 열이 오른쪽 끝에 닿는 첫 열보다 더 밀지 않는다
+        self.max_off = {
+            let mut off = self.cols();
+            let mut w = 0u16;
+            while off > 0 && w + self.widths[off - 1] + 1 <= avail {
+                off -= 1;
+                w += self.widths[off] + 1;
+            }
+            off.min(self.cols() - 1)
+        };
+        if self.col_off > self.max_off {
+            self.col_off = self.max_off;
+        }
         if self.col < self.col_off {
             self.col_off = self.col;
         }
@@ -166,23 +222,34 @@ impl Grid {
             }
             self.col_off += 1;
         }
-        let mut cols = vec![];
+        // 보이는 열과 그 폭. 다 들어가지 않는 마지막 열은 남은 폭만큼 잘라서 보인다
+        let mut cols: Vec<usize> = vec![];
+        let mut shown_w: Vec<u16> = vec![];
         let mut used = 0u16;
+        let mut full = 0usize;
         for c in self.col_off..self.cols() {
             let w = self.widths[c];
             if used + w + 1 > avail && !cols.is_empty() {
+                let rest = avail.saturating_sub(used + 1);
+                if rest >= 3 {
+                    cols.push(c);
+                    shown_w.push(rest);
+                }
                 break;
             }
             used += w + 1;
             cols.push(c);
+            shown_w.push(w);
+            full += 1;
         }
         // 클릭 판정용 위치 기록
         self.body = Rect { x: inner.x, y: inner.y + 1, width: inner.width, height: inner.height - 1 };
+        self.header = Rect { x: inner.x, y: inner.y, width: inner.width, height: 1 };
         self.col_x.clear();
         let mut x = inner.x + num_w + 1;
-        for &c in &cols {
-            self.col_x.push((c, x, x + self.widths[c]));
-            x += self.widths[c] + 1;
+        for (&c, &w) in cols.iter().zip(&shown_w) {
+            self.col_x.push((c, x, x + w));
+            x += w + 1;
         }
         let header = Row::new(
             std::iter::once(Cell::from("")).chain(cols.iter().map(|&c| {
@@ -209,11 +276,11 @@ impl Grid {
                 let num = Cell::from(format!("{:>w$}", r + 1, w = num_w as usize - 1)).style(Style::default().fg(if added { Color::Green } else if deleted { Color::Red } else { Color::DarkGray }));
                 Row::new(std::iter::once(num).chain(cols.iter().map(|&c| {
                     let edited = self.edits.contains_key(&(r, c));
-                    let v = self.value(r, c);
+                    let v = self.shown(r, c, self.widths[c] as usize + 1);
                     let text = match &v {
                         None if added && !edited => "<default>".to_string(),
                         None => "<null>".to_string(),
-                        Some(s) => s.replace('\n', "↵").replace('\t', "→"),
+                        Some(s) => s.clone(),
                     };
                     let w = self.widths[c] as usize;
                     let text = if numeric[c] && v.is_some() { format!("{text:>w$}") } else { text };
@@ -236,7 +303,41 @@ impl Grid {
                 })))
             })
             .collect();
-        let widths: Vec<Constraint> = std::iter::once(Constraint::Length(num_w)).chain(cols.iter().map(|&c| Constraint::Length(self.widths[c]))).collect();
+        let widths: Vec<Constraint> = std::iter::once(Constraint::Length(num_w)).chain(shown_w.iter().map(|&w| Constraint::Length(w))).collect();
+        let shown_rows = (end - self.row_off) as u16;
         f.render_widget(Table::new(rows, widths).header(header).column_spacing(1), inner);
+        // 구분선: 열 사이는 세로줄(열 사이 한 칸 간격 자리), 헤더·행 사이는 흐린 밑줄.
+        // 가로줄을 줄로 따로 그리면 보이는 행이 절반이 되고, 일부 터미널(Orca 등)에서는 ─ 가 안 보인다
+        let line_c = Color::Rgb(96, 99, 106);
+        let line = Style::default().fg(line_c);
+        let under = Style::default().add_modifier(Modifier::UNDERLINED).underline_color(line_c);
+        let buf = f.buffer_mut();
+        // 잘린 마지막 열 뒤에는 선을 긋지 않는다 (테두리와 겹친다)
+        let seps: Vec<u16> = std::iter::once(inner.x + num_w).chain(self.col_x.iter().take(full).map(|c| c.2)).filter(|x| *x < inner.right()).collect();
+        // 밑줄은 (잘린 열까지) 마지막 열 끝까지
+        let last = self.col_x.last().map(|c| c.2).max(seps.last().map(|x| x + 1)).unwrap_or(inner.x);
+        let rows_end = (inner.y + 1 + shown_rows).min(inner.bottom());
+        for y in inner.y..rows_end {
+            for x in inner.x..inner.right().min(last) {
+                buf[(x, y)].set_style(under);
+            }
+            for &x in &seps {
+                buf[(x, y)].set_symbol("│").set_style(line);
+            }
+        }
+        // 가로 스크롤바: 아래 테두리에 보이는 범위를 굵게 (누르거나 끌어서 옮긴다)
+        self.hbar = Rect::default();
+        if self.col_off > 0 || self.col_off + full < self.cols() {
+            let track = Rect { x: inner.x, y: area.bottom().saturating_sub(1), width: inner.width, height: 1 };
+            let n = self.cols() as u32;
+            let tw = track.width as u32;
+            let start = (self.col_off as u32 * tw / n) as u16;
+            let len = ((full.max(1) as u32 * tw).div_ceil(n) as u16).clamp(2, track.width - start);
+            let thumb = Style::default().fg(if focused { Color::Cyan } else { Color::Gray });
+            for x in track.x + start..track.x + start + len {
+                buf[(x, track.y)].set_symbol("━").set_style(thumb);
+            }
+            self.hbar = track;
+        }
     }
 }

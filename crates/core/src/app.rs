@@ -88,6 +88,7 @@ pub async fn drop_pool(state: &AppState, id: &str) {
         p.close().await;
     }
     state.tunnels.write().await.retain(|k, _| !belongs(k, id));
+    state.last_ping.lock().unwrap().retain(|k, _| !belongs(k, id));
 }
 
 /// SSH 설정이 있으면 터널을 먼저 연 뒤 접속한다.
@@ -121,6 +122,13 @@ pub async fn housekeeping(state: &AppState) -> Vec<String> {
         b.dedup();
         b
     };
+    // 결과를 끝까지 안 읽고 오래 둔 커서 닫기 (열린 트랜잭션이 VACUUM·DDL 을 막지 않게). 실행 중인 세션은 건너뛴다
+    let sessions: Vec<_> = state.sessions.read().await.values().map(|e| e.session.clone()).collect();
+    for s in sessions {
+        if let Ok(mut g) = s.try_lock() {
+            g.close_idle_cursor(session::CURSOR_IDLE).await;
+        }
+    }
     let mut dropped = Vec::new();
     for base in bases {
         let Ok(Some(cfg)) = state.store.get(&base) else { continue };
@@ -155,7 +163,7 @@ pub async fn housekeeping(state: &AppState) -> Vec<String> {
                 let sessions: Vec<_> = state.sessions.read().await.values().filter(|e| belongs(&e.conn_id, &base)).map(|e| e.session.clone()).collect();
                 for s in sessions {
                     if let Ok(mut g) = s.try_lock() {
-                        g.ping().await;
+                        let _ = tokio::time::timeout(Duration::from_secs(5), g.ping()).await;
                     }
                 }
             }
@@ -196,6 +204,11 @@ pub async fn ensure_session(state: &AppState, id: &str, tab_id: &str) -> AppResu
         if e.conn_id == id {
             return Ok(e.session.clone());
         }
+    }
+    // 같은 탭이 다른 DB 로 바뀌었으면 이전 세션은 정리해서 돌려준다
+    let old = state.sessions.write().await.remove(tab_id);
+    if let Some(e) = old {
+        e.session.lock().await.discard().await;
     }
     let pool = ensure_pool(state, id).await?;
     let s = Session::open(&pool).await?;
@@ -427,8 +440,14 @@ impl AppState {
     }
 
     pub async fn close_session(&self, tab_id: String) -> AppResult<()> {
-        if let Some(e) = self.sessions.write().await.remove(&tab_id) {
-            e.session.lock().await.close_cursor().await;
+        // 쿼리가 돌고 있으면 먼저 취소한다 (안 그러면 끝날 때까지 연결과 정리 작업이 묶인다)
+        let busy = self.sessions.read().await.get(&tab_id).is_some_and(|e| e.session.try_lock().is_err());
+        if busy {
+            let _ = self.cancel_query(tab_id.clone()).await;
+        }
+        let removed = self.sessions.write().await.remove(&tab_id);
+        if let Some(e) = removed {
+            e.session.lock().await.discard().await;
         }
         Ok(())
     }

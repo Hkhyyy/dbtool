@@ -5,12 +5,27 @@ import { CompletionTable, meta } from "./api";
 const modelConn = new Map<string, string>();
 const cache = new Map<string, Promise<CompletionTable[]>>();
 
+/** 메타를 불러온다. 실패하면 캐시하지 않는다 (다음 요청 때 다시 시도) */
+function load(connId: string): Promise<CompletionTable[]> {
+  const p: Promise<CompletionTable[]> = meta.completion(connId).catch(() => {
+    if (cache.get(connId) === p) cache.delete(connId);
+    return [];
+  });
+  cache.set(connId, p);
+  return p;
+}
+
 export function bindModel(uri: string, connId: string) {
   modelConn.set(uri, connId);
-  if (!cache.has(connId)) cache.set(connId, meta.completion(connId).catch(() => []));
+  if (!cache.has(connId)) load(connId);
 }
+/** 에디터가 닫힐 때 */
+export function unbindModel(uri: string) {
+  modelConn.delete(uri);
+}
+/** Data Source(와 그 DB 들)의 메타를 버린다: 끊기·새로 고침 때 */
 export function invalidateCompletion(connId: string) {
-  cache.delete(connId);
+  for (const k of [...cache.keys()]) if (k === connId || k.startsWith(connId + "::")) cache.delete(k);
 }
 
 const KEYWORDS = (
@@ -40,7 +55,7 @@ for (const lang of ["pgsql", "mysql"]) {
     triggerCharacters: ["."],
     async provideCompletionItems(model, position) {
       const connId = modelConn.get(model.uri.toString());
-      const all = connId ? await (cache.get(connId) ?? Promise.resolve([])) : [];
+      const all = connId ? await (cache.get(connId) ?? load(connId)) : [];
       const K = monaco.languages.CompletionItemKind;
       const word = model.getWordUntilPosition(position);
       const range = new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn);

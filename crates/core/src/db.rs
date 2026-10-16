@@ -41,6 +41,9 @@ pub(crate) fn query_result(columns: Vec<ColumnInfo>, rows: Vec<Vec<Value>>, rows
     QueryResult { columns, rows, rows_affected, truncated, elapsed_ms: start.elapsed().as_millis() as u64, has_result_set, in_transaction: false }
 }
 
+/// DB 하나당 최대 연결 수 (탭 수 + 트리·자동완성 같은 메타 조회)
+pub const POOL_MAX: u32 = 32;
+
 pub async fn connect(cfg: &ConnectionConfig, password: Option<&str>) -> AppResult<Pool> {
     connect_via(cfg, password, None).await
 }
@@ -94,7 +97,8 @@ pub async fn connect_via(cfg: &ConnectionConfig, password: Option<&str>, tunnel_
             let tz = cfg.options.time_zone.as_deref().map(str::trim).filter(|t| !t.is_empty()).map(|t| t.replace('\'', "''"));
             let script = cfg.options.startup_script.trim().to_string();
             let pool = PgPoolOptions::new()
-                .max_connections(12)
+                // 콘솔·테이블 탭마다 연결을 하나씩 전용으로 쓴다. 연결은 필요할 때만 열리므로 상한만 넉넉히
+                .max_connections(crate::db::POOL_MAX)
                 .acquire_timeout(Duration::from_secs(10))
                 .after_connect(move |conn, _meta| {
                     let script = script.clone();
@@ -168,7 +172,12 @@ impl Pool {
     }
 
     /// keep-alive
+    /// keep-alive. 응답 없는 서버 하나 때문에 정리 루틴이 멈추지 않게 5초로 끊는다
     pub async fn ping(&self) {
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), self.ping_inner()).await;
+    }
+
+    async fn ping_inner(&self) {
         match self {
             Pool::Pg(p) => {
                 let _ = sqlx::query("select 1").execute(p).await;
@@ -257,30 +266,50 @@ pub async fn run_on(conn: &mut sqlx::PgConnection, sql: &str, limit: usize) -> A
     Ok(QueryResult { columns, rows, rows_affected: 0, truncated, elapsed_ms: start.elapsed().as_millis() as u64, has_result_set: true, in_transaction: false })
 }
 
+/// CSV 파일 쓰기 (비동기 IO: 큰 내보내기가 tokio 작업 스레드를 막지 않게). 첫 줄 앞에 BOM (Excel 용)
+pub(crate) struct CsvOut(tokio::io::BufWriter<tokio::fs::File>);
+
+impl CsvOut {
+    pub(crate) async fn create(path: &std::path::Path) -> AppResult<Self> {
+        let mut out = CsvOut(tokio::io::BufWriter::new(tokio::fs::File::create(path).await?));
+        tokio::io::AsyncWriteExt::write_all(&mut out.0, "\u{FEFF}".as_bytes()).await?;
+        Ok(out)
+    }
+    /// 이미 csv_field 로 감싼 칸들을 한 줄로
+    pub(crate) async fn row(&mut self, fields: &[String]) -> AppResult<()> {
+        let mut line = fields.join(",");
+        line.push('\n');
+        tokio::io::AsyncWriteExt::write_all(&mut self.0, line.as_bytes()).await?;
+        Ok(())
+    }
+    pub(crate) async fn finish(mut self) -> AppResult<()> {
+        tokio::io::AsyncWriteExt::flush(&mut self.0).await?;
+        Ok(())
+    }
+}
+
 async fn export_pg_csv(pool: &PgPool, sql: &str, path: &std::path::Path) -> AppResult<u64> {
-    use std::io::Write;
-    let mut out = std::io::BufWriter::new(std::fs::File::create(path)?);
-    out.write_all("\u{FEFF}".as_bytes())?;
+    let mut out = CsvOut::create(path).await?;
     let mut count = 0u64;
     let mut header_written = false;
     let mut stream = sqlx::query(sql).persistent(false).fetch(pool);
     while let Some(row) = stream.try_next().await? {
         if !header_written {
             let names: Vec<String> = row.columns().iter().map(|c| csv_field(c.name())).collect();
-            writeln!(out, "{}", names.join(","))?;
+            out.row(&names).await?;
             header_written = true;
         }
         let fields: Vec<String> = (0..row.len()).map(|i| csv_field(&cell_text(&pg_value(&row, i)))).collect();
-        writeln!(out, "{}", fields.join(","))?;
+        out.row(&fields).await?;
         count += 1;
     }
     if !header_written {
         if let Ok(desc) = pool.describe(sql).await {
             let names: Vec<String> = desc.columns().iter().map(|c| csv_field(c.name())).collect();
-            writeln!(out, "{}", names.join(","))?;
+            out.row(&names).await?;
         }
     }
-    out.flush()?;
+    out.finish().await?;
     Ok(count)
 }
 

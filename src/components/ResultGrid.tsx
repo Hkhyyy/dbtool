@@ -170,7 +170,9 @@ export function ResultGrid(p: Props) {
   useEffect(() => {
     if (!interval) return;
     const t = setInterval(() => {
-      if (!p.running && pendingCount === 0) p.onReload();
+      // 다른 탭에 가려졌거나(display:none) 창이 숨겨져 있으면 쉬었다가, 다시 보일 때 이어서 새로 고친다
+      const visible = !document.hidden && scrollRef.current?.offsetParent != null;
+      if (visible && !p.running && pendingCount === 0) p.onReload();
     }, interval * 1000);
     return () => clearInterval(t);
   }, [interval, p.running, pendingCount]);
@@ -188,6 +190,13 @@ export function ResultGrid(p: Props) {
   const total = ROWNUM_W + widths.reduce((a, b) => a + b, 0);
 
   const virt = useVirtualizer({ count: rowCount, getScrollElement: () => scrollRef.current, estimateSize: () => ROW_H, overscan: 20 });
+  // 가로도 보이는 열만 그린다 (열이 많은 테이블). 양옆은 빈 칸으로 폭을 채운다
+  const colVirt = useVirtualizer({ horizontal: true, count: cols.length, getScrollElement: () => scrollRef.current, estimateSize: (i) => widths[i] ?? 64, paddingStart: ROWNUM_W, overscan: 4 });
+  useEffect(() => colVirt.measure(), [widths]);
+  const colItems = colVirt.getVirtualItems();
+  const padL = colItems.length ? colItems[0].start - ROWNUM_W : 0;
+  const padR = colItems.length ? colVirt.getTotalSize() - colItems[colItems.length - 1].end : 0;
+  const spacer = (w: number) => (w > 0 ? <div style={{ flex: "none", width: w }} /> : null);
   const items = virt.getVirtualItems();
   const lastItem = items[items.length - 1];
   useEffect(() => {
@@ -222,6 +231,7 @@ export function ResultGrid(p: Props) {
     const m = matches[(cur + dir + matches.length) % matches.length];
     selectCell(m, false);
     virt.scrollToIndex(m.r);
+    colVirt.scrollToIndex(m.c);
   };
 
   // ─── 편집 ───
@@ -489,6 +499,7 @@ export function ResultGrid(p: Props) {
       const c = Math.min(Math.max(selB.c + m[1], 0), cols.length - 1);
       selectCell({ r, c }, e.shiftKey && e.key !== "Tab");
       virt.scrollToIndex(r);
+      colVirt.scrollToIndex(c);
       return stop();
     }
     // 셀에서 바로 타이핑하면 편집 시작 (DataGrip)
@@ -700,7 +711,8 @@ export function ResultGrid(p: Props) {
                   setSelB({ r: rowCount - 1, c: cols.length - 1 });
                 }}
               />
-              {cols.map((c, i) => (
+              {spacer(padL)}
+              {colItems.map(({ index: i }) => { const c = cols[i]; return (
                 <div
                   key={i}
                   className={"cell head" + (sorts.some((s) => s.col === i) ? " sorted" : "") + (rect && rect.c0 <= i && i <= rect.c1 ? " col-sel" : "")}
@@ -734,7 +746,8 @@ export function ResultGrid(p: Props) {
                     );
                   })()}
                 </div>
-              ))}
+              ); })}
+              {spacer(padR)}
             </div>
             {items.map((vi) => {
               const d = vi.index;
@@ -763,7 +776,8 @@ export function ResultGrid(p: Props) {
                   >
                     {isNew ? "+" : d + 1}
                   </div>
-                  {row.map((_, ci) => {
+                  {spacer(padL)}
+                  {colItems.map(({ index: ci }) => {
                     const val = valueAt(r, ci);
                     const changed = !isNew && changes[r] && ci in changes[r];
                     if (editing && editing.r === r && editing.c === ci) {
@@ -834,6 +848,7 @@ export function ResultGrid(p: Props) {
                       </div>
                     );
                   })}
+                  {spacer(padR)}
                 </div>
               );
             })}
