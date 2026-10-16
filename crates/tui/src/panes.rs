@@ -63,23 +63,30 @@ impl Pane {
         }
     }
 
-    /// 칸 g 를 감싼 가장 가까운 가지
-    pub fn parent_of(&self, g: usize) -> Option<Path> {
-        fn walk(p: &Pane, g: usize, path: &mut Path) -> Option<Path> {
-            let Pane::Split { a, b, .. } = p else { return None };
-            if **a == Pane::Leaf(g) || **b == Pane::Leaf(g) {
-                return Some(path.clone());
-            }
-            for (side, c) in [(false, a), (true, b)] {
-                path.push(side);
-                if let Some(r) = walk(c, g, path) {
-                    return Some(r);
+    /// 칸 g 를 감싼 가지 중 dir 방향으로 나눈 가장 가까운 것 (←/→ 는 좌우 경계선, ↑/↓ 는 위아래 경계선)
+    pub fn ancestor_with_dir(&self, g: usize, want: SplitDir) -> Option<Path> {
+        fn walk(p: &Pane, g: usize, want: SplitDir, path: &mut Path, best: &mut Option<Path>) -> bool {
+            match p {
+                Pane::Leaf(x) => *x == g,
+                Pane::Split { dir, a, b, .. } => {
+                    for (side, c) in [(false, a), (true, b)] {
+                        path.push(side);
+                        let found = walk(c, g, want, path, best);
+                        path.pop();
+                        if found {
+                            if *dir == want && best.is_none() {
+                                *best = Some(path.clone());
+                            }
+                            return true;
+                        }
+                    }
+                    false
                 }
-                path.pop();
             }
-            None
         }
-        walk(self, g, &mut vec![])
+        let mut best = None;
+        walk(self, g, want, &mut vec![], &mut best);
+        best
     }
 
     /// 가지의 비율 (path 가 가지가 아니면 None)
@@ -105,7 +112,9 @@ mod tests {
         // 2x2: 왼쪽 위·왼쪽 아래·오른쪽 위·오른쪽 아래
         assert_eq!(p.leaves(), [0, 2, 1, 3]);
         assert_eq!(p.split(3, SplitDir::Right), None);
-        assert_eq!(p.parent_of(3), Some(vec![true]));
+        // 3 은 오른쪽 열의 아래: 좌우 경계선은 뿌리, 위아래 경계선은 오른쪽 열
+        assert_eq!(p.ancestor_with_dir(3, SplitDir::Right), Some(vec![]));
+        assert_eq!(p.ancestor_with_dir(3, SplitDir::Down), Some(vec![true]));
         *p.pct_mut(&[true]).unwrap() = 30;
         p.remove(2);
         assert_eq!(p.leaves(), [0, 1, 3]);

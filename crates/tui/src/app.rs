@@ -2132,8 +2132,8 @@ impl App {
                 self.set_explorer_width(w);
             }
             Action::SplitShrink | Action::SplitGrow => {
-                // 포커스 있는 칸을 감싼 경계선을 옮긴다
-                let path = self.panes.parent_of(self.focused_group());
+                // 포커스 있는 칸 옆의 좌우 경계선을 옮긴다 (가장 가까운 것이 위아래 경계선이어도)
+                let path = self.panes.ancestor_with_dir(self.focused_group(), SplitDir::Right);
                 if let Some(pct) = path.and_then(|p| self.panes.pct_mut(&p)) {
                     *pct = (*pct as i16 + if a == Action::SplitGrow { 5 } else { -5 }).clamp(15, 85) as u16;
                 }
