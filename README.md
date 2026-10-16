@@ -243,8 +243,8 @@ Ctrl+Enter is only distinguishable in terminals that support the kitty keyboard 
 | `Alt+O` | Toggle Output / Result |
 | `Alt+Up` | Go to the Split Above |
 | `Alt+Down` | Go to the Split Below |
-| `Ctrl+Shift+Left` | Go to the Split on the Left |
-| `Ctrl+Shift+Right` | Go to the Split on the Right |
+| `Ctrl+Alt+Left / Ctrl+Shift+Left` | Go to the Split on the Left |
+| `Ctrl+Alt+Right / Ctrl+Shift+Right` | Go to the Split on the Right |
 | `Alt+Shift+Up` | Shrink Editor (console) |
 | `Alt+Shift+Down` | Grow Editor (console) |
 | `Ctrl+S` | Submit Changes |
