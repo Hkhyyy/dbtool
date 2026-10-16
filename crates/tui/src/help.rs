@@ -7,7 +7,7 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
         ("Enter / double-click", "Expand / collapse (connects) · open table data · open a Redis key · show DDL of routines"),
         ("F4 / Ctrl+↓", "Open a query console for the data source / database (Redis: the key browser)"),
         ("Ctrl+B", "Go to DDL"),
-        ("/", "Filter loaded nodes (Esc clears)"),
+        ("/", "Filter loaded nodes (/ again edits it · empty or Esc clears)"),
         ("n / e / D", "New / edit / remove data source"),
         ("c / X", "Connect / disconnect"),
         ("r / F5", "Refresh"),

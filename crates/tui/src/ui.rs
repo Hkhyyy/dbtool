@@ -115,7 +115,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
 fn draw_tree(f: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focus == Focus::Tree;
-    let title = if app.tree.filter.is_empty() { " Database Explorer ".to_string() } else { format!(" Database Explorer — /{} ", app.tree.filter) };
+    let title = if app.tree.filter.is_empty() { " Database Explorer ".to_string() } else { format!(" Database Explorer — /{} (Esc clears) ", app.tree.filter) };
     let b = block(title, focused);
     let inner = b.inner(area);
     f.render_widget(b, area);
