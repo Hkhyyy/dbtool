@@ -261,13 +261,7 @@ fn click(app: &mut App, x: u16, y: u16) {
 pub fn on_event(app: &mut App, ev: Event) {
     match ev {
         Event::Key(k) if k.kind != KeyEventKind::Release => on_key(app, k),
-        Event::Paste(s) => {
-            if let Some(TabKind::Console(c)) = app.tabs.get_mut(app.active).map(|t| &mut t.kind) {
-                if app.focus == Focus::Editor && app.popup.is_none() {
-                    c.editor.insert_str(s);
-                }
-            }
-        }
+        Event::Paste(s) => paste(app, s),
         Event::Mouse(m) => match m.kind {
             // Shift+휠 = 가로 스크롤
             MouseEventKind::ScrollDown if m.modifiers.contains(KeyModifiers::SHIFT) => hscroll_at(app, m.column, m.row, 3),
@@ -286,6 +280,39 @@ pub fn on_event(app: &mut App, ev: Event) {
             _ => {}
         },
         _ => {}
+    }
+}
+
+/// ⌘V / 터미널 붙여넣기: 열린 입력칸(한 줄 입력·팔레트·Data Source 폼)이 있으면 거기로, 아니면 콘솔 에디터로
+fn paste(app: &mut App, s: String) {
+    // 한 줄 입력칸에는 줄바꿈을 공백으로
+    let one = || s.trim_end_matches(['\r', '\n']).replace("\r\n", " ").replace(['\r', '\n'], " ");
+    match &mut app.popup {
+        Some(Popup::Input { input, .. }) => {
+            input.insert_str(one());
+        }
+        Some(Popup::Palette(p)) => {
+            if p.input.insert_str(one()) {
+                p.sel = 0;
+            }
+        }
+        Some(Popup::ConnForm(form)) => {
+            let f = &mut form.fields[form.sel];
+            if matches!(f.kind, FieldKind::Text | FieldKind::Secret) {
+                if f.value == "<saved>" {
+                    f.value.clear();
+                }
+                f.value.push_str(&one());
+            }
+        }
+        Some(_) => {}
+        None => {
+            if let Some(TabKind::Console(c)) = app.tabs.get_mut(app.active).map(|t| &mut t.kind) {
+                if app.focus == Focus::Editor {
+                    c.editor.insert_str(s);
+                }
+            }
+        }
     }
 }
 
