@@ -51,9 +51,9 @@ export const KEYMAP: KeySection[] = [
       ["⇧⌘T", "Reopen closed tab", "tab.reopen"],
       ["⇧⌘]", "Next tab", "tab.next"],
       ["⇧⌘[", "Previous tab", "tab.prev"],
-      ["⌥⇥", "Go to the other split", "split.other"],
-      ["right-click tab", "Pin, Split Right/Down, Move to Opposite Group, Close others…"],
-      ["drag tab", "Reorder, or drop on the right/bottom edge to split"],
+      ["⌥⇥", "Go to the next split (⇧ previous)", "split.other"],
+      ["right-click tab", "Pin, Split Right/Down (up to 4 panes), Move to Next Group, Close others…"],
+      ["drag tab", "Reorder, or drop on a pane's right/bottom edge to split it (up to 4)"],
     ],
   },
   {

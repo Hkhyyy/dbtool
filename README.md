@@ -131,9 +131,9 @@ Command shortcuts can be changed in **Settings › Keymap** (or **Edit Keymap…
 | `⇧⌘T` | Reopen closed tab |
 | `⇧⌘]` | Next tab |
 | `⇧⌘[` | Previous tab |
-| `⌥⇥` | Go to the other split |
-| `right-click tab` | Pin, Split Right/Down, Move to Opposite Group, Close others… |
-| `drag tab` | Reorder, or drop on the right/bottom edge to split |
+| `⌥⇥` | Go to the next split (⇧ previous) |
+| `right-click tab` | Pin, Split Right/Down (up to 4 panes), Move to Next Group, Close others… |
+| `drag tab` | Reorder, or drop on a pane's right/bottom edge to split it (up to 4) |
 
 #### Database Explorer
 
