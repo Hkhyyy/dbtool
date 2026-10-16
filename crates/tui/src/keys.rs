@@ -33,8 +33,10 @@ pub const DEFAULT_KEYS: &[(Action, &[&str])] = &[
     (Action::Commit, &["Alt+C"]),
     (Action::Rollback, &["Alt+R"]),
     (Action::ToggleOutput, &["Alt+O"]),
-    (Action::ShrinkEditor, &["Alt+Up"]),
-    (Action::GrowEditor, &["Alt+Down"]),
+    (Action::PaneUp, &["Alt+Up"]),
+    (Action::PaneDown, &["Alt+Down"]),
+    (Action::ShrinkEditor, &["Alt+Shift+Up"]),
+    (Action::GrowEditor, &["Alt+Shift+Down"]),
     (Action::Submit, &["Ctrl+S"]),
     (Action::Disconnect, &["Ctrl+F2"]),
 ];

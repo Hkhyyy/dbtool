@@ -241,8 +241,10 @@ Ctrl+Enter is only distinguishable in terminals that support the kitty keyboard 
 | `Alt+C` | Commit |
 | `Alt+R` | Roll Back |
 | `Alt+O` | Toggle Output / Result |
-| `Alt+Up` | Shrink Editor (console) |
-| `Alt+Down` | Grow Editor (console) |
+| `Alt+Up` | Go to the Split Above |
+| `Alt+Down` | Go to the Split Below |
+| `Alt+Shift+Up` | Shrink Editor (console) |
+| `Alt+Shift+Down` | Grow Editor (console) |
 | `Ctrl+S` | Submit Changes |
 | `Ctrl+F2` | Disconnect |
 

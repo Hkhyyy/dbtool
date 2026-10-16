@@ -244,6 +244,8 @@ pub enum Action {
     CycleFocus,
     ShrinkEditor,
     GrowEditor,
+    PaneUp,
+    PaneDown,
     SplitShrink,
     SplitGrow,
     ExplorerNarrower,
@@ -294,6 +296,8 @@ pub const ACTIONS: &[(Action, &str, &str)] = &[
     (Action::ExplorerWider, "Database Explorer Wider", ""),
     (Action::ShrinkEditor, "Shrink Editor (console)", ""),
     (Action::GrowEditor, "Grow Editor (console)", ""),
+    (Action::PaneUp, "Go to the Split Above", ""),
+    (Action::PaneDown, "Go to the Split Below", ""),
     (Action::CycleFocus, "Cycle Focus (explorer → editor → results)", ""),
     (Action::Palette, "Actions Palette", ""),
     (Action::TrustSshHost, "Trust SSH Host Key (after checking its fingerprint)", ""),
@@ -2049,6 +2053,8 @@ impl App {
             }
             Action::ShrinkEditor => self.resize_console(-5),
             Action::GrowEditor => self.resize_console(5),
+            Action::PaneUp => self.focus_pane_vert(true),
+            Action::PaneDown => self.focus_pane_vert(false),
             Action::Help => self.popup = Some(Popup::Help { sel: 0, scroll: 0, record: None, message: None }),
             Action::Quit => {
                 let n = self.pending_tabs(None).len();
@@ -2114,6 +2120,25 @@ impl App {
     }
 
     /// 콘솔 에디터/결과 비율 조절
+    /// 위/아래 칸으로 (마지막으로 그린 칸 위치 기준: 가로로 겹치는 칸 중 가장 가까운 것)
+    fn focus_pane_vert(&mut self, up: bool) {
+        let cur = self.focused_group();
+        let rect = |&(g, bar, body): &(usize, ratatui::layout::Rect, ratatui::layout::Rect)| (g, bar.x, bar.x + bar.width, bar.y, body.y + body.height);
+        let Some((_, x0, x1, top, bottom)) = self.hits.groups.iter().map(rect).find(|r| r.0 == cur) else { return };
+        let next = self
+            .hits
+            .groups
+            .iter()
+            .map(rect)
+            .filter(|&(g, a0, a1, t, b)| g != cur && a0 < x1 && x0 < a1 && if up { b <= top } else { t >= bottom })
+            .min_by_key(|&(_, a0, _, t, b)| (if up { top - b } else { t - bottom }, a0.abs_diff(x0)))
+            .map(|r| r.0);
+        match next.and_then(|g| self.group_tab(g)) {
+            Some(i) => self.activate(i),
+            None => self.status = format!("No split {}", if up { "above" } else { "below" }),
+        }
+    }
+
     pub fn resize_console(&mut self, d: i16) {
         self.console_pct = (self.console_pct as i16 + d).clamp(10, 90) as u16;
     }
