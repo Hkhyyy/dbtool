@@ -2,10 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
-import { api, ConnectionView, dialectOf, meta, QueryResult, redisDb, targetId } from "./lib/api";
+import { api, ConnectionView, dialectOf, meta, QueryResult, redisDb, setUpdateCheckEnabled, targetId, UpdateInfo, updateCheckEnabled } from "./lib/api";
 import { RedisBrowser } from "./components/RedisBrowser";
 import { KeymapDialog } from "./components/KeymapDialog";
 import { KeymapEditor } from "./components/KeymapEditor";
+import { UpdateDialog } from "./components/UpdateDialog";
 import { ContextMenu, Explorer, MenuItem } from "./components/Explorer";
 import { ConnectionDialog } from "./components/ConnectionDialog";
 import { ConsoleEditor, EditorApi } from "./components/ConsoleEditor";
@@ -103,6 +104,16 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState<false | "appearance" | "keymap">(false);
   const [schemeOpen, setSchemeOpen] = useState(false);
   const [keymapOpen, setKeymapOpen] = useState(false);
+  // 새 버전 (시작할 때 하루 한 번 확인. 실패는 조용히 넘긴다)
+  const [update, setUpdate] = useState<UpdateInfo | null>(null);
+  const [updateOpen, setUpdateOpen] = useState(false);
+  useEffect(() => {
+    if (!updateCheckEnabled()) return;
+    api
+      .checkUpdate(false)
+      .then((u) => u.latest && setUpdate(u))
+      .catch(() => {});
+  }, []);
   const [conns, setConns] = useState<ConnectionView[]>([]);
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [activeIds, setActiveIds] = useState<[string | null, string | null]>([null, null]);
@@ -1668,7 +1679,18 @@ export default function App() {
           }}
         />
       )}
-      {settingsOpen && <SettingsDialog initialPage={settingsOpen} onClose={() => setSettingsOpen(false)} />}
+      {settingsOpen && (
+        <SettingsDialog
+          initialPage={settingsOpen}
+          onClose={() => setSettingsOpen(false)}
+          onUpdate={(u) => {
+            setUpdate(u);
+            setSettingsOpen(false);
+            setUpdateOpen(true);
+          }}
+        />
+      )}
+      {updateOpen && update?.latest && <UpdateDialog info={update} onClose={() => setUpdateOpen(false)} />}
       {keymapOpen && <KeymapDialog onClose={() => setKeymapOpen(false)} onEdit={() => (setKeymapOpen(false), setSettingsOpen("keymap"))} />}
       {se && (
         <SearchEverywhere
@@ -1715,7 +1737,7 @@ export default function App() {
           }}
         />
       )}
-      <StatusBar status={status} readOnly={!!activeConn?.readOnly} />
+      <StatusBar status={status} readOnly={!!activeConn?.readOnly} update={update?.latest?.version} onUpdate={() => setUpdateOpen(true)} />
 
       {tabMenu && <ContextMenu menu={tabMenu} onClose={() => setTabMenu(null)} />}
 
@@ -1767,8 +1789,20 @@ export default function App() {
 }
 
 /** Settings › Appearance */
-function SettingsDialog({ onClose, initialPage = "appearance" }: { onClose: () => void; initialPage?: "appearance" | "keymap" }) {
+function SettingsDialog({ onClose, onUpdate, initialPage = "appearance" }: { onClose: () => void; onUpdate: (u: UpdateInfo) => void; initialPage?: "appearance" | "keymap" }) {
   const [page, setPage] = useState(initialPage);
+  const [checkOnStart, setCheckOnStart] = useState(updateCheckEnabled());
+  const [updMsg, setUpdMsg] = useState<string | null>(null);
+  const checkNow = async () => {
+    setUpdMsg("Checking…");
+    try {
+      const u = await api.checkUpdate(true);
+      if (u.latest) onUpdate(u);
+      else setUpdMsg(`You have the latest version (${u.current}).`);
+    } catch (e) {
+      setUpdMsg(String(e));
+    }
+  };
   const [pref, setPref] = useState<ThemePref>(getThemePref());
   const theme = useTheme();
   const pick = (p: ThemePref) => {
@@ -1799,6 +1833,27 @@ function SettingsDialog({ onClose, initialPage = "appearance" }: { onClose: () =
                 Sync with OS
               </label>
             </div>
+            <label>Updates</label>
+            <div className="row">
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={checkOnStart}
+                  onChange={(e) => {
+                    setCheckOnStart(e.target.checked);
+                    setUpdateCheckEnabled(e.target.checked);
+                  }}
+                />
+                Check for updates on startup
+              </label>
+              <button onClick={checkNow}>Check Now</button>
+            </div>
+            {updMsg && (
+              <>
+                <span />
+                <span className="hint" style={{ margin: 0 }}>{updMsg}</span>
+              </>
+            )}
           </div>}
         </div>
         {page === "appearance" && <div className="hint">Quick switch: {sk("theme")}</div>}
@@ -1811,12 +1866,17 @@ function SettingsDialog({ onClose, initialPage = "appearance" }: { onClose: () =
   );
 }
 
-function StatusBar({ status, readOnly }: { status: string; readOnly: boolean }) {
+function StatusBar({ status, readOnly, update, onUpdate }: { status: string; readOnly: boolean; update?: string; onUpdate: () => void }) {
   const w = useStatusWidgets();
   return (
     <div className="statusbar">
       <span className="sb-text">{status}</span>
       <span className="grow" />
+      {update && (
+        <button className="sb-widget sb-update" title="A new version is available" onClick={onUpdate}>
+          ⬆ v{update} available
+        </button>
+      )}
       {w.aggregate && <span className="sb-widget" title="Aggregate of selected cells">{w.aggregate}</span>}
       {readOnly && <span className="sb-widget" title="Data source is read-only">🔒 Read-only</span>}
       {w.caret && <span className="sb-widget" title="Line:Column">{w.caret}</span>}

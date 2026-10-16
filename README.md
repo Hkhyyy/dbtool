@@ -23,6 +23,16 @@ Get the latest build from [Releases](https://github.com/Hkhyyy/dbtool/releases):
 
 The app is not code-signed yet, so macOS shows an "unidentified developer" / "damaged" warning on first launch. Run `xattr -dr com.apple.quarantine /Applications/dbtool.app` (or right-click the app → Open).
 
+A new release is published automatically every time `main` changes.
+
+### Updates
+
+Both apps check GitHub for a newer release once a day (one request to the GitHub API) and tell you when there is one.
+
+- **GUI** — a `⬆ vX.Y.Z available` button appears in the status bar. It shows the release notes and **Download** fetches the new DMG (drag it into Applications to replace the old app). Turn the check off or run it now in **Settings › Appearance › Updates**.
+- **TUI** — the status line shows `⬆ vX.Y.Z available`. Quit and run `dbtool-tui --update` to download the release and replace `dbtool-tui` and `dbtool-mcp` in place. A TUI built from source (`target/release`) is not checked; update it with `git pull` and `cargo build`.
+- Turn the check off with `dbtool-tui --no-update-check` or `DBTOOL_NO_UPDATE_CHECK=1`.
+
 ## Supported databases
 
 | Database | Features |

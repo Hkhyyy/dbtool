@@ -82,7 +82,36 @@ export interface QueryResult {
 }
 
 /** password: undefined → 기존 유지, "" → 삭제 */
+/** GitHub 의 최신 릴리스 (새 버전 확인) */
+export interface ReleaseInfo {
+  version: string;
+  url: string;
+  notes: string;
+  assets: { name: string; url: string }[];
+}
+export interface UpdateInfo {
+  current: string;
+  latest: ReleaseInfo | null;
+}
+/** 시작할 때 새 버전 확인 (Settings 에서 끈다) */
+const UPDATE_PREF = "dbtool.updateCheck";
+export const updateCheckEnabled = () => {
+  try {
+    return localStorage.getItem(UPDATE_PREF) !== "off";
+  } catch {
+    return true;
+  }
+};
+export const setUpdateCheckEnabled = (on: boolean) => {
+  try {
+    localStorage.setItem(UPDATE_PREF, on ? "on" : "off");
+  } catch {
+    /* 무시 */
+  }
+};
+
 export const api = {
+  checkUpdate: (force = false) => invoke<UpdateInfo>("check_update", { force }),
   listConnections: () => invoke<ConnectionView[]>("list_connections"),
   saveConnection: (config: ConnectionConfig, password?: string, sshSecret?: string) =>
     invoke<ConnectionConfig>("save_connection", { config, password: password ?? null, sshSecret: sshSecret ?? null }),

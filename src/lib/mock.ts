@@ -105,6 +105,10 @@ const handlers: Record<string, (a: any) => unknown> = {
   execute_batch: (a: any) => a.statements.length,
   load_keymap: () => ({}),
   save_keymap: () => null,
+  check_update: () => ({
+    current: "0.1.0",
+    latest: { version: "0.1.2", url: "https://github.com/Hkhyyy/dbtool/releases/tag/v0.1.2", notes: "## dbtool 0.1.2\n- something new", assets: [{ name: "dbtool_0.1.2_aarch64.dmg", url: "https://example.com/dbtool_0.1.2_aarch64.dmg" }] },
+  }),
 };
 (window as any).__TAURI_INTERNALS__ = {
   invoke: async (cmd: string, args: unknown) => {

@@ -282,6 +282,11 @@ impl Store {
         Ok((added, updated))
     }
 
+    /// 설정 폴더 (connections.json 이 있는 곳)
+    pub fn dir(&self) -> PathBuf {
+        self.path.parent().map(|p| p.to_path_buf()).unwrap_or_default()
+    }
+
     fn keymap_path(&self) -> PathBuf {
         self.path.with_file_name("keymap.json")
     }

@@ -22,6 +22,7 @@ pub mod session;
 pub mod sql;
 pub mod store;
 pub mod tunnel;
+pub mod update;
 
 /// Tauri 앱과 같은 설정 폴더 (Data Source 목록·암호화된 비밀번호 공유)
 /// macOS: ~/Library/Application Support/com.hyunkyo.dbtool

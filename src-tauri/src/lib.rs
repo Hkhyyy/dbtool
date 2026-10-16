@@ -98,6 +98,7 @@ pub fn run() {
             commands::redis_exec_line,
             commands::load_keymap,
             commands::save_keymap,
+            commands::check_update,
         ])
         .run(app_context())
         .expect("error while running tauri application");

@@ -486,7 +486,15 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
             _ => "arrows move · PgUp/PgDn · Home/End · Esc editor · x export",
         },
     };
-    let [l, r] = Layout::horizontal([Constraint::Min(10), Constraint::Length(hints.chars().count() as u16 + 1)]).areas(area);
+    // 새 버전 알림은 상태 글 앞에 계속 보인다
+    let badge = app.update.as_ref().map(|v| format!(" ⬆ v{v} available — quit and run: dbtool-tui --update "));
+    let bw = badge.as_ref().map(|b| b.chars().count() as u16).unwrap_or(0);
+    // 폭이 모자라면 오른쪽 힌트를 줄인다 (업데이트 알림이 잘리지 않게)
+    let hw = (hints.chars().count() as u16 + 1).min(area.width.saturating_sub(bw + 12));
+    let [u, l, r] = Layout::horizontal([Constraint::Length(bw), Constraint::Min(10), Constraint::Length(hw)]).areas(area);
+    if let Some(b) = badge {
+        f.render_widget(Paragraph::new(b).style(Style::default().fg(Color::Black).bg(Color::Rgb(201, 162, 109))), u);
+    }
     f.render_widget(Paragraph::new(format!(" {}", app.status)).style(Style::default().fg(Color::Gray).bg(Color::Rgb(43, 45, 48))), l);
     f.render_widget(Paragraph::new(hints).style(Style::default().fg(DIM).bg(Color::Rgb(43, 45, 48))), r);
 }

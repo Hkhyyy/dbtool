@@ -357,6 +357,8 @@ pub struct App {
     completion_loading: HashSet<String>,
     /// 명령 단축키 (keymap.json 의 "tui")
     pub keys: crate::keys::Keymap,
+    /// 새 버전이 있으면 그 버전 (상태줄에 알린다)
+    pub update: Option<String>,
     next_id: u64,
 }
 
@@ -430,6 +432,7 @@ impl App {
             completion: HashMap::new(),
             completion_loading: HashSet::new(),
             keys: crate::keys::Keymap::new(&user_keys),
+            update: None,
             next_id: 1,
         };
         if let Some(e) = keys_err {

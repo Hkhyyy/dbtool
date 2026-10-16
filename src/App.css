@@ -554,6 +554,10 @@ pre.grid-overlay { text-align: left; background: var(--bg); }
 .statusbar .grow { flex: 1; }
 .sb-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .sb-widget { padding: 0 8px; white-space: nowrap; border-left: 1px solid var(--border); }
+.sb-update { background: none; border-top: 0; border-right: 0; border-bottom: 0; color: var(--accent); font: inherit; cursor: pointer; height: 100%; }
+.sb-update:hover { color: var(--text); }
+.modal.update { width: 620px; max-width: calc(100vw - 32px); }
+.update-notes { max-height: 50vh; overflow: auto; white-space: pre-wrap; font-size: 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; margin: 10px 0; }
 
 /* Redis browser (Medis style) */
 .redis-browser { height: 100%; display: flex; flex-direction: column; background: var(--bg); }

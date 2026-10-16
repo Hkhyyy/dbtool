@@ -179,6 +179,25 @@ pub fn save_keymap(state: State<'_, AppState>, map: crate::store::Keymap) -> App
     state.store.save_keymap("gui", &map)
 }
 
+/// 새 버전 확인 결과 (current = 이 앱 버전)
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateInfo {
+    current: String,
+    latest: Option<dbtool_core::update::Release>,
+}
+
+/// 새 버전 확인. force 가 아니면 하루 한 번만 GitHub 에 묻는다. 개발 빌드(pnpm tauri dev)는 force 일 때만
+#[tauri::command]
+pub async fn check_update(state: State<'_, AppState>, force: bool) -> AppResult<UpdateInfo> {
+    let current = env!("CARGO_PKG_VERSION").to_string();
+    if (cfg!(debug_assertions) && !force) || (dbtool_core::update::disabled() && !force) {
+        return Ok(UpdateInfo { current, latest: None });
+    }
+    let latest = dbtool_core::update::check(&state.store.dir(), &current, force).await?;
+    Ok(UpdateInfo { current, latest })
+}
+
 #[cfg(test)]
 mod ipc_tests {
     use super::*;
