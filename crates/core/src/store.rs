@@ -1,7 +1,11 @@
 //! 접속 설정 저장소 (JSON 파일). 비밀번호는 secrets.rs 의 암호화 파일에 둔다.
 use crate::error::AppResult;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::{fs, path::PathBuf};
+
+/// 단축키 사용자 설정: 액션 id → 키 목록 (기본값과 다른 것만)
+pub type Keymap = BTreeMap<String, Vec<String>>;
 
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -278,6 +282,32 @@ impl Store {
         Ok((added, updated))
     }
 
+    fn keymap_path(&self) -> PathBuf {
+        self.path.with_file_name("keymap.json")
+    }
+
+    /// keymap.json 의 한 구역 ("gui" / "tui"). 파일이 없으면 빈 설정
+    pub fn keymap(&self, section: &str) -> AppResult<Keymap> {
+        let path = self.keymap_path();
+        if !path.exists() {
+            return Ok(Keymap::new());
+        }
+        let mut all: BTreeMap<String, Keymap> = serde_json::from_str(&fs::read_to_string(path)?)?;
+        Ok(all.remove(section).unwrap_or_default())
+    }
+
+    /// 한 구역만 바꾸고 다른 구역(GUI ↔ TUI)은 그대로 둔다
+    pub fn save_keymap(&self, section: &str, map: &Keymap) -> AppResult<()> {
+        let path = self.keymap_path();
+        let mut all: BTreeMap<String, Keymap> = if path.exists() { serde_json::from_str(&fs::read_to_string(&path)?)? } else { BTreeMap::new() };
+        all.insert(section.to_string(), map.clone());
+        if let Some(dir) = path.parent() {
+            fs::create_dir_all(dir)?;
+        }
+        fs::write(path, serde_json::to_string_pretty(&all)?)?;
+        Ok(())
+    }
+
     fn write(&self, all: &[ConnectionConfig]) -> AppResult<()> {
         if let Some(dir) = self.path.parent() {
             fs::create_dir_all(dir)?;
@@ -341,6 +371,20 @@ mod tests {
         let names: Vec<_> = b.list().unwrap().into_iter().map(|c| c.name).collect();
         assert_eq!(names, vec!["PROD", "DEV"]);
         assert_eq!(b.get("1").unwrap().unwrap().color.as_deref(), Some("#5c2b2b"));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn keymap_sections_are_independent() {
+        let base = std::env::temp_dir().join(format!("dbtool-keymap-{}", uuid::Uuid::new_v4()));
+        let s = Store::new(base.clone());
+        assert!(s.keymap("tui").unwrap().is_empty());
+        let tui: Keymap = [("NewConsole".to_string(), vec!["Ctrl+N".to_string()])].into_iter().collect();
+        let gui: Keymap = [("console.new".to_string(), vec!["Mod+T".to_string()])].into_iter().collect();
+        s.save_keymap("tui", &tui).unwrap();
+        s.save_keymap("gui", &gui).unwrap();
+        assert_eq!(s.keymap("tui").unwrap(), tui);
+        assert_eq!(s.keymap("gui").unwrap(), gui);
         let _ = std::fs::remove_dir_all(&base);
     }
 }
