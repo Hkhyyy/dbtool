@@ -546,7 +546,7 @@ fn grid_key(app: &mut App, k: KeyEvent) {
                         if let Some(TabKind::Table(tt)) = a.tab_mut(id).map(|t| &mut t.kind) {
                             tt.where_ = s;
                         }
-                        a.reload_table(id);
+                        a.reload_table_checked(id);
                     });
                 }
                 KeyCode::Char('o') => {
@@ -555,7 +555,7 @@ fn grid_key(app: &mut App, k: KeyEvent) {
                         if let Some(TabKind::Table(tt)) = a.tab_mut(id).map(|t| &mut t.kind) {
                             tt.order = s;
                         }
-                        a.reload_table(id);
+                        a.reload_table_checked(id);
                     });
                 }
                 KeyCode::Enter | KeyCode::F(2) => {
@@ -583,7 +583,7 @@ fn grid_key(app: &mut App, k: KeyEvent) {
                 KeyCode::Char('a') | KeyCode::Insert => app.run_action(Action::AddRow),
                 KeyCode::Char('d') | KeyCode::Delete => app.run_action(Action::DeleteRow),
                 KeyCode::Char('z') if k.modifiers.contains(KeyModifiers::CONTROL) => app.run_action(Action::Revert),
-                KeyCode::Char('r') => app.reload_table(id),
+                KeyCode::Char('r') => app.reload_table_checked(id),
                 KeyCode::Char('s') => app.sort_table(id),
                 KeyCode::Char('x') => app.run_action(Action::ExportCsv),
                 KeyCode::Char('/') => {
@@ -592,7 +592,7 @@ fn grid_key(app: &mut App, k: KeyEvent) {
                         if let Some(TabKind::Table(tt)) = a.tab_mut(id).map(|t| &mut t.kind) {
                             tt.where_ = s;
                         }
-                        a.reload_table(id);
+                        a.reload_table_checked(id);
                     });
                 }
                 KeyCode::Esc => app.focus = Focus::Tree,

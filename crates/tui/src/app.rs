@@ -246,6 +246,8 @@ pub enum Action {
     GrowEditor,
     PaneUp,
     PaneDown,
+    PaneLeft,
+    PaneRight,
     SplitShrink,
     SplitGrow,
     ExplorerNarrower,
@@ -298,6 +300,8 @@ pub const ACTIONS: &[(Action, &str, &str)] = &[
     (Action::GrowEditor, "Grow Editor (console)", ""),
     (Action::PaneUp, "Go to the Split Above", ""),
     (Action::PaneDown, "Go to the Split Below", ""),
+    (Action::PaneLeft, "Go to the Split on the Left", ""),
+    (Action::PaneRight, "Go to the Split on the Right", ""),
     (Action::CycleFocus, "Cycle Focus (explorer → editor → results)", ""),
     (Action::Palette, "Actions Palette", ""),
     (Action::TrustSshHost, "Trust SSH Host Key (after checking its fingerprint)", ""),
@@ -951,6 +955,21 @@ impl App {
         self.reload_table(id);
     }
 
+    /// 다시 불러오기 전에: 저장 안 한 편집이 있으면 버릴지 묻는다 (그냥 불러오면 말없이 사라진다)
+    pub fn reload_table_checked(&mut self, id: u64) {
+        let n = match self.tab_mut(id).map(|t| &t.kind) {
+            Some(TabKind::Table(tt)) => tt.grid.as_ref().filter(|g| g.dirty()).map(|g| g.edits.len() + g.deleted.len() + g.added).unwrap_or(0),
+            _ => 0,
+        };
+        if n == 0 {
+            return self.reload_table(id);
+        }
+        self.popup = Some(Popup::Confirm {
+            text: format!("{n} pending change(s) are not saved to the database (⌃S submits them). Discard them and reload?"),
+            on_yes: Box::new(move |a| a.reload_table(id)),
+        });
+    }
+
     pub fn reload_table(&mut self, id: u64) {
         let kind = match self.tab_mut(id) {
             Some(t) => t.conn.clone(),
@@ -1204,7 +1223,7 @@ impl App {
         let t = &mut self.tabs[self.active];
         let TabKind::Console(c) = &mut t.kind else {
             if let TabKind::Table(_) = t.kind {
-                self.reload_table(id);
+                self.reload_table_checked(id);
             }
             return;
         };
@@ -1913,7 +1932,7 @@ impl App {
                     if let Some(t) = self.tabs.get(self.active) {
                         let id = t.id;
                         match t.kind {
-                            TabKind::Table(_) => self.reload_table(id),
+                            TabKind::Table(_) => self.reload_table_checked(id),
                             TabKind::Redis(_) => self.redis_scan(id, true),
                             _ => {}
                         }
@@ -2053,8 +2072,10 @@ impl App {
             }
             Action::ShrinkEditor => self.resize_console(-5),
             Action::GrowEditor => self.resize_console(5),
-            Action::PaneUp => self.focus_pane_vert(true),
-            Action::PaneDown => self.focus_pane_vert(false),
+            Action::PaneUp => self.focus_pane(SplitDir::Down, true),
+            Action::PaneDown => self.focus_pane(SplitDir::Down, false),
+            Action::PaneLeft => self.focus_pane(SplitDir::Right, true),
+            Action::PaneRight => self.focus_pane(SplitDir::Right, false),
             Action::Help => self.popup = Some(Popup::Help { sel: 0, scroll: 0, record: None, message: None }),
             Action::Quit => {
                 let n = self.pending_tabs(None).len();
@@ -2120,9 +2141,11 @@ impl App {
     }
 
     /// 콘솔 에디터/결과 비율 조절
-    /// 위/아래 칸으로 (마지막으로 그린 칸 위치 기준: 가로로 겹치는 칸 중 가장 가까운 것)
-    fn focus_pane_vert(&mut self, up: bool) {
+    /// 옆 칸으로: axis = Down 이면 위(back)/아래, Right 면 왼쪽(back)/오른쪽.
+    /// 마지막으로 그린 칸 위치 기준으로, 그 방향에 있고 겹치는 칸 중 가장 가까운 것
+    fn focus_pane(&mut self, axis: SplitDir, back: bool) {
         let cur = self.focused_group();
+        // (칸, 왼, 오른, 위, 아래)
         let rect = |&(g, bar, body): &(usize, ratatui::layout::Rect, ratatui::layout::Rect)| (g, bar.x, bar.x + bar.width, bar.y, body.y + body.height);
         let Some((_, x0, x1, top, bottom)) = self.hits.groups.iter().map(rect).find(|r| r.0 == cur) else { return };
         let next = self
@@ -2130,12 +2153,28 @@ impl App {
             .groups
             .iter()
             .map(rect)
-            .filter(|&(g, a0, a1, t, b)| g != cur && a0 < x1 && x0 < a1 && if up { b <= top } else { t >= bottom })
-            .min_by_key(|&(_, a0, _, t, b)| (if up { top - b } else { t - bottom }, a0.abs_diff(x0)))
-            .map(|r| r.0);
+            .filter_map(|(g, a0, a1, t, b)| {
+                // 경계선(테두리) 한 칸 정도는 겹쳐 그려질 수 있어 1 칸 여유
+                let gap = match (axis, back) {
+                    (SplitDir::Down, true) if a0 < x1 && x0 < a1 && b <= top + 1 => top.saturating_sub(b),
+                    (SplitDir::Down, false) if a0 < x1 && x0 < a1 && t + 1 >= bottom => t.saturating_sub(bottom),
+                    (SplitDir::Right, true) if t < bottom && top < b && a1 <= x0 + 1 => x0.saturating_sub(a1),
+                    (SplitDir::Right, false) if t < bottom && top < b && a0 + 1 >= x1 => a0.saturating_sub(x1),
+                    _ => return None,
+                };
+                (g != cur).then_some((gap, if axis == SplitDir::Down { a0.abs_diff(x0) } else { t.abs_diff(top) }, g))
+            })
+            .min()
+            .map(|r| r.2);
+        let side = match (axis, back) {
+            (SplitDir::Down, true) => "above",
+            (SplitDir::Down, false) => "below",
+            (SplitDir::Right, true) => "on the left",
+            (SplitDir::Right, false) => "on the right",
+        };
         match next.and_then(|g| self.group_tab(g)) {
             Some(i) => self.activate(i),
-            None => self.status = format!("No split {}", if up { "above" } else { "below" }),
+            None => self.status = format!("No split {side}"),
         }
     }
 

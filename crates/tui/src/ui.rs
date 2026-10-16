@@ -377,7 +377,12 @@ fn draw_pane(f: &mut Frame, app: &mut App, idx: usize, body: Rect, focused: bool
                 filt,
             );
             if let Some(e) = &tt.error {
-                f.render_widget(Paragraph::new(e.clone()).style(Style::default().fg(Color::Red)).wrap(Wrap { trim: false }).block(block(" Error ", focused)), grid);
+                // 고칠 방법도 보인다. 남은 편집은 DB 에 아직 안 들어간 것 (⌃S 전까지)
+                let mut lines = vec![Line::styled(e.clone(), Style::default().fg(Color::Red)), Line::raw(""), Line::styled("w edit WHERE · o edit ORDER BY · r reload", Style::default().fg(DIM))];
+                if let Some(n) = tt.grid.as_ref().filter(|g| g.dirty()).map(|g| g.edits.len() + g.deleted.len() + g.added) {
+                    lines.push(Line::styled(disp(&format!("{n} pending change(s) kept from before — not saved to the database yet (Ctrl+S submit · Ctrl+Z revert)")), Style::default().fg(Color::Yellow)));
+                }
+                f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).block(block(" Error ", focused)), grid);
             } else if let Some(g) = &mut tt.grid {
                 let pend = if g.dirty() { disp(&format!(" · {} pending (Ctrl+S submit, Ctrl+Z revert)", g.edits.len() + g.deleted.len() + g.added)) } else { String::new() };
                 let t = format!(" {}.{} — {}{} rows{}{}{} ", tt.schema, tt.table, g.rows(), if g.result.truncated { "+" } else { "" }, if tt.pk.is_empty() { " · no PK (read-only)" } else { "" }, if ro { " · read-only" } else { "" }, pend);

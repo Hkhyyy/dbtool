@@ -35,6 +35,8 @@ pub const DEFAULT_KEYS: &[(Action, &[&str])] = &[
     (Action::ToggleOutput, &["Alt+O"]),
     (Action::PaneUp, &["Alt+Up"]),
     (Action::PaneDown, &["Alt+Down"]),
+    (Action::PaneLeft, &["Ctrl+Alt+Left"]),
+    (Action::PaneRight, &["Ctrl+Alt+Right"]),
     (Action::ShrinkEditor, &["Alt+Shift+Up"]),
     (Action::GrowEditor, &["Alt+Shift+Down"]),
     (Action::Submit, &["Ctrl+S"]),
