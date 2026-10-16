@@ -93,6 +93,42 @@ pub fn belongs(key: &str, id: &str) -> bool {
     key == id || key.starts_with(&format!("{id}::"))
 }
 
+/// 연결이 끊긴 오류인지 (네트워크·서버 재시작·SSH 터널). 문법 오류 같은 쿼리 오류는 아니다
+pub fn is_conn_lost(e: &AppError) -> bool {
+    match e {
+        AppError::Db(sqlx::Error::Io(_) | sqlx::Error::PoolTimedOut | sqlx::Error::PoolClosed | sqlx::Error::WorkerCrashed | sqlx::Error::Tls(_) | sqlx::Error::Protocol(_)) => true,
+        AppError::Io(_) => true,
+        AppError::Msg(m) => {
+            let m = m.to_lowercase();
+            ["connection reset", "connection refused", "connection closed", "broken pipe", "timed out", "unexpected end of file", "not connected"].iter().any(|k| m.contains(k))
+        }
+        _ => false,
+    }
+}
+
+/// 연결이 끊겼으면: 탭 세션을 버리고 (계속 죽은 연결을 쓰지 않게, 다음 실행이 새로 연결한다),
+/// 풀도 응답이 없으면 (SSH 터널이 죽은 경우 등) 닫는다. 같은 문장을 다시 보내지는 않는다 (서버가 이미 실행했을 수 있다)
+async fn recover(state: &AppState, id: &str, tab: Option<&str>, lost_tx: bool, e: AppError) -> AppError {
+    if !is_conn_lost(&e) {
+        return e;
+    }
+    if let Some(tab) = tab {
+        state.sessions.write().await.remove(tab);
+    }
+    let pool = state.pools.read().await.get(id).cloned();
+    if let Some(p) = pool {
+        let alive = tokio::time::timeout(std::time::Duration::from_secs(3), p.server_version()).await.is_ok_and(|r| r.is_ok());
+        if !alive {
+            drop_pool(state, split_target(id).0).await;
+        }
+    }
+    crate::log!("[dbtool] connection lost on {id}: {e}");
+    AppError::Msg(format!(
+        "{e} — connection lost{}. Run it again to reconnect.",
+        if lost_tx { "; the open transaction was rolled back by the server" } else { "" }
+    ))
+}
+
 /// 해당 Data Source의 모든 DB 풀·세션·터널을 닫는다.
 pub async fn drop_pool(state: &AppState, id: &str) {
     state.sessions.write().await.retain(|_, e| !belongs(&e.conn_id, id));
@@ -442,11 +478,24 @@ impl AppState {
         self.check_read_only(&id, &sql)?;
         match tab_id {
             Some(tab) => {
-                let sess = ensure_session(self, &id, &tab).await?;
-                let mut s = sess.lock().await;
-                s.run(&sql, limit).await
+                let sess = match ensure_session(self, &id, &tab).await {
+                    Ok(s) => s,
+                    Err(e) => return Err(recover(self, &id, Some(&tab), false, e).await),
+                };
+                let (r, in_tx) = {
+                    let mut s = sess.lock().await;
+                    let in_tx = s.in_tx();
+                    (s.run(&sql, limit).await, in_tx)
+                };
+                match r {
+                    Err(e) => Err(recover(self, &id, Some(&tab), in_tx, e).await),
+                    ok => ok,
+                }
             }
-            None => ensure_pool(self, &id).await?.run_query(&sql, limit).await,
+            None => match ensure_pool(self, &id).await?.run_query(&sql, limit).await {
+                Err(e) => Err(recover(self, &id, None, false, e).await),
+                ok => ok,
+            },
         }
     }
 
@@ -454,9 +503,17 @@ impl AppState {
         if let Some(e) = self.sessions.read().await.get(&tab_id) {
             touch(self, &e.conn_id);
         }
-        let sess = self.sessions.read().await.get(&tab_id).map(|e| e.session.clone()).ok_or_else(|| AppError::Msg("Session closed".into()))?;
-        let mut s = sess.lock().await;
-        s.fetch(limit.unwrap_or(500)).await
+        let entry = self.sessions.read().await.get(&tab_id).map(|e| (e.session.clone(), e.conn_id.clone()));
+        let (sess, conn_id) = entry.ok_or_else(|| AppError::Msg("Session closed".into()))?;
+        let (r, in_tx) = {
+            let mut s = sess.lock().await;
+            let in_tx = s.in_tx();
+            (s.fetch(limit.unwrap_or(500)).await, in_tx)
+        };
+        match r {
+            Err(e) => Err(recover(self, &conn_id, Some(&tab_id), in_tx, e).await),
+            ok => ok,
+        }
     }
 
     pub async fn cancel_query(&self, tab_id: String) -> AppResult<bool> {
@@ -554,7 +611,7 @@ impl AppState {
         for st in &statements {
             self.check_read_only(&id, st)?;
         }
-        match ensure_pool(self, &id).await? {
+        let r = match ensure_pool(self, &id).await? {
             Pool::Pg(pg) => session::execute_batch(&pg, &statements, exact_one).await,
             Pool::My(my) => crate::mysql::execute_batch(&my, &statements, exact_one).await,
             Pool::Redis(m, _) => {
@@ -563,6 +620,10 @@ impl AppState {
                 }
                 Ok(statements.len() as u64)
             }
+        };
+        match r {
+            Err(e) => Err(recover(self, &id, None, false, e).await),
+            ok => ok,
         }
     }
 
