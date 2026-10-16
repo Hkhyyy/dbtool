@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { open, save } from "@tauri-apps/plugin-dialog";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { api, ConnectionView, dialectOf, meta, QueryResult, redisDb, setUpdateCheckEnabled, targetId, UpdateInfo, updateCheckEnabled } from "./lib/api";
 import { RedisBrowser } from "./components/RedisBrowser";
@@ -104,6 +103,20 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState<false | "appearance" | "keymap">(false);
   const [schemeOpen, setSchemeOpen] = useState(false);
   const [keymapOpen, setKeymapOpen] = useState(false);
+  // 창을 닫을 때 커밋 안 한 변경이 있으면 묻는다 (닫으면 롤백된다)
+  useEffect(() => {
+    let off: (() => void) | undefined;
+    import("@tauri-apps/api/window")
+      .then(({ getCurrentWindow }) =>
+        getCurrentWindow().onCloseRequested((e) => {
+          const n = tabsRef.current.filter((t) => t.inTx).length;
+          if (n && !confirm(`${n} console(s) have uncommitted changes. Quit and roll them back?`)) e.preventDefault();
+        }),
+      )
+      .then((u) => (off = u))
+      .catch(() => {});
+    return () => off?.();
+  }, []);
   // 새 버전 (시작할 때 하루 한 번 확인. 실패는 조용히 넘긴다)
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
   const [updateOpen, setUpdateOpen] = useState(false);
@@ -343,13 +356,10 @@ export default function App() {
   const exportTable = async (info: NodeInfo) => {
     if (!info.schema || !info.name) return;
     const target = targetId(info.conn.id, info.db && info.db !== (info.conn.database || "postgres") ? info.db : undefined);
-    const path = await save({ defaultPath: `${info.name}.csv`, filters: [{ name: "CSV (Excel)", extensions: ["csv"] }] });
-    if (!path) return;
-    setStatus(`Exporting ${info.schema}.${info.name}…`);
     try {
       const { q } = dialectOf(info.conn.kind);
-      const n = await api.exportCsv(target, `SELECT * FROM ${q(info.schema)}.${q(info.name)}`, path);
-      setStatus(`Exported ${n} rows to ${path}`);
+      const r = await api.exportCsv(target, `SELECT * FROM ${q(info.schema)}.${q(info.name)}`, `${info.name}.csv`);
+      if (r) setStatus(`Exported ${r[0]} rows to ${r[1]}`);
     } catch (e) {
       setStatus(String(e));
     }
@@ -450,7 +460,10 @@ export default function App() {
     });
   };
   const deactivate = async (c: ConnectionView) => {
+    const pending = tabsRef.current.filter((t) => t.connId === c.id && t.inTx);
+    if (pending.length && !confirm(`${pending.length} console(s) on ${c.name} have uncommitted changes. Disconnecting rolls them back. Continue?`)) return;
     await api.disconnect(c.id);
+    for (const t of pending) updTab(t.id, (x) => ({ ...x, inTx: false }));
     invalidateCompletion(c.id);
     setStatus(`Deactivated ${c.name}`);
     refresh();
@@ -545,9 +558,10 @@ export default function App() {
   const switchDatabase = (tab: Tab, db: string) => {
     const c = conns.find((x) => x.id === tab.connId);
     if (!c) return;
+    if (tab.inTx && !confirm("This console has uncommitted changes. Switching the database rolls them back. Continue?")) return;
     const database = db !== (c.database || "postgres") ? db : undefined;
     api.closeSession(tab.id).catch(() => {}); // 다음 실행 때 새 DB로 세션을 연다
-    patch(tab.id, { database, target: targetId(c.id, database), schema: undefined });
+    patch(tab.id, { database, target: targetId(c.id, database), schema: undefined, inTx: false });
     setStatus(`Console switched to database ${db}`);
   };
   const switchSchema = async (tab: Tab, schema: string) => {
@@ -599,22 +613,30 @@ export default function App() {
     const f = /\bfrom\s+((?:"[^"]+"|\w+)(?:\.(?:"[^"]+"|\w+))?)/i.exec(sql);
     return f ? f[1].replace(/"/g, "") : `Result ${n}`;
   };
-  const isUnsafe = (sql: string) => {
+  /** 데이터를 바꾸지 않는 문장 (스크립트 중간 실패 안내에서 "이미 커밋된 변경" 을 셀 때) */
+  const isReadStmt = (sql: string) => {
     const s2 = sql.replace(/--.*$/gm, "").replace(/\/\*[\s\S]*?\*\//g, "").trim().toLowerCase();
-    return (/^delete\s+from\b/.test(s2) || /^update\b/.test(s2)) && !/\bwhere\b/.test(s2);
+    return /^(select|with|show|explain|values|table|describe|desc)\b/.test(s2) && !/\b(insert|update|delete|merge)\b/.test(s2);
   };
 
   const executeConsole = async (tabId: string, stmts: string[], explain?: "plan" | "analyze") => {
     const tab = tabsRef.current.find((t) => t.id === tabId);
     if (!tab || !stmts.length) return;
-    const unsafe = stmts.filter(isUnsafe);
-    if (unsafe.length && !confirm(`Potentially unsafe query: ${unsafe.length > 1 ? `${unsafe.length} statements have` : "statement has"} no WHERE clause.\n\n${unsafe[0].slice(0, 300)}\n\nExecute anyway?`)) return;
     const c = conns.find((x) => x.id === tab.connId);
+    // 위험 문장 확인 (WHERE 없는 UPDATE/DELETE, DROP, TRUNCATE — 판정은 core guard 와 같다)
+    if (!explain) {
+      for (const s of stmts) {
+        const why = await api.unsafeReason(c?.kind ?? "postgres", s).catch(() => null);
+        if (why && !confirm(`${why}:\n\n${s.slice(0, 300)}\n\nRun it anyway?`)) return;
+      }
+    }
     // 고정(pin)되지 않은 결과 탭은 새 결과로 바꾼다
     updTab(tabId, (t) => ({ ...t, running: true, results: t.results.filter((r) => r.pinned), cursorEntry: undefined }));
     setStatus("Executing…");
     let n = tab.results.filter((r) => r.pinned).length;
     let lastActive = "output";
+    // Auto 모드에서 이미 확정된 변경 문장 수 (중간에 실패하면 알린다)
+    let committed = 0;
     for (const sql0 of stmts) {
       const isMy = c?.kind === "mysql";
       const bare = sql0.replace(/;\s*$/, "");
@@ -624,6 +646,7 @@ export default function App() {
         const r = await api.runQuery(tab.target, sql, tabId);
         pushHistory({ connId: tab.connId, database: tab.database, sql: sql0 });
         updTab(tabId, (t) => ({ ...t, inTx: !!r.inTransaction }));
+        if (!r.inTransaction && !isReadStmt(sql0)) committed++;
         if (explain && !isMy) {
           const plan = parsePgPlan(String(r.rows[0]?.[0] ?? ""));
           const entry: ResultEntry = { id: crypto.randomUUID(), title: resultTitle(sql0, ++n), sql: sql0, kind: "plan", result: null, plan: plan ?? undefined, pinned: false };
@@ -640,6 +663,9 @@ export default function App() {
         }
       } catch (e) {
         log(tabId, "error", String(e));
+        if (committed > 0) log(tabId, "error", `Note: ${committed} earlier statement${committed > 1 ? "s" : ""} of this run ${committed > 1 ? "were" : "was"} already committed (Auto mode) and ${committed > 1 ? "were" : "was"} not rolled back`);
+        // 오류가 나도 트랜잭션이 열려 있을 수 있다 (Manual 첫 문장 실패 등) → Commit/Roll back 버튼을 맞춘다
+        api.txState(tabId).then((inTx) => updTab(tabId, (t) => ({ ...t, inTx })), () => {});
         lastActive = "output";
         updTab(tabId, (t) => ({ ...t, running: false, activeResult: "output" }));
         setStatus("Query failed");
@@ -678,9 +704,15 @@ export default function App() {
 
   const setTxMode = async (tab: Tab, manual: boolean) => {
     try {
+      // 커밋 안 한 변경이 있으면 먼저 묻는다 (예전엔 말없이 커밋했다)
+      if (!manual && tab.inTx) {
+        if (!confirm("This console has uncommitted changes.\n\nOK = commit them and switch to Auto\nCancel = stay in Manual")) return;
+        await api.commitTx(tab.id);
+        log(tab.id, "info", "Transaction committed");
+      }
       await api.setTxMode(tab.target, tab.id, manual);
       updTab(tab.id, (t) => ({ ...t, txManual: manual, inTx: manual ? t.inTx : false }));
-      log(tab.id, "info", `Transaction mode: ${manual ? "Manual" : "Auto"}${!manual && tab.inTx ? " (pending transaction committed)" : ""}`);
+      log(tab.id, "info", `Transaction mode: ${manual ? "Manual" : "Auto"}`);
     } catch (e) {
       setStatus(String(e));
     }
@@ -733,7 +765,8 @@ export default function App() {
   };
 
   const submitEdits = async (tab: Tab, statements: string[]) => {
-    const n = await api.executeBatch(tab.target, statements);
+    // 각 UPDATE/DELETE 가 정확히 1행에 적용돼야 저장 (아니면 전부 롤백)
+    const n = await api.executeBatch(tab.target, statements, true);
     setStatus(`Submitted ${statements.length} statements, ${n} rows affected`);
     if (tab.lastSql) run(tab, tab.lastSql);
   };
@@ -741,6 +774,9 @@ export default function App() {
   // ───────── 탭 닫기 / 분할 ─────────
   const closeTabs = (ids: string[]) => {
     if (!ids.length) return;
+    // 닫으면 롤백된다 → 커밋 안 한 변경이 있으면 묻는다
+    const pending = tabsRef.current.filter((t) => ids.includes(t.id) && t.inTx);
+    if (pending.length && !confirm(`${pending.length === 1 ? `"${pending[0].title}" has` : `${pending.length} consoles have`} uncommitted changes. Roll them back and close?`)) return;
     for (const t of tabsRef.current.filter((x) => ids.includes(x.id))) closedStack.current = [snapshot(t), ...closedStack.current].slice(0, 30);
     mru.current = mru.current.filter((x) => !ids.includes(x));
     for (const id of ids) {
@@ -1249,21 +1285,22 @@ export default function App() {
   };
 
   const exportConns = async () => {
-    const path = await save({ defaultPath: "dbtool-datasources.json", filters: [{ name: "JSON", extensions: ["json"] }] });
-    if (!path) return;
     try {
-      const n = await api.exportConnections(path);
-      setStatus(`Exported ${n} data sources (passwords excluded) to ${path}`);
+      const r = await api.exportConnections();
+      if (r) setStatus(`Exported ${r[0]} data sources (passwords excluded) to ${r[1]}`);
     } catch (e) {
       setStatus(String(e));
     }
   };
 
   const importConns = async () => {
-    const path = await open({ multiple: false, filters: [{ name: "JSON", extensions: ["json"] }] });
-    if (!path) return;
     try {
-      const r = await api.importConnections(path);
+      // 남이 준 파일은 Read-only 를 끄거나 접속 시 실행할 SQL 을 넣을 수 있다 → 바뀌는 내용을 보여 주고 확인
+      const preview = await api.pickImportFile();
+      if (!preview) return;
+      if (!preview.length) return setStatus("Nothing to import");
+      if (!confirm(`Import these data sources?\n\n${preview.join("\n")}`)) return;
+      const r = await api.importPicked();
       setStatus(`Imported: ${r.added} added, ${r.updated} updated (re-enter passwords)`);
       refresh();
     } catch (e) {
@@ -1273,12 +1310,9 @@ export default function App() {
 
   const exportCsv = async (tab: Tab | null) => {
     if (!tab?.lastSql) return;
-    const path = await save({ defaultPath: `${tab.kind === "table" ? tab.title : "result"}.csv`, filters: [{ name: "CSV (Excel)", extensions: ["csv"] }] });
-    if (!path) return;
-    setStatus("Exporting CSV…");
     try {
-      const n = await api.exportCsv(tab.target, tab.lastSql, path);
-      setStatus(`Exported ${n} rows to ${path}`);
+      const r = await api.exportCsv(tab.target, tab.lastSql, `${tab.kind === "table" ? tab.title : "result"}.csv`);
+      if (r) setStatus(`Exported ${r[0]} rows to ${r[1]}`);
     } catch (e) {
       setStatus(String(e));
     }
@@ -1536,11 +1570,9 @@ export default function App() {
                     className="tb text"
                     title="Save to File"
                     onClick={async () => {
-                      const path = await save({ defaultPath: `${t.title.replace(/^SQL Generator: | \[DDL\]$/g, "")}.sql`, filters: [{ name: "SQL", extensions: ["sql"] }] });
-                      if (!path) return;
                       try {
-                        await api.writeTextFile(path, t.sql);
-                        setStatus(`Saved ${path}`);
+                        const path = await api.saveTextFile(`${t.title.replace(/^SQL Generator: | \[DDL\]$/g, "")}.sql`, t.sql);
+                        if (path) setStatus(`Saved ${path}`);
                       } catch (e) {
                         setStatus(String(e));
                       }

@@ -293,6 +293,23 @@ export function ConnectionDialog({ edit, onClose, onSaved }: Props) {
             : "Passwords are stored encrypted in the app data folder (no Keychain prompts)."}
         </div>
         {test && <div className={test.ok ? "test-ok" : "test-err"}>{test.ok ? "✓ " : "✕ "}{test.msg}</div>}
+        {/* 처음 보는 SSH 서버: 지문을 확인한 뒤 신뢰 → 다시 시험 */}
+        {test && !test.ok && test.msg.includes("Unknown SSH host key") && cfg.ssh && (
+          <div className="row" style={{ marginTop: 6 }}>
+            <button
+              onClick={async () => {
+                try {
+                  await api.trustSshHost(cfg.ssh!.host, cfg.ssh!.port);
+                  await runTest();
+                } catch (e) {
+                  setTest({ ok: false, msg: String(e) });
+                }
+              }}
+            >
+              Trust Host Key and Test Again
+            </button>
+          </div>
+        )}
         <div className="modal-actions">
           <button onClick={runTest} disabled={busy}>{busy ? "Testing…" : tab === "ssh" ? "Test SSH Connection" : "Test Connection"}</button>
           <span className="grow" />
