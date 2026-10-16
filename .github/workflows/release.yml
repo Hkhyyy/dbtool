@@ -1,0 +1,96 @@
+# main 에 머지될 때마다 macOS(Apple Silicon) 용 GUI dmg 와 TUI/MCP tar.gz 를 빌드해서 GitHub Release 로 올린다.
+# 버전: 마지막 태그(vX.Y.Z)의 patch +1. 소스(Cargo.toml) 버전이 그보다 높으면(PR 에서 minor/major 를 올린 경우) 그 버전.
+# 버전은 빌드할 때만 매니페스트에 넣고 main 에 커밋하지 않는다 (main 은 PR 로만 바뀐다). 기준은 태그.
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# 머지가 연달아 와도 한 번에 하나씩 (같은 버전 태그를 두 번 만들지 않게)
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compute version
+        id: ver
+        run: |
+          latest=$(git tag -l 'v*.*.*' --sort=-v:refname | head -1)
+          latest=${latest#v}
+          [ -z "$latest" ] && latest=0.0.0
+          src=$(grep -m1 '^version' crates/core/Cargo.toml | cut -d'"' -f2)
+          if [ "$src" != "$latest" ] && [ "$(printf '%s\n%s\n' "$latest" "$src" | sort -V | tail -1)" = "$src" ]; then
+            v=$src
+          else
+            IFS=. read -r ma mi pa <<< "$latest"
+            v="$ma.$mi.$((pa + 1))"
+          fi
+          echo "latest tag: $latest · source: $src → release: $v"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Set version in manifests
+        env:
+          V: ${{ steps.ver.outputs.version }}
+        run: |
+          for f in crates/core/Cargo.toml crates/tui/Cargo.toml crates/mcp/Cargo.toml src-tauri/Cargo.toml; do
+            perl -0pi -e 's/^version = "[^"]*"/version = "$ENV{V}"/m' "$f"
+          done
+          for f in package.json src-tauri/tauri.conf.json; do
+            perl -0pi -e 's/"version": "[^"]*"/"version": "$ENV{V}"/' "$f"
+          done
+          git diff --stat
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build GUI (dmg)
+        run: pnpm tauri build --bundles dmg
+
+      - name: Build TUI and MCP
+        run: cargo build --release -p dbtool-tui -p dbtool-mcp
+
+      - name: Package
+        env:
+          V: ${{ steps.ver.outputs.version }}
+        run: |
+          mkdir dist-release
+          cp "target/release/bundle/dmg/dbtool_${V}_aarch64.dmg" dist-release/
+          tar -czf "dist-release/dbtool-cli_${V}_aarch64-apple-darwin.tar.gz" -C target/release dbtool-tui dbtool-mcp
+          sed "s/{{VERSION}}/${V}/g" .github/release-notes.md > release-notes.md
+          ls -la dist-release
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V: ${{ steps.ver.outputs.version }}
+        run: |
+          gh release create "v${V}" dist-release/* \
+            --target "$GITHUB_SHA" \
+            --title "dbtool ${V}" \
+            --notes-file release-notes.md \
+            --generate-notes
