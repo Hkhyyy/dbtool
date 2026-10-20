@@ -199,7 +199,8 @@ pub enum Popup {
     /// sel 은 위쪽 Commands 와 아래 고정 키 목록을 이어서 센다 (Commands 만 바꿀 수 있다)
     Help { sel: usize, scroll: u16, record: Option<bool>, message: Option<String> },
     Message { title: String, text: String },
-    Input { title: String, input: TextArea<'static>, on_ok: Box<dyn FnOnce(&mut App, String)> },
+    /// 한 줄 입력. words = 자동완성 후보 (테이블의 WHERE/ORDER BY 는 컬럼·키워드), complete = 열린 목록 (후보, 고른 것, 바꿀 접두어 글자 수)
+    Input { title: String, input: TextArea<'static>, on_ok: Box<dyn FnOnce(&mut App, String)>, words: Vec<String>, complete: Option<(Vec<String>, usize, usize)> },
     Confirm { text: String, on_yes: Box<dyn FnOnce(&mut App)> },
     Palette(Palette),
     ConnForm(ConnForm),
@@ -1973,10 +1974,28 @@ impl App {
     }
 
     pub fn input(&mut self, title: impl Into<String>, init: &str, on_ok: impl FnOnce(&mut App, String) + 'static) {
+        self.input_words(title, init, vec![], on_ok);
+    }
+
+    /// 자동완성이 되는 한 줄 입력 (치는 단어로 words 를 거른다, ⌃Space / Tab 으로 바로 열기)
+    pub fn input_words(&mut self, title: impl Into<String>, init: &str, words: Vec<String>, on_ok: impl FnOnce(&mut App, String) + 'static) {
         let mut t = TextArea::new(vec![init.to_string()]);
         t.move_cursor(tui_textarea::CursorMove::End);
         t.set_cursor_line_style(ratatui::style::Style::default());
-        self.popup = Some(Popup::Input { title: title.into(), input: t, on_ok: Box::new(on_ok) });
+        self.popup = Some(Popup::Input { title: title.into(), input: t, on_ok: Box::new(on_ok), words, complete: None });
+    }
+
+    /// 테이블 탭의 WHERE / ORDER BY 자동완성 후보: 컬럼 + 자주 쓰는 키워드
+    pub fn table_words(&self, id: u64, order: bool) -> Vec<String> {
+        let Some(t) = self.tabs.iter().find(|t| t.id == id) else { return vec![] };
+        let kind = self.kind_of(&t.conn);
+        let mut w: Vec<String> = match &t.kind {
+            TabKind::Table(tt) => tt.grid.as_ref().map(|g| g.result.columns.iter().map(|c| sql::quote_ident(kind, &c.name)).collect()).unwrap_or_default(),
+            _ => vec![],
+        };
+        let kw: &[&str] = if order { &["ASC", "DESC", "NULLS FIRST", "NULLS LAST"] } else { &["AND", "OR", "NOT", "IS NULL", "IS NOT NULL", "IN", "LIKE", "ILIKE", "BETWEEN", "TRUE", "FALSE", "NOW()"] };
+        w.extend(kw.iter().map(|s| s.to_string()));
+        w
     }
 
     pub fn run_action(&mut self, a: Action) {

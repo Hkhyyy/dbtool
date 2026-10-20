@@ -350,6 +350,30 @@ pub fn on_key(app: &mut App, k: KeyEvent) {
     }
 }
 
+/// 커서 앞 단어로 후보를 거른다 (대소문자·따옴표 무시, 이미 다 친 것은 빼고, 8개까지)
+fn input_complete(input: &tui_textarea::TextArea, words: &[String], force: bool) -> Option<(Vec<String>, usize, usize)> {
+    if words.is_empty() {
+        return None;
+    }
+    let (row, col) = input.cursor();
+    let before: Vec<char> = input.lines().get(row)?.chars().take(col).collect();
+    let n = before.iter().rev().take_while(|c| c.is_alphanumeric() || **c == '_' || **c == '"' || **c == '`').count();
+    if n == 0 && !force {
+        return None;
+    }
+    let p: String = before[before.len() - n..].iter().collect::<String>().trim_start_matches(['"', '`']).to_lowercase();
+    let items: Vec<String> = words
+        .iter()
+        .filter(|w| {
+            let w = w.trim_matches(['"', '`']).to_lowercase();
+            w.starts_with(&p) && w != p
+        })
+        .take(8)
+        .cloned()
+        .collect();
+    (!items.is_empty()).then_some((items, 0, n))
+}
+
 /// 한 글자 명령(a 행 추가, d 삭제 …)을 쓰는 화면용: ⌘←/→ 는 Home/End (터미널이 ⌃A/⌃E 로 보내기도 한다),
 /// 그 밖에 ⌃/⌥/⌘ 이 같이 눌린 글자는 명령으로 받지 않는다 (⌘← 가 ⌃A 로 와서 행이 추가되던 문제)
 fn plain(k: KeyEvent) -> Option<KeyEvent> {
@@ -561,7 +585,8 @@ fn grid_key(app: &mut App, k: KeyEvent) {
             match k.code {
                 KeyCode::Char('w') => {
                     let w = tt.where_.clone();
-                    app.input("WHERE", &w, move |a, s| {
+                    let words = app.table_words(id, false);
+                    app.input_words("WHERE", &w, words, move |a, s| {
                         if let Some(TabKind::Table(tt)) = a.tab_mut(id).map(|t| &mut t.kind) {
                             tt.where_ = s;
                         }
@@ -570,7 +595,8 @@ fn grid_key(app: &mut App, k: KeyEvent) {
                 }
                 KeyCode::Char('o') => {
                     let o = tt.order.clone();
-                    app.input("ORDER BY", &o, move |a, s| {
+                    let words = app.table_words(id, true);
+                    app.input_words("ORDER BY", &o, words, move |a, s| {
                         if let Some(TabKind::Table(tt)) = a.tab_mut(id).map(|t| &mut t.kind) {
                             tt.order = s;
                         }
@@ -607,7 +633,8 @@ fn grid_key(app: &mut App, k: KeyEvent) {
                 KeyCode::Char('x') => app.run_action(Action::ExportCsv),
                 KeyCode::Char('/') => {
                     let w = tt.where_.clone();
-                    app.input("WHERE", &w, move |a, s| {
+                    let words = app.table_words(id, false);
+                    app.input_words("WHERE", &w, words, move |a, s| {
                         if let Some(TabKind::Table(tt)) = a.tab_mut(id).map(|t| &mut t.kind) {
                             tt.where_ = s;
                         }
@@ -910,14 +937,41 @@ fn popup_key(app: &mut App, k: KeyEvent) {
             KeyCode::Char('n') | KeyCode::Esc => {}
             _ => app.popup = Some(Popup::Confirm { text, on_yes }),
         },
-        Popup::Input { title, mut input, on_ok } => match k.code {
-            KeyCode::Esc => {}
-            KeyCode::Enter => on_ok(app, input.lines().join("")),
-            _ => {
-                input.input(k);
-                app.popup = Some(Popup::Input { title, input, on_ok });
+        Popup::Input { title, mut input, on_ok, words, mut complete } => {
+            // 자동완성 목록이 열려 있으면: ↑↓ 고르기 · Tab/Enter 넣기 · Esc 닫기
+            if let Some((items, sel, prefix)) = &mut complete {
+                match k.code {
+                    KeyCode::Up => *sel = sel.saturating_sub(1),
+                    KeyCode::Down => *sel = (*sel + 1).min(items.len() - 1),
+                    KeyCode::Tab | KeyCode::Enter => {
+                        for _ in 0..*prefix {
+                            input.delete_char();
+                        }
+                        input.insert_str(&items[*sel]);
+                        complete = None;
+                    }
+                    KeyCode::Esc => complete = None,
+                    _ => complete = None,
+                }
+                if complete.is_some() || matches!(k.code, KeyCode::Tab | KeyCode::Enter | KeyCode::Esc) {
+                    app.popup = Some(Popup::Input { title, input, on_ok, words, complete });
+                    return;
+                }
             }
-        },
+            match k.code {
+                KeyCode::Esc => {}
+                KeyCode::Enter => on_ok(app, input.lines().join("")),
+                _ => {
+                    // Tab·⌃Space = 지금 단어로 목록 열기 (한 줄 입력이라 Tab 글자는 넣지 않는다)
+                    let force = k.code == KeyCode::Tab || (k.code == KeyCode::Char(' ') && k.modifiers.contains(KeyModifiers::CONTROL)) || k.code == KeyCode::Null;
+                    if !force {
+                        input.input(k);
+                    }
+                    complete = input_complete(&input, &words, force);
+                    app.popup = Some(Popup::Input { title, input, on_ok, words, complete });
+                }
+            }
+        }
         Popup::Palette(mut p) => {
             let n = App::palette_matches(&p).len();
             match k.code {

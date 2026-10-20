@@ -611,11 +611,25 @@ fn draw_popup(f: &mut Frame, app: &mut App) {
             f.render_widget(Clear, r);
             f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).block(block(" Confirm ", true)), r);
         }
-        Popup::Input { title, input, .. } => {
+        Popup::Input { title, input, complete, words, .. } => {
             let r = centered(area, 90, 3);
             f.render_widget(Clear, r);
-            input.set_block(block(format!(" {title} (Enter / Esc) "), true));
+            let hint = if words.is_empty() { "Enter / Esc" } else { "Enter / Esc · Tab complete" };
+            input.set_block(block(format!(" {title} ({hint}) "), true));
             f.render_widget(&*input, r);
+            // 자동완성 목록: 입력칸 바로 아래, 커서 근처
+            if let Some((items, sel, _)) = complete {
+                let w = items.iter().map(|s| s.chars().count()).max().unwrap_or(0) as u16 + 4;
+                let x = (r.x + 1 + input.cursor().1 as u16).min(r.right().saturating_sub(w));
+                let lr = Rect { x, y: r.bottom(), width: w.min(r.width), height: (items.len() as u16 + 2).min(area.bottom().saturating_sub(r.bottom())) };
+                let rows: Vec<ListItem> = items
+                    .iter()
+                    .enumerate()
+                    .map(|(i, s)| ListItem::new(format!(" {s}")).style(if i == *sel { Style::default().bg(Color::Rgb(46, 67, 110)) } else { Style::default() }))
+                    .collect();
+                f.render_widget(Clear, lr);
+                f.render_widget(List::new(rows).block(block("", true)).style(Style::default().bg(Color::Rgb(30, 31, 34))), lr);
+            }
         }
         Popup::Palette(p) => {
             let r = centered(area, 100, 24);
