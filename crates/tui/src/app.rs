@@ -520,8 +520,13 @@ impl App {
                         expandable: true,
                     })
                     .collect();
+                // 방금 접속된 Data Source: 접속 실패로 비어 있던 테이블 탭을 다시 불러온다
+                let back: Vec<String> = cs.iter().filter(|c| c.connected && a.conn(&c.config.id).is_some_and(|o| !o.connected)).map(|c| c.config.id.clone()).collect();
                 a.conns = cs;
                 a.tree.clamp();
+                for c in back {
+                    a.retry_failed_tables(&c);
+                }
                 if !a.restored {
                     a.restored = true;
                     if let Some(v) = a.state.store.workspace("tui") {
@@ -1083,10 +1088,12 @@ impl App {
         let st = self.state.clone();
         self.spawn(
             async move {
-                let cols = st.table_detail(target.clone(), schema, table).await.map(|d| d.columns).unwrap_or_default();
+                // 같이 보낸다 (접속이 안 되면 둘 다 기다리느라 두 배로 걸린다)
+                let (cols, r) = tokio::join!(st.table_detail(target.clone(), schema, table), st.run_query(target, sqls, Some(500), Some(session)));
+                let cols = cols.map(|d| d.columns).unwrap_or_default();
                 let pk = cols.iter().filter(|c| c.is_pk).map(|c| c.name.clone()).collect::<Vec<_>>();
                 let cols: Vec<(String, String)> = cols.into_iter().map(|c| (c.name, c.data_type)).collect();
-                let r = st.run_query(target, sqls, Some(500), Some(session)).await.map_err(err);
+                let r = r.map_err(err);
                 (pk, cols, r)
             },
             move |a, (pk, cols, r)| {
@@ -1133,6 +1140,19 @@ impl App {
                 }
             },
         );
+    }
+
+    /// 쿼리가 실패한 채로 있는 테이블 탭(저장 안 한 편집 없음)을 다시 불러온다
+    fn retry_failed_tables(&mut self, conn: &str) {
+        let ids: Vec<u64> = self
+            .tabs
+            .iter()
+            .filter(|t| t.conn == conn && !t.stale && matches!(&t.kind, TabKind::Table(tt) if tt.error.is_some() && !tt.running && !tt.grid.as_ref().is_some_and(|g| g.dirty())))
+            .map(|t| t.id)
+            .collect();
+        for id in ids {
+            self.reload_table(id);
+        }
     }
 
     /// 테이블 탭 헤더 정렬: 선택 열로 ORDER BY ↑ → ↓ → 해제 (GUI 의 Sort via ORDER BY)

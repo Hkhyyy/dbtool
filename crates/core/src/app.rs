@@ -241,7 +241,14 @@ pub async fn ensure_pool(state: &AppState, id: &str) -> AppResult<Pool> {
     }
     let password = state.secret(base)?;
     let ssh_secret = if cfg.active_ssh().is_some() { state.secret(&store::ssh_secret_key(base))? } else { None };
-    let (pool, tunnel) = connect_config(&cfg, password.as_deref(), ssh_secret.as_deref()).await?;
+    let (pool, tunnel) = connect_config(&cfg, password.as_deref(), ssh_secret.as_deref()).await.map_err(|e| match e {
+        // sqlx 는 "pool timed out while waiting for an open connection" 이라고만 한다
+        AppError::Db(sqlx::Error::PoolTimedOut) => AppError::Msg(format!(
+            "Can't connect to {}:{} — the server didn't answer within 10s. Check that it's up (VPN / SSH tunnel), then run it again.",
+            cfg.host, cfg.port
+        )),
+        e => e,
+    })?;
     if let Some(t) = tunnel {
         state.tunnels.write().await.insert(id.to_string(), t);
     }
