@@ -350,7 +350,25 @@ pub fn on_key(app: &mut App, k: KeyEvent) {
     }
 }
 
+/// 한 글자 명령(a 행 추가, d 삭제 …)을 쓰는 화면용: ⌘←/→ 는 Home/End (터미널이 ⌃A/⌃E 로 보내기도 한다),
+/// 그 밖에 ⌃/⌥/⌘ 이 같이 눌린 글자는 명령으로 받지 않는다 (⌘← 가 ⌃A 로 와서 행이 추가되던 문제)
+fn plain(k: KeyEvent) -> Option<KeyEvent> {
+    let m = k.modifiers;
+    let to = |code| Some(KeyEvent::new(code, KeyModifiers::NONE));
+    match k.code {
+        KeyCode::Char('a') if m == KeyModifiers::CONTROL => to(KeyCode::Home),
+        KeyCode::Char('e') if m == KeyModifiers::CONTROL => to(KeyCode::End),
+        KeyCode::Left if m.contains(KeyModifiers::SUPER) => to(KeyCode::Home),
+        KeyCode::Right if m.contains(KeyModifiers::SUPER) => to(KeyCode::End),
+        // ⌃Z = 편집 되돌리기
+        KeyCode::Char('z') if m == KeyModifiers::CONTROL => Some(k),
+        KeyCode::Char(_) if m.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER) => None,
+        _ => Some(k),
+    }
+}
+
 fn tree_key(app: &mut App, k: KeyEvent) {
+    let Some(k) = plain(k) else { return };
     let n = app.tree.visible().len();
     // 스피드 서치 입력 중
     if !app.tree.filter.is_empty() || k.code == KeyCode::Char('/') {
@@ -509,6 +527,7 @@ fn editor_key(app: &mut App, k: KeyEvent) {
 }
 
 fn grid_key(app: &mut App, k: KeyEvent) {
+    let Some(k) = plain(k) else { return };
     let Some(t) = app.tabs.get_mut(app.active) else {
         app.focus = Focus::Tree;
         return;
@@ -1033,4 +1052,21 @@ fn save_form(app: &mut App, mut form: crate::app::ConnForm) {
 /// 팔레트·키맵에 보이는 명령 이름
 pub fn name_of(a: Action) -> &'static str {
     crate::app::ACTIONS.iter().find(|x| x.0 == a).map(|x| x.1).unwrap_or("?")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn modifier_letters_are_not_commands() {
+        let k = |c, m| KeyEvent::new(c, m);
+        // ⌘← 가 ⌃A 로 와도 행 추가가 아니라 첫 열로
+        assert_eq!(plain(k(KeyCode::Char('a'), KeyModifiers::CONTROL)).map(|x| x.code), Some(KeyCode::Home));
+        assert_eq!(plain(k(KeyCode::Right, KeyModifiers::SUPER)).map(|x| x.code), Some(KeyCode::End));
+        assert!(plain(k(KeyCode::Char('d'), KeyModifiers::ALT)).is_none());
+        assert!(plain(k(KeyCode::Char('n'), KeyModifiers::SUPER)).is_none());
+        assert_eq!(plain(k(KeyCode::Char('D'), KeyModifiers::SHIFT)).map(|x| x.code), Some(KeyCode::Char('D')));
+        assert_eq!(plain(k(KeyCode::Char('z'), KeyModifiers::CONTROL)).map(|x| x.code), Some(KeyCode::Char('z')));
+    }
 }
