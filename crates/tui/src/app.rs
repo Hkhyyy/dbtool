@@ -1082,11 +1082,13 @@ impl App {
         let st = self.state.clone();
         self.spawn(
             async move {
-                let pk = st.table_detail(target.clone(), schema, table).await.map(|d| d.columns.into_iter().filter(|c| c.is_pk).map(|c| c.name).collect::<Vec<_>>()).unwrap_or_default();
+                let cols = st.table_detail(target.clone(), schema, table).await.map(|d| d.columns).unwrap_or_default();
+                let pk = cols.iter().filter(|c| c.is_pk).map(|c| c.name.clone()).collect::<Vec<_>>();
+                let cols: Vec<(String, String)> = cols.into_iter().map(|c| (c.name, c.data_type)).collect();
                 let r = st.run_query(target, sqls, Some(500), Some(session)).await.map_err(err);
-                (pk, r)
+                (pk, cols, r)
             },
-            move |a, (pk, r)| {
+            move |a, (pk, cols, r)| {
                 // 검색 캐시에서 연 테이블이면 지금 막 접속한 것: 탐색기 표시를 맞춘다
                 let conn = a.tab_mut(id).map(|t| t.conn.clone()).unwrap_or_default();
                 let fresh = r.is_ok() && a.conn(&conn).is_some_and(|c| !c.connected);
@@ -1115,6 +1117,15 @@ impl App {
                         a.status = format!("{n}{} rows", if more { "+" } else { "" });
                     }
                     Err(e) => {
+                        // 결과가 없으니 빈 표를 보인다 (컬럼은 그대로). 저장 안 한 편집이 있으면 그 표를 그대로 둔다
+                        if !tt.grid.as_ref().is_some_and(|g| g.dirty()) {
+                            let columns = match &tt.grid {
+                                Some(g) => g.result.columns.clone(),
+                                None => cols.into_iter().map(|(name, type_name)| dbtool_core::db::ColumnInfo { name, type_name }).collect(),
+                            };
+                            let empty = dbtool_core::db::QueryResult { columns, rows: vec![], rows_affected: 0, truncated: false, elapsed_ms: 0, has_result_set: true, in_transaction: false };
+                            tt.grid = Some(Grid::new(empty));
+                        }
                         tt.error = Some(e.clone());
                         a.status = e;
                     }
