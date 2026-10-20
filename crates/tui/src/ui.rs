@@ -376,19 +376,27 @@ fn draw_pane(f: &mut Frame, app: &mut App, idx: usize, body: Rect, focused: bool
                 ])),
                 filt,
             );
-            if let Some(e) = &tt.error {
-                // 고칠 방법도 보인다. 남은 편집은 DB 에 아직 안 들어간 것 (⌃S 전까지)
-                let mut lines = vec![Line::styled(e.clone(), Style::default().fg(Color::Red)), Line::raw(""), Line::styled("w edit WHERE · o edit ORDER BY · r reload", Style::default().fg(DIM))];
+            // 쿼리가 실패하면: 표 위에 오류 한 줄과 고칠 방법, 표는 비운 채로 (어떻게 빠져나가는지 보이게)
+            let grid = if let Some(e) = &tt.error {
+                let [msg, rest] = Layout::vertical([Constraint::Length(2), Constraint::Min(3)]).areas(grid);
+                let mut hint = vec![Span::styled(" w ", Style::default().fg(ACCENT)), Span::raw("fix WHERE · "), Span::styled("o ", Style::default().fg(ACCENT)), Span::raw("fix ORDER BY · "), Span::styled("r ", Style::default().fg(ACCENT)), Span::raw("run again")];
                 if let Some(n) = tt.grid.as_ref().filter(|g| g.dirty()).map(|g| g.edits.len() + g.deleted.len() + g.added) {
-                    lines.push(Line::styled(disp(&format!("{n} pending change(s) kept from before — not saved to the database yet (Ctrl+S submit · Ctrl+Z revert)")), Style::default().fg(Color::Yellow)));
+                    hint.push(Span::styled(disp(&format!("   · {n} pending change(s) not saved yet (Ctrl+S submit · Ctrl+Z revert)")), Style::default().fg(Color::Yellow)));
                 }
-                f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).block(block(" Error ", focused)), grid);
-            } else if let Some(g) = &mut tt.grid {
+                let first = e.lines().next().unwrap_or_default().to_string();
+                f.render_widget(Paragraph::new(vec![Line::styled(format!(" ✗ {first}"), Style::default().fg(Color::Red)), Line::from(hint)]), msg);
+                rest
+            } else {
+                grid
+            };
+            if let Some(g) = &mut tt.grid {
                 let pend = if g.dirty() { disp(&format!(" · {} pending (Ctrl+S submit, Ctrl+Z revert)", g.edits.len() + g.deleted.len() + g.added)) } else { String::new() };
-                let t = format!(" {}.{} — {}{} rows{}{}{} ", tt.schema, tt.table, g.rows(), if g.result.truncated { "+" } else { "" }, if tt.pk.is_empty() { " · no PK (read-only)" } else { "" }, if ro { " · read-only" } else { "" }, pend);
+                let rows = if tt.error.is_some() && !g.dirty() { "query failed — no rows".to_string() } else { format!("{}{} rows", g.rows(), if g.result.truncated { "+" } else { "" }) };
+                let t = format!(" {}.{} — {rows}{}{}{} ", tt.schema, tt.table, if tt.pk.is_empty() { " · no PK (read-only)" } else { "" }, if ro { " · read-only" } else { "" }, pend);
                 g.render(f, grid, t, focus == Focus::Grid);
             } else {
-                f.render_widget(Paragraph::new("Loading…").block(block(format!(" {}.{} ", tt.schema, tt.table), focused)), grid);
+                let msg = if tt.error.is_some() { "" } else { "Loading…" };
+                f.render_widget(Paragraph::new(msg).block(block(format!(" {}.{} ", tt.schema, tt.table), focused)), grid);
             }
         }
         TabKind::Text(t) => {
@@ -603,11 +611,25 @@ fn draw_popup(f: &mut Frame, app: &mut App) {
             f.render_widget(Clear, r);
             f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).block(block(" Confirm ", true)), r);
         }
-        Popup::Input { title, input, .. } => {
+        Popup::Input { title, input, complete, words, .. } => {
             let r = centered(area, 90, 3);
             f.render_widget(Clear, r);
-            input.set_block(block(format!(" {title} (Enter / Esc) "), true));
+            let hint = if words.is_empty() { "Enter / Esc" } else { "Enter / Esc · Tab complete" };
+            input.set_block(block(format!(" {title} ({hint}) "), true));
             f.render_widget(&*input, r);
+            // 자동완성 목록: 입력칸 바로 아래, 커서 근처
+            if let Some((items, sel, _)) = complete {
+                let w = items.iter().map(|s| s.chars().count()).max().unwrap_or(0) as u16 + 4;
+                let x = (r.x + 1 + input.cursor().1 as u16).min(r.right().saturating_sub(w));
+                let lr = Rect { x, y: r.bottom(), width: w.min(r.width), height: (items.len() as u16 + 2).min(area.bottom().saturating_sub(r.bottom())) };
+                let rows: Vec<ListItem> = items
+                    .iter()
+                    .enumerate()
+                    .map(|(i, s)| ListItem::new(format!(" {s}")).style(if i == *sel { Style::default().bg(Color::Rgb(46, 67, 110)) } else { Style::default() }))
+                    .collect();
+                f.render_widget(Clear, lr);
+                f.render_widget(List::new(rows).block(block("", true)).style(Style::default().bg(Color::Rgb(30, 31, 34))), lr);
+            }
         }
         Popup::Palette(p) => {
             let r = centered(area, 100, 24);

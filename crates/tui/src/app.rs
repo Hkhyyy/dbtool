@@ -199,7 +199,8 @@ pub enum Popup {
     /// sel 은 위쪽 Commands 와 아래 고정 키 목록을 이어서 센다 (Commands 만 바꿀 수 있다)
     Help { sel: usize, scroll: u16, record: Option<bool>, message: Option<String> },
     Message { title: String, text: String },
-    Input { title: String, input: TextArea<'static>, on_ok: Box<dyn FnOnce(&mut App, String)> },
+    /// 한 줄 입력. words = 자동완성 후보 (테이블의 WHERE/ORDER BY 는 컬럼·키워드), complete = 열린 목록 (후보, 고른 것, 바꿀 접두어 글자 수)
+    Input { title: String, input: TextArea<'static>, on_ok: Box<dyn FnOnce(&mut App, String)>, words: Vec<String>, complete: Option<(Vec<String>, usize, usize)> },
     Confirm { text: String, on_yes: Box<dyn FnOnce(&mut App)> },
     Palette(Palette),
     ConnForm(ConnForm),
@@ -519,8 +520,13 @@ impl App {
                         expandable: true,
                     })
                     .collect();
+                // 방금 접속된 Data Source: 접속 실패로 비어 있던 테이블 탭을 다시 불러온다
+                let back: Vec<String> = cs.iter().filter(|c| c.connected && a.conn(&c.config.id).is_some_and(|o| !o.connected)).map(|c| c.config.id.clone()).collect();
                 a.conns = cs;
                 a.tree.clamp();
+                for c in back {
+                    a.retry_failed_tables(&c);
+                }
                 if !a.restored {
                     a.restored = true;
                     if let Some(v) = a.state.store.workspace("tui") {
@@ -1082,11 +1088,15 @@ impl App {
         let st = self.state.clone();
         self.spawn(
             async move {
-                let pk = st.table_detail(target.clone(), schema, table).await.map(|d| d.columns.into_iter().filter(|c| c.is_pk).map(|c| c.name).collect::<Vec<_>>()).unwrap_or_default();
-                let r = st.run_query(target, sqls, Some(500), Some(session)).await.map_err(err);
-                (pk, r)
+                // 같이 보낸다 (접속이 안 되면 둘 다 기다리느라 두 배로 걸린다)
+                let (cols, r) = tokio::join!(st.table_detail(target.clone(), schema, table), st.run_query(target, sqls, Some(500), Some(session)));
+                let cols = cols.map(|d| d.columns).unwrap_or_default();
+                let pk = cols.iter().filter(|c| c.is_pk).map(|c| c.name.clone()).collect::<Vec<_>>();
+                let cols: Vec<(String, String)> = cols.into_iter().map(|c| (c.name, c.data_type)).collect();
+                let r = r.map_err(err);
+                (pk, cols, r)
             },
-            move |a, (pk, r)| {
+            move |a, (pk, cols, r)| {
                 // 검색 캐시에서 연 테이블이면 지금 막 접속한 것: 탐색기 표시를 맞춘다
                 let conn = a.tab_mut(id).map(|t| t.conn.clone()).unwrap_or_default();
                 let fresh = r.is_ok() && a.conn(&conn).is_some_and(|c| !c.connected);
@@ -1115,12 +1125,34 @@ impl App {
                         a.status = format!("{n}{} rows", if more { "+" } else { "" });
                     }
                     Err(e) => {
+                        // 결과가 없으니 빈 표를 보인다 (컬럼은 그대로). 저장 안 한 편집이 있으면 그 표를 그대로 둔다
+                        if !tt.grid.as_ref().is_some_and(|g| g.dirty()) {
+                            let columns = match &tt.grid {
+                                Some(g) => g.result.columns.clone(),
+                                None => cols.into_iter().map(|(name, type_name)| dbtool_core::db::ColumnInfo { name, type_name }).collect(),
+                            };
+                            let empty = dbtool_core::db::QueryResult { columns, rows: vec![], rows_affected: 0, truncated: false, elapsed_ms: 0, has_result_set: true, in_transaction: false };
+                            tt.grid = Some(Grid::new(empty));
+                        }
                         tt.error = Some(e.clone());
                         a.status = e;
                     }
                 }
             },
         );
+    }
+
+    /// 쿼리가 실패한 채로 있는 테이블 탭(저장 안 한 편집 없음)을 다시 불러온다
+    fn retry_failed_tables(&mut self, conn: &str) {
+        let ids: Vec<u64> = self
+            .tabs
+            .iter()
+            .filter(|t| t.conn == conn && !t.stale && matches!(&t.kind, TabKind::Table(tt) if tt.error.is_some() && !tt.running && !tt.grid.as_ref().is_some_and(|g| g.dirty())))
+            .map(|t| t.id)
+            .collect();
+        for id in ids {
+            self.reload_table(id);
+        }
     }
 
     /// 테이블 탭 헤더 정렬: 선택 열로 ORDER BY ↑ → ↓ → 해제 (GUI 의 Sort via ORDER BY)
@@ -1962,10 +1994,28 @@ impl App {
     }
 
     pub fn input(&mut self, title: impl Into<String>, init: &str, on_ok: impl FnOnce(&mut App, String) + 'static) {
+        self.input_words(title, init, vec![], on_ok);
+    }
+
+    /// 자동완성이 되는 한 줄 입력 (치는 단어로 words 를 거른다, ⌃Space / Tab 으로 바로 열기)
+    pub fn input_words(&mut self, title: impl Into<String>, init: &str, words: Vec<String>, on_ok: impl FnOnce(&mut App, String) + 'static) {
         let mut t = TextArea::new(vec![init.to_string()]);
         t.move_cursor(tui_textarea::CursorMove::End);
         t.set_cursor_line_style(ratatui::style::Style::default());
-        self.popup = Some(Popup::Input { title: title.into(), input: t, on_ok: Box::new(on_ok) });
+        self.popup = Some(Popup::Input { title: title.into(), input: t, on_ok: Box::new(on_ok), words, complete: None });
+    }
+
+    /// 테이블 탭의 WHERE / ORDER BY 자동완성 후보: 컬럼 + 자주 쓰는 키워드
+    pub fn table_words(&self, id: u64, order: bool) -> Vec<String> {
+        let Some(t) = self.tabs.iter().find(|t| t.id == id) else { return vec![] };
+        let kind = self.kind_of(&t.conn);
+        let mut w: Vec<String> = match &t.kind {
+            TabKind::Table(tt) => tt.grid.as_ref().map(|g| g.result.columns.iter().map(|c| sql::quote_ident(kind, &c.name)).collect()).unwrap_or_default(),
+            _ => vec![],
+        };
+        let kw: &[&str] = if order { &["ASC", "DESC", "NULLS FIRST", "NULLS LAST"] } else { &["AND", "OR", "NOT", "IS NULL", "IS NOT NULL", "IN", "LIKE", "ILIKE", "BETWEEN", "TRUE", "FALSE", "NOW()"] };
+        w.extend(kw.iter().map(|s| s.to_string()));
+        w
     }
 
     pub fn run_action(&mut self, a: Action) {

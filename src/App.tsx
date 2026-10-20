@@ -344,16 +344,31 @@ export default function App() {
   const loadStale = async (t: Tab) => {
     patch(t.id, { stale: false });
     if (t.kind === "console" && t.txManual) api.setTxMode(t.target, t.id, true).catch((e) => setStatus(String(e)));
-    if (t.kind === "table" && t.edit && t.tableSql) {
-      try {
-        const d = await meta.table(t.target, t.edit.schema, t.edit.table);
-        patch(t.id, { edit: { ...t.edit, pk: d.columns.filter((x) => x.isPk).map((x) => x.name) } });
-      } catch {
-        /* 메타 조회 실패 시 읽기 전용 */
-      }
-      run(t, t.tableSql);
-    }
+    if (t.kind === "table") loadTable(t);
   };
+  /** 테이블 탭의 PK 와 데이터를 같이 불러온다 (접속이 안 되면 둘 다 기다리느라 두 배로 걸린다) */
+  const loadTable = (t: Tab) => {
+    const { edit, tableSql } = t;
+    if (!edit || !tableSql) return;
+    meta
+      .table(t.target, edit.schema, edit.table)
+      .then((d) => updTab(t.id, (x) => (x.edit ? { ...x, edit: { ...x.edit, pk: d.columns.filter((c) => c.isPk).map((c) => c.name) } } : x)))
+      .catch(() => {
+        /* 메타 조회 실패 시 읽기 전용 */
+      });
+    run(t, tableSql);
+  };
+  // 방금 접속된 Data Source: 접속 실패로 비어 있던 테이블 탭을 다시 불러온다
+  const wasConnected = useRef(new Set<string>());
+  useEffect(() => {
+    const now = new Set(conns.filter((c) => c.connected).map((c) => c.id));
+    const back = [...now].filter((id) => !wasConnected.current.has(id));
+    wasConnected.current = now;
+    if (!back.length) return;
+    for (const t of tabsRef.current) {
+      if (t.kind === "table" && back.includes(t.connId) && t.error && !t.running && !t.stale) loadTable(t);
+    }
+  }, [conns]);
   const restoreWs = (ws: any) => {
     if (!ws || !Array.isArray(ws.tabs)) return;
     const okPane = (p: any): boolean => p && (p.t === "leaf" ? Number.isInteger(p.g) && p.g >= 0 && p.g < MAX_PANES : p.t === "split" && okPane(p.a) && okPane(p.b));
@@ -865,7 +880,9 @@ export default function App() {
     if (orderBy) sql += ` ORDER BY ${orderBy}`;
     sql += ";";
     patch(tab.id, { where, orderBy, tableSql: sql });
-    run({ ...tab, tableSql: sql }, sql);
+    // PK 를 못 받은 탭(접속 실패로 열린 탭)은 같이 다시 받는다
+    if (tab.edit.pk.length) run({ ...tab, tableSql: sql }, sql);
+    else loadTable({ ...tab, tableSql: sql });
   };
 
   const fetchMore = async (tab: Tab) => {
