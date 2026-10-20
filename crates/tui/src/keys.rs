@@ -33,8 +33,9 @@ pub const DEFAULT_KEYS: &[(Action, &[&str])] = &[
     (Action::Commit, &["Alt+C"]),
     (Action::Rollback, &["Alt+R"]),
     (Action::ToggleOutput, &["Alt+O"]),
-    (Action::PaneUp, &["Alt+Up"]),
-    (Action::PaneDown, &["Alt+Down"]),
+    // 칸 이동은 ⌃⌥ + 방향키 (⌥↑/↓, ⌃⇧←/→ 는 예전 키)
+    (Action::PaneUp, &["Ctrl+Alt+Up", "Alt+Up"]),
+    (Action::PaneDown, &["Ctrl+Alt+Down", "Alt+Down"]),
     (Action::PaneLeft, &["Ctrl+Alt+Left", "Ctrl+Shift+Left"]),
     (Action::PaneRight, &["Ctrl+Alt+Right", "Ctrl+Shift+Right"]),
     (Action::ShrinkEditor, &["Alt+Shift+Up"]),
