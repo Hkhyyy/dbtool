@@ -785,7 +785,7 @@ impl App {
 
     // ───────── 탭 ─────────
 
-    fn push_tab(&mut self, conn: &str, db: String, title: String, kind: TabKind) -> u64 {
+    pub(crate) fn push_tab(&mut self, conn: &str, db: String, title: String, kind: TabKind) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
         let target = sql::target_id(conn, Some(&db));

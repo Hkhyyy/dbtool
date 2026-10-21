@@ -1,0 +1,80 @@
+# PR 마다 테스트를 돌린다. 실패하면 머지하지 않는다.
+# Rust: 단위 테스트 + 실제 DB(PostgreSQL / MySQL / Redis 서비스 컨테이너)에 붙는 통합 테스트(#[ignore]).
+#   SSL·TLS·Sentinel·Cluster·SSH 터널 테스트는 따로 띄울 서버가 필요해서 뺀다.
+#   GUI(src-tauri)는 Linux 에서 webkit 이 필요해서 Release(macOS) 빌드로 확인한다.
+# Web: vitest + tsc/vite 빌드.
+# 액션은 release.yml 과 같은 커밋 SHA 로 고정.
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U postgres" --health-interval 2s --health-retries 30
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: dbtool
+          MYSQL_DATABASE: shop
+        ports: ["13306:3306"]
+        options: --health-cmd "mysqladmin ping -h 127.0.0.1 -pdbtool" --health-interval 2s --health-retries 60
+      redis:
+        image: redis:7-alpine
+        ports: ["16379:6379"]
+        options: --health-cmd "redis-cli ping" --health-interval 2s --health-retries 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      - name: Unit tests
+        run: cargo test --locked -p dbtool-core -p dbtool-tui -p dbtool-mcp
+
+      - name: Integration tests (PostgreSQL / MySQL / Redis)
+        env:
+          # 테스트는 USER 를 PG 사용자로 쓴다
+          USER: postgres
+          DBTOOL_TEST_PG: localhost:5432:postgres:postgres
+          DBTOOL_TEST_PG_USER: postgres
+        run: cargo test --locked -p dbtool-core -- --ignored --skip ssl --skip tls --skip sentinel --skip cluster --skip ssh_tunnel
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+      - run: pnpm build
