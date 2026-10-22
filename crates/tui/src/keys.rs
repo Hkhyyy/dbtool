@@ -111,11 +111,45 @@ pub fn spec(k: &KeyEvent) -> Option<String> {
 
 /// 화면 표기: macOS 는 ⌃⌥⇧ 기호 (GUI 와 같게. 터미널의 Alt = Option). 저장 형식("Alt+X")은 그대로
 pub fn disp(s: &str) -> String {
+    let s = lower_unshifted(s);
     if cfg!(target_os = "macos") {
         s.replace("Ctrl+", "⌃").replace("Alt+", "⌥").replace("Shift+", "⇧")
     } else {
-        s.to_string()
+        s
     }
+}
+
+/// "Ctrl+K" → "Ctrl+k": Shift 없는 ⌃/⌥+글자 하나는 소문자로 보인다 (대문자는 Shift 를 눌러야 하는 키로 읽힌다)
+fn lower_unshifted(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while !rest.is_empty() {
+        let at_word = out.chars().last().is_none_or(|c| !c.is_alphanumeric());
+        if at_word && (rest.starts_with("Ctrl+") || rest.starts_with("Alt+")) {
+            // 수식키 묶음 (Ctrl+Alt+Shift+ …)
+            let mut chain = 0;
+            let mut shift = false;
+            while let Some(m) = ["Ctrl+", "Alt+", "Shift+"].iter().find(|m| rest[chain..].starts_with(**m)) {
+                shift |= *m == "Shift+";
+                chain += m.len();
+            }
+            out.push_str(&rest[..chain]);
+            rest = &rest[chain..];
+            let key_len = rest.find(|c: char| !c.is_alphanumeric()).unwrap_or(rest.len());
+            let key = &rest[..key_len];
+            if key.len() == 1 && key.chars().all(|c| c.is_ascii_alphabetic()) && !shift {
+                out.push_str(&key.to_ascii_lowercase());
+            } else {
+                out.push_str(key);
+            }
+            rest = &rest[key_len..];
+            continue;
+        }
+        let c = rest.chars().next().unwrap();
+        out.push(c);
+        rest = &rest[c.len_utf8()..];
+    }
+    out
 }
 
 /// 명령 단축키로 쓸 수 있는지: Ctrl/Alt 조합이나 F 키만 (그 밖은 입력·이동 키와 겹친다)
@@ -211,6 +245,20 @@ mod tests {
 
     fn ev(code: KeyCode, m: KeyModifiers) -> KeyEvent {
         KeyEvent::new(code, m)
+    }
+
+    /// 표시: Shift 없는 ⌃/⌥+글자는 소문자 (대문자 = Shift 를 눌러야 하는 것처럼 보이지 않게)
+    #[test]
+    fn labels_lowercase_letters_without_shift() {
+        let mac = cfg!(target_os = "macos");
+        let d = |s: &str| disp(s);
+        assert_eq!(d("Ctrl+K actions"), if mac { "⌃k actions" } else { "Ctrl+k actions" });
+        assert_eq!(d("Ctrl+L new · Alt+E explain · Ctrl+S"), if mac { "⌃l new · ⌥e explain · ⌃s" } else { "Ctrl+l new · Alt+e explain · Ctrl+s" });
+        // Shift 가 있으면 대문자, 글자가 아닌 키는 그대로
+        assert_eq!(d("Alt+Shift+X"), if mac { "⌥⇧X" } else { "Alt+Shift+X" });
+        assert_eq!(d("Ctrl+Enter / Ctrl+Alt+Up / Ctrl+PgDn / F5"), if mac { "⌃Enter / ⌃⌥Up / ⌃PgDn / F5" } else { "Ctrl+Enter / Ctrl+Alt+Up / Ctrl+PgDn / F5" });
+        // 수식키 없는 글자·문장은 그대로
+        assert_eq!(d("D delete · Ctrl+Space"), if mac { "D delete · ⌃Space" } else { "D delete · Ctrl+Space" });
     }
 
     #[test]
