@@ -1228,6 +1228,26 @@ mod tests {
         assert!(h.console_output().iter().any(|l| l.ends_with("> GRANT a TO x")));
     }
 
+    /// 새 버전 알림은 TUI 안에서 바로 업데이트하는 길을 알려준다
+    #[tokio::test]
+    async fn update_badge_points_to_in_app_update() {
+        let mut h = Harness::new().await;
+        h.app.update = Some("9.9.9".into());
+        let s = h.screen(160, 30);
+        let want = format!("v9.9.9 available — {} › Update dbtool & Restart", crate::keys::disp("Ctrl+K"));
+        assert!(s.contains(&want), "{s}");
+    }
+
+    /// 소스에서 빌드한 dbtool-tui(cargo test 도 그렇다)는 바꿔 넣지 않고 다시 빌드하라고 한다
+    #[tokio::test]
+    async fn in_app_update_skips_source_builds() {
+        let mut h = Harness::new().await;
+        h.app.run_action(crate::app::Action::InstallUpdate);
+        h.settle().await;
+        assert!(h.app.status.contains("built from source"), "{}", h.app.status);
+        assert!(!h.app.quit && !h.app.restart);
+    }
+
     /// 콘솔 전체 지우기: ⌘A 로 전부 고르고 ⌫, 또는 ⌃K › Clear Console
     #[tokio::test]
     async fn console_select_all_and_clear() {

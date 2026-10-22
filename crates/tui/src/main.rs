@@ -26,7 +26,7 @@ async fn main() -> std::io::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "-h" || a == "--help") {
         println!(
-            "dbtool-tui {} [--config-dir DIR] [--no-update-check]\n       dbtool-tui --update     download and install the latest release\n\nTerminal UI for dbtool (PostgreSQL / MySQL / Redis). Shares data sources with the dbtool app.\nA new version is checked once a day (off: --no-update-check or DBTOOL_NO_UPDATE_CHECK=1).\nPress F1 inside for this keymap.\n{}",
+            "dbtool-tui {} [--config-dir DIR] [--no-update-check]\n       dbtool-tui --update     download and install the latest release\n\nTerminal UI for dbtool (PostgreSQL / MySQL / Redis). Shares data sources with the dbtool app.\nA new version is checked every hour (off: --no-update-check or DBTOOL_NO_UPDATE_CHECK=1).\nPress F1 inside for this keymap.\n{}",
             env!("CARGO_PKG_VERSION"),
             help::text()
         );
@@ -65,7 +65,13 @@ async fn main() -> std::io::Result<()> {
         let _ = execute!(std::io::stdout(), PopKeyboardEnhancementFlags);
     }
     restore()?;
-    res
+    // 앱 안 업데이트를 마쳤으면 새 실행 파일로 같은 인자를 주고 다시 켠다
+    if res? {
+        let exe = selfupdate::current_exe().ok_or_else(|| std::io::Error::other("cannot find this executable"))?;
+        use std::os::unix::process::CommandExt;
+        return Err(std::process::Command::new(exe).args(&args[1..]).exec());
+    }
+    Ok(())
 }
 
 fn restore() -> std::io::Result<()> {
@@ -73,15 +79,21 @@ fn restore() -> std::io::Result<()> {
     execute!(std::io::stdout(), LeaveAlternateScreen, DisableMouseCapture, DisableBracketedPaste)
 }
 
-async fn run(term: &mut Terminal<CrosstermBackend<std::io::Stdout>>, state: Arc<dbtool_core::app::AppState>, update_dir: Option<std::path::PathBuf>) -> std::io::Result<()> {
+async fn run(term: &mut Terminal<CrosstermBackend<std::io::Stdout>>, state: Arc<dbtool_core::app::AppState>, update_dir: Option<std::path::PathBuf>) -> std::io::Result<bool> {
+    // 돌려주는 값 = 다시 켤지 (앱 안 업데이트를 마쳤다)
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<app::Apply>();
     let mut app = app::App::new(state.clone(), tx.clone());
-    // 새 버전 확인 (하루 한 번, 백그라운드). 실패해도 조용히 넘어간다
+    // 새 버전 확인 (켤 때 + 1시간마다, 백그라운드). 실패해도 조용히 넘어간다
     if let Some(dir) = update_dir {
         let tx = tx.clone();
         tokio::spawn(async move {
-            if let Ok(Some(r)) = dbtool_core::update::check(&dir, env!("CARGO_PKG_VERSION"), false).await {
-                let _ = tx.send(Box::new(move |a: &mut app::App| a.update = Some(r.version)));
+            loop {
+                if let Ok(Some(r)) = dbtool_core::update::check(&dir, env!("CARGO_PKG_VERSION"), false).await {
+                    if tx.send(Box::new(move |a: &mut app::App| a.update = Some(r.version))).is_err() {
+                        break;
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(60 * 60)).await;
             }
         });
     }
@@ -132,5 +144,5 @@ async fn run(term: &mut Terminal<CrosstermBackend<std::io::Stdout>>, state: Arc<
         }
     }
     app.save_workspace();
-    Ok(())
+    Ok(app.restart)
 }

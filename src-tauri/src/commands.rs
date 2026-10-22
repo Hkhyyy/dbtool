@@ -253,7 +253,7 @@ pub struct UpdateInfo {
     latest: Option<dbtool_core::update::Release>,
 }
 
-/// 새 버전 확인. force 가 아니면 하루 한 번만 GitHub 에 묻는다. 개발 빌드(pnpm tauri dev)는 force 일 때만
+/// 새 버전 확인. force 가 아니면 한 시간에 한 번만 GitHub 에 묻는다. 개발 빌드(pnpm tauri dev)는 force 일 때만
 #[tauri::command]
 pub async fn check_update(state: State<'_, AppState>, force: bool) -> AppResult<UpdateInfo> {
     let current = env!("CARGO_PKG_VERSION").to_string();
@@ -262,6 +262,30 @@ pub async fn check_update(state: State<'_, AppState>, force: bool) -> AppResult<
     }
     let latest = dbtool_core::update::check(&state.store.dir(), &current, force).await?;
     Ok(UpdateInfo { current, latest })
+}
+
+/// 새 버전을 받아 지금 앱을 바꿔 넣고 다시 켠다 (Tauri updater: 릴리스의 latest.json + 서명 확인).
+/// 받는 동안 "update-progress" 로 (받은 바이트, 전체 바이트) 를 보낸다
+#[tauri::command]
+pub async fn install_update(app: tauri::AppHandle) -> AppResult<()> {
+    use tauri::Emitter;
+    use tauri_plugin_updater::UpdaterExt;
+    let msg = |e: tauri_plugin_updater::Error| crate::error::AppError::Msg(format!("Update failed: {e}"));
+    let Some(update) = app.updater().map_err(msg)?.check().await.map_err(msg)? else {
+        return Err(crate::error::AppError::Msg("No update to install (the latest release has no in-app update yet — use Download DMG).".into()));
+    };
+    let mut got = 0u64;
+    update
+        .download_and_install(
+            |n, total| {
+                got += n as u64;
+                let _ = app.emit("update-progress", (got, total));
+            },
+            || {},
+        )
+        .await
+        .map_err(msg)?;
+    app.restart()
 }
 
 #[cfg(test)]

@@ -93,7 +93,7 @@ export interface UpdateInfo {
   current: string;
   latest: ReleaseInfo | null;
 }
-/** 시작할 때 새 버전 확인 (Settings 에서 끈다) */
+/** 새 버전 자동 확인 (시작할 때 + 1시간마다. Settings 에서 끈다) */
 const UPDATE_PREF = "dbtool.updateCheck";
 export const updateCheckEnabled = () => {
   try {
@@ -112,6 +112,8 @@ export const setUpdateCheckEnabled = (on: boolean) => {
 
 export const api = {
   checkUpdate: (force = false) => invoke<UpdateInfo>("check_update", { force }),
+  /** 새 버전을 받아 바꿔 넣고 앱을 다시 켠다 (진행은 "update-progress" 이벤트) */
+  installUpdate: () => invoke<void>("install_update"),
   /** 열어 둔 탭·분할 (다시 켜면 그대로) */
   loadWorkspace: () => invoke<unknown>("load_workspace"),
   saveWorkspace: (ws: unknown) => invoke<void>("save_workspace", { ws }),

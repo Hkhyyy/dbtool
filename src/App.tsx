@@ -113,24 +113,27 @@ export default function App() {
     import("@tauri-apps/api/window")
       .then(({ getCurrentWindow }) =>
         getCurrentWindow().onCloseRequested((e) => {
-          const n = tabsRef.current.filter((t) => t.inTx).length;
-          if (n && !confirm(`${n} console(s) have uncommitted changes. Quit and roll them back?`)) e.preventDefault();
-          else saveWs();
+          if (!readyToQuit()) e.preventDefault();
         }),
       )
       .then((u) => (off = u))
       .catch(() => {});
     return () => off?.();
   }, []);
-  // 새 버전 (시작할 때 하루 한 번 확인. 실패는 조용히 넘긴다)
+  // 새 버전 (시작할 때 + 1시간마다 확인. 실패는 조용히 넘긴다)
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
   const [updateOpen, setUpdateOpen] = useState(false);
   useEffect(() => {
-    if (!updateCheckEnabled()) return;
-    api
-      .checkUpdate(false)
-      .then((u) => u.latest && setUpdate(u))
-      .catch(() => {});
+    const check = () => {
+      if (!updateCheckEnabled()) return;
+      api
+        .checkUpdate(false)
+        .then((u) => u.latest && setUpdate(u))
+        .catch(() => {});
+    };
+    check();
+    const t = setInterval(check, 60 * 60 * 1000);
+    return () => clearInterval(t);
   }, []);
   const [conns, setConns] = useState<ConnectionView[]>([]);
   const [tabs, setTabs] = useState<Tab[]>([]);
@@ -172,6 +175,26 @@ export default function App() {
   useEffect(() => {
     refresh();
   }, [refresh]);
+  // dbtool › Check for Updates…
+  useEffect(() => {
+    let off: (() => void) | undefined;
+    listen("check-update", async () => {
+      setStatus("Checking for updates…");
+      try {
+        const u = await api.checkUpdate(true);
+        if (u.latest) {
+          setUpdate(u);
+          setUpdateOpen(true);
+          setStatus("");
+        } else setStatus(`You have the latest version (${u.current}).`);
+      } catch (e) {
+        setStatus(String(e));
+      }
+    })
+      .then((u) => (off = u))
+      .catch(() => {});
+    return () => off?.();
+  }, []);
   // Help 메뉴 › Keymap Reference
   useEffect(() => {
     let off: (() => void) | undefined;
@@ -332,6 +355,13 @@ export default function App() {
       activeIds: activeIdsRef.current.map((id) => ts.findIndex((t) => t.id === id)),
       focused: focusedRef.current,
     });
+  };
+  /** 앱을 닫거나 업데이트로 다시 켜기 전: 커밋 안 한 변경이 있으면 묻고, 열어 둔 탭을 저장한다 */
+  const readyToQuit = () => {
+    const n = tabsRef.current.filter((t) => t.inTx).length;
+    if (n && !confirm(`${n} console(s) have uncommitted changes. Quit and roll them back?`)) return false;
+    saveWs();
+    return true;
   };
   const saveWs = () => {
     if (!restored.current) return;
@@ -1879,7 +1909,7 @@ export default function App() {
           }}
         />
       )}
-      {updateOpen && update?.latest && <UpdateDialog info={update} onClose={() => setUpdateOpen(false)} />}
+      {updateOpen && update?.latest && <UpdateDialog info={update} onClose={() => setUpdateOpen(false)} beforeInstall={readyToQuit} />}
       {keymapOpen && <KeymapDialog onClose={() => setKeymapOpen(false)} onEdit={() => (setKeymapOpen(false), setSettingsOpen("keymap"))} />}
       {se && (
         <SearchEverywhere
@@ -2033,7 +2063,7 @@ function SettingsDialog({ onClose, onUpdate, initialPage = "appearance" }: { onC
                     setUpdateCheckEnabled(e.target.checked);
                   }}
                 />
-                Check for updates on startup
+                Check for updates automatically
               </label>
               <button onClick={checkNow}>Check Now</button>
             </div>

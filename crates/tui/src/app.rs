@@ -261,6 +261,8 @@ pub enum Action {
     SplitGrow,
     ExplorerNarrower,
     ExplorerWider,
+    CheckUpdate,
+    InstallUpdate,
     Help,
     Quit,
 }
@@ -316,6 +318,8 @@ pub const ACTIONS: &[(Action, &str, &str)] = &[
     (Action::CycleFocus, "Cycle Focus (explorer → editor → results)", ""),
     (Action::Palette, "Actions Palette", ""),
     (Action::TrustSshHost, "Trust SSH Host Key (after checking its fingerprint)", ""),
+    (Action::CheckUpdate, "Check for Updates", ""),
+    (Action::InstallUpdate, "Update dbtool & Restart (download the latest release)", ""),
     (Action::Help, "Keymap", ""),
     (Action::Quit, "Quit", ""),
 ];
@@ -384,6 +388,8 @@ pub struct App {
     pub popup: Option<Popup>,
     pub status: String,
     pub quit: bool,
+    /// 끝낸 뒤 다시 켠다 (앱 안 업데이트를 마친 뒤)
+    pub restart: bool,
     /// 화면 분할 (최대 4칸)
     pub panes: crate::panes::Pane,
     /// 칸마다 보이는 탭
@@ -481,6 +487,7 @@ impl App {
             completion_loading: HashSet::new(),
             keys: crate::keys::Keymap::new(&user_keys),
             update: None,
+            restart: false,
             restored: false,
             saved_ws: String::new(),
             next_id: 1,
@@ -2278,6 +2285,15 @@ impl App {
             Action::PaneLeft => self.focus_pane(SplitDir::Right, true),
             Action::PaneRight => self.focus_pane(SplitDir::Right, false),
             Action::Help => self.popup = Some(Popup::Help { sel: 0, scroll: 0, record: None, message: None }),
+            Action::CheckUpdate => self.check_update(),
+            Action::InstallUpdate => {
+                let n = self.pending_tabs(None).len();
+                if n > 0 {
+                    self.popup = Some(Popup::Confirm { text: format!("{n} console(s) have uncommitted changes. Roll them back, update and restart?"), on_yes: Box::new(|a| a.install_update()) });
+                } else {
+                    self.install_update();
+                }
+            }
             Action::Quit => {
                 let n = self.pending_tabs(None).len();
                 if n > 0 {
@@ -2408,6 +2424,46 @@ impl App {
     }
 
     /// 커서 위치로 후보를 다시 계산한다. explicit = Ctrl+Space (아니면 '.' 입력·목록이 열린 채 타이핑)
+    /// 지금 바로 새 버전을 확인한다 (⌃K › Check for Updates)
+    fn check_update(&mut self) {
+        self.status = "Checking for updates…".into();
+        let dir = self.state.store.dir();
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            let r = dbtool_core::update::check(&dir, env!("CARGO_PKG_VERSION"), true).await;
+            let _ = tx.send(Box::new(move |a: &mut App| match r {
+                Ok(Some(r)) => {
+                    a.status = format!("dbtool {} is available — {} › Update dbtool & Restart", r.version, a.keys.label(Action::Palette));
+                    a.update = Some(r.version);
+                }
+                Ok(None) => a.status = format!("You have the latest version ({}).", env!("CARGO_PKG_VERSION")),
+                Err(e) => a.status = e.to_string(),
+            }));
+        });
+    }
+
+    /// 최신 릴리스를 받아 바꿔 넣고, 끝나면 다시 켠다 (열어 둔 탭은 끝낼 때 저장된다)
+    fn install_update(&mut self) {
+        self.status = "Updating dbtool… (downloading)".into();
+        let tx = self.tx.clone();
+        tokio::spawn(async move {
+            let r = crate::selfupdate::install(true).await;
+            let _ = tx.send(Box::new(move |a: &mut App| match r {
+                Ok(crate::selfupdate::Outcome::Installed { version, .. }) => {
+                    a.status = format!("dbtool {version} installed — restarting…");
+                    a.restart = true;
+                    a.quit = true;
+                }
+                Ok(crate::selfupdate::Outcome::UpToDate) => {
+                    a.update = None;
+                    a.status = format!("You have the latest version ({}).", env!("CARGO_PKG_VERSION"));
+                }
+                Ok(crate::selfupdate::Outcome::Skipped(why)) => a.status = why,
+                Err(e) => a.status = format!("Update failed: {e}"),
+            }));
+        });
+    }
+
     pub fn update_completion(&mut self, explicit: bool) {
         let Some(t) = self.tabs.get(self.active) else { return };
         let kind = self.kind_of(&t.conn);
