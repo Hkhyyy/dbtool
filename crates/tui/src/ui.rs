@@ -255,6 +255,10 @@ fn draw_panes(f: &mut Frame, app: &mut App, p: &crate::panes::Pane, area: Rect, 
             path.push(true);
             draw_panes(f, app, b, rb, path, fg);
             path.pop();
+            // 좌우: 오른쪽 칸 탭 바 첫 칸(여백)에 구분선 (두 칸의 탭 바가 한 줄로 이어져 보이지 않게)
+            if *dir == SplitDir::Right && rb.width > 0 {
+                f.buffer_mut().set_string(rb.x, rb.y, "┃", Style::default().fg(DIM));
+            }
         }
     }
 }
