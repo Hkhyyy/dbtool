@@ -1850,7 +1850,10 @@ impl App {
     }
 
     pub fn palette_tabs(&mut self) {
-        let items = self.mru.iter().filter_map(|id| self.tabs.iter().find(|t| t.id == *id)).map(|t| PItem { label: t.title.clone(), hint: t.db.clone(), action: PAction::Tab(t.id) }).collect();
+        // 최근에 본 탭 → 아직 안 본 탭(되살린 뒤 고르지 않은 탭) 순
+        let seen = self.mru.iter().filter_map(|id| self.tabs.iter().find(|t| t.id == *id));
+        let rest = self.tabs.iter().filter(|t| !self.mru.contains(&t.id));
+        let items = seen.chain(rest).map(|t| PItem { label: t.title.clone(), hint: t.db.clone(), action: PAction::Tab(t.id) }).collect();
         self.popup = Some(Popup::Palette(Palette { title: "Recent Tabs".into(), input: TextArea::default(), items, sel: 1, loading: 0, cache: Default::default() }));
     }
 

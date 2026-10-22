@@ -374,7 +374,7 @@ fn input_complete(input: &tui_textarea::TextArea, words: &[String], force: bool)
     (!items.is_empty()).then_some((items, 0, n))
 }
 
-/// 한 글자 명령(a 행 추가, d 삭제 …)을 쓰는 화면용: ⌘←/→ 는 Home/End (터미널이 ⌃A/⌃E 로 보내기도 한다),
+/// 한 글자 명령(a 행 추가, d 삭제 …)을 쓰는 화면용: ⌘←/→ 는 Home/End (터미널이 ⌃A/⌃E 로 보내기도 한다), ⌘C 는 y(복사),
 /// 그 밖에 ⌃/⌥/⌘ 이 같이 눌린 글자는 명령으로 받지 않는다 (⌘← 가 ⌃A 로 와서 행이 추가되던 문제)
 fn plain(k: KeyEvent) -> Option<KeyEvent> {
     let m = k.modifiers;
@@ -384,6 +384,8 @@ fn plain(k: KeyEvent) -> Option<KeyEvent> {
         KeyCode::Char('e') if m == KeyModifiers::CONTROL => to(KeyCode::End),
         KeyCode::Left if m.contains(KeyModifiers::SUPER) => to(KeyCode::Home),
         KeyCode::Right if m.contains(KeyModifiers::SUPER) => to(KeyCode::End),
+        // ⌘C = y (복사)
+        KeyCode::Char('c') if m == KeyModifiers::SUPER => to(KeyCode::Char('y')),
         // ⌃Z = 편집 되돌리기
         KeyCode::Char('z') if m == KeyModifiers::CONTROL => Some(k),
         KeyCode::Char(_) if m.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER) => None,
@@ -1154,5 +1156,30 @@ mod tests {
         h.key("Tab");
         h.key("Enter");
         assert_eq!(h.table(id).where_, "bank_code = '002' AND");
+    }
+
+    /// ⌘C 는 y 처럼 셀 값을 복사한다 (터미널이 ⌘C 를 넘겨줄 때)
+    #[tokio::test]
+    async fn cmd_c_copies_cell() {
+        let mut h = Harness::new().await;
+        h.table_tab("fee_rule", &["idx", "fee_type"], &[&["7", "PERCENT"]], &["idx"]);
+        h.key("Right");
+        h.key("Cmd+c");
+        assert_eq!(h.app.status, "Copied: PERCENT");
+    }
+
+    /// Recent Tabs 에는 열린 탭이 다 나온다 (되살린 뒤 아직 안 본 탭도). 최근에 본 탭이 먼저
+    #[tokio::test]
+    async fn recent_tabs_lists_every_open_tab() {
+        let mut h = Harness::new().await;
+        let a = h.table_tab("a", &["x"], &[], &[]);
+        h.table_tab("b", &["x"], &[], &[]);
+        h.app.restore_table("test", "postgres".into(), "public".into(), "c".into(), "table".into(), String::new(), String::new());
+        h.app.activate(0);
+        h.app.palette_tabs();
+        let Some(crate::app::Popup::Palette(p)) = &h.app.popup else { panic!("no palette") };
+        let labels: Vec<_> = p.items.iter().map(|i| i.label.as_str()).collect();
+        assert_eq!(labels, ["a", "b", "c"]);
+        assert!(matches!(p.items[0].action, crate::app::PAction::Tab(id) if id == a));
     }
 }

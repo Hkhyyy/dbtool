@@ -262,7 +262,7 @@ Ctrl+Enter is only distinguishable in terminals that support the kitty keyboard 
 | `n / e / D` | New / edit / remove data source |
 | `c / X` | Connect / disconnect |
 | `r / F5` | Refresh |
-| `y` | Copy name (OSC 52 clipboard) |
+| `y` `⌘C` | Copy name (OSC 52 clipboard) |
 | `Tab / Esc` | Go to the open tab |
 
 #### Query console
@@ -301,7 +301,7 @@ Ctrl+Enter is only distinguishable in terminals that support the kitty keyboard 
 | `w / o` | Edit WHERE / ORDER BY |
 | `r` | Reload |
 | `x` | Export to CSV |
-| `y` | Copy cell value |
+| `y` `⌘C` | Copy cell value |
 | `Esc` | Back |
 
 #### Redis browser (Medis style)
