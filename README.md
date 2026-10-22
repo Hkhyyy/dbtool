@@ -161,7 +161,7 @@ Command shortcuts can be changed in **Settings › Keymap** (or **Edit Keymap…
 
 | macOS | Action |
 |---|---|
-| `⌘↩` | Execute (statement at caret, or the selection) |
+| `⌘↩` | Execute: asks what to run when there are several statements (⚙ Query Execution Settings), or the selection |
 | `⌘F2` | Cancel running statement |
 | `⌥⌘E` | Query history |
 | `⌃Space` | Code completion |
@@ -233,7 +233,7 @@ Ctrl+Enter is only distinguishable in terminals that support the kitty keyboard 
 | `Alt+Shift+Right` | Move Split Divider Right / Down |
 | `Alt+[` | Database Explorer Narrower |
 | `Alt+]` | Database Explorer Wider |
-| `F5 / Ctrl+Enter / Alt+Enter` | Execute |
+| `F5 / Ctrl+Enter / Alt+Enter` | Execute (asks what to run — see Query Execution Settings) |
 | `Alt+E` | Explain Plan |
 | `Ctrl+Space` | Code Completion |
 | `Ctrl+C` | Cancel Running Statement |
@@ -262,7 +262,7 @@ Ctrl+Enter is only distinguishable in terminals that support the kitty keyboard 
 | `n / e / D` | New / edit / remove data source |
 | `c / X` | Connect / disconnect |
 | `r / F5` | Refresh |
-| `y` | Copy name (OSC 52 clipboard) |
+| `y` `⌘C` | Copy name (OSC 52 clipboard) |
 | `Tab / Esc` | Go to the open tab |
 
 #### Query console
@@ -273,6 +273,7 @@ Ctrl+Enter is only distinguishable in terminals that support the kitty keyboard 
 | `Shift+Tab` | Go to the result grid (Esc / Tab returns) |
 | `Esc` | Go to the explorer |
 | `Ctrl+U / Ctrl+R` | Undo / redo (editor) |
+| `⌘A  ⌫` | Select all, then delete (or Ctrl+K › Clear Console) |
 | `mouse drag` | Drag the editor/result border to resize |
 
 #### Tabs & split (mouse)
@@ -301,7 +302,7 @@ Ctrl+Enter is only distinguishable in terminals that support the kitty keyboard 
 | `w / o` | Edit WHERE / ORDER BY |
 | `r` | Reload |
 | `x` | Export to CSV |
-| `y` | Copy cell value |
+| `y` `⌘C` | Copy cell value |
 | `Esc` | Back |
 
 #### Redis browser (Medis style)

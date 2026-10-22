@@ -10,7 +10,7 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
         ("n / e / D", "New / edit / remove data source"),
         ("c / X", "Connect / disconnect"),
         ("r / F5", "Refresh"),
-        ("y", "Copy name (OSC 52 clipboard)"),
+        ("y  ⌘C", "Copy name (OSC 52 clipboard)"),
         ("Tab / Esc", "Go to the open tab"),
     ]),
     ("Query console", &[
@@ -18,6 +18,7 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
         ("Shift+Tab", "Go to the result grid (Esc / Tab returns)"),
         ("Esc", "Go to the explorer"),
         ("Ctrl+U / Ctrl+R", "Undo / redo (editor)"),
+        ("⌘A  ⌫", "Select all, then delete (or Ctrl+K › Clear Console)"),
         ("mouse drag", "Drag the editor/result border to resize"),
     ]),
     ("Tabs & split (mouse)", &[
@@ -40,7 +41,7 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
         ("w / o", "Edit WHERE / ORDER BY"),
         ("r", "Reload"),
         ("x", "Export to CSV"),
-        ("y", "Copy cell value"),
+        ("y  ⌘C", "Copy cell value"),
         ("Esc", "Back"),
     ]),
     ("Redis browser (Medis style)", &[

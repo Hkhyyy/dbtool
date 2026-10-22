@@ -285,6 +285,8 @@ pub fn on_event(app: &mut App, ev: Event) {
 
 /// ⌘V / 터미널 붙여넣기: 열린 입력칸(한 줄 입력·팔레트·Data Source 폼)이 있으면 거기로, 아니면 콘솔 에디터로
 fn paste(app: &mut App, s: String) {
+    // 터미널(xterm.js, tmux 등)은 줄바꿈을 \r 로 보내기도 한다. \r 이 편집기에 남으면 화면이 깨진다
+    let s = s.replace("\r\n", "\n").replace('\r', "\n");
     // 한 줄 입력칸에는 줄바꿈을 공백으로
     let one = || s.trim_end_matches(['\r', '\n']).replace("\r\n", " ").replace(['\r', '\n'], " ");
     match &mut app.popup {
@@ -374,7 +376,7 @@ fn input_complete(input: &tui_textarea::TextArea, words: &[String], force: bool)
     (!items.is_empty()).then_some((items, 0, n))
 }
 
-/// 한 글자 명령(a 행 추가, d 삭제 …)을 쓰는 화면용: ⌘←/→ 는 Home/End (터미널이 ⌃A/⌃E 로 보내기도 한다),
+/// 한 글자 명령(a 행 추가, d 삭제 …)을 쓰는 화면용: ⌘←/→ 는 Home/End (터미널이 ⌃A/⌃E 로 보내기도 한다), ⌘C 는 y(복사),
 /// 그 밖에 ⌃/⌥/⌘ 이 같이 눌린 글자는 명령으로 받지 않는다 (⌘← 가 ⌃A 로 와서 행이 추가되던 문제)
 fn plain(k: KeyEvent) -> Option<KeyEvent> {
     let m = k.modifiers;
@@ -384,6 +386,8 @@ fn plain(k: KeyEvent) -> Option<KeyEvent> {
         KeyCode::Char('e') if m == KeyModifiers::CONTROL => to(KeyCode::End),
         KeyCode::Left if m.contains(KeyModifiers::SUPER) => to(KeyCode::Home),
         KeyCode::Right if m.contains(KeyModifiers::SUPER) => to(KeyCode::End),
+        // ⌘C = y (복사)
+        KeyCode::Char('c') if m == KeyModifiers::SUPER => to(KeyCode::Char('y')),
         // ⌃Z = 편집 되돌리기
         KeyCode::Char('z') if m == KeyModifiers::CONTROL => Some(k),
         KeyCode::Char(_) if m.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER) => None,
@@ -535,6 +539,9 @@ fn editor_key(app: &mut App, k: KeyEvent) {
             app.focus = Focus::Tree;
         }
         KeyCode::BackTab => app.focus = Focus::Grid,
+        // ⌘A = 전부 고르기 (⌫ 로 지운다). 그 밖의 ⌘+글자는 글자로 넣지 않는다
+        KeyCode::Char('a') if k.modifiers == KeyModifiers::SUPER => c.editor.select_all(),
+        KeyCode::Char(_) if k.modifiers.contains(KeyModifiers::SUPER) => {}
         _ => {
             c.editor.input(k);
         }
@@ -1155,4 +1162,86 @@ mod tests {
         h.key("Enter");
         assert_eq!(h.table(id).where_, "bank_code = '002' AND");
     }
+
+    /// ⌘C 는 y 처럼 셀 값을 복사한다 (터미널이 ⌘C 를 넘겨줄 때)
+    #[tokio::test]
+    async fn cmd_c_copies_cell() {
+        let mut h = Harness::new().await;
+        h.table_tab("fee_rule", &["idx", "fee_type"], &[&["7", "PERCENT"]], &["idx"]);
+        h.key("Right");
+        h.key("Cmd+c");
+        assert_eq!(h.app.status, "Copied: PERCENT");
+    }
+
+    /// Recent Tabs 에는 열린 탭이 다 나온다 (되살린 뒤 아직 안 본 탭도). 최근에 본 탭이 먼저
+    #[tokio::test]
+    async fn recent_tabs_lists_every_open_tab() {
+        let mut h = Harness::new().await;
+        let a = h.table_tab("a", &["x"], &[], &[]);
+        h.table_tab("b", &["x"], &[], &[]);
+        h.app.restore_table("test", "postgres".into(), "public".into(), "c".into(), "table".into(), String::new(), String::new());
+        h.app.activate(0);
+        h.app.palette_tabs();
+        let Some(crate::app::Popup::Palette(p)) = &h.app.popup else { panic!("no palette") };
+        let labels: Vec<_> = p.items.iter().map(|i| i.label.as_str()).collect();
+        assert_eq!(labels, ["a", "b", "c"]);
+        assert!(matches!(p.items[0].action, crate::app::PAction::Tab(id) if id == a));
+    }
+
+    /// 터미널은 붙여넣기 줄바꿈을 \r 로 보내기도 한다 (xterm.js, tmux): 줄은 그대로, \r 은 남지 않는다
+    #[tokio::test]
+    async fn paste_into_console_keeps_lines() {
+        let mut h = Harness::new().await;
+        h.console_tab();
+        h.paste("BEGIN;\r\r-- 1. 스키마\rGRANT USAGE\r\n  ON x;\rCOMMIT;\r");
+        assert_eq!(h.console_text(), "BEGIN;\n\n-- 1. 스키마\nGRANT USAGE\n  ON x;\nCOMMIT;\n");
+    }
+
+    /// ⌃Enter: 문장이 여럿이면 무엇을 실행할지 묻는다 (DataGrip). 고른 것부터 실행한다
+    #[tokio::test]
+    async fn execute_asks_what_to_run() {
+        let mut h = Harness::new().await;
+        h.console_with("BEGIN;\nGRANT a TO x;\n\nGRANT b TO x;\nCOMMIT;", 3, 2);
+        h.key("F5");
+        let Some(crate::app::Popup::Palette(p)) = &h.app.popup else { panic!("no chooser") };
+        let labels: Vec<_> = p.items.iter().map(|i| i.label.as_str()).collect();
+        assert_eq!(labels, ["GRANT b TO x", "All statements (4)", "From caret to end"]);
+        h.key("Down");
+        h.key("Down");
+        h.key("Enter");
+        h.settle().await;
+        // 접속이 없어 첫 문장에서 멈춘다: 고른 범위의 첫 문장이 GRANT b
+        let out = h.console_output();
+        assert!(out.iter().any(|l| l.ends_with("> GRANT b TO x")), "{out:?}");
+        assert!(!out.iter().any(|l| l.contains("BEGIN")), "{out:?}");
+    }
+
+    /// 실행 설정을 Smallest 로 바꾸면 묻지 않고 커서 문장만
+    #[tokio::test]
+    async fn execute_smallest_runs_caret_statement() {
+        let mut h = Harness::new().await;
+        h.app.exec.inside = crate::exec::Inside::Smallest;
+        h.console_with("BEGIN;\nGRANT a TO x;\n\nGRANT b TO x;\nCOMMIT;", 1, 2);
+        h.key("F5");
+        assert!(h.app.popup.is_none());
+        h.settle().await;
+        assert!(h.console_output().iter().any(|l| l.ends_with("> GRANT a TO x")));
+    }
+
+    /// 콘솔 전체 지우기: ⌘A 로 전부 고르고 ⌫, 또는 ⌃K › Clear Console
+    #[tokio::test]
+    async fn console_select_all_and_clear() {
+        let mut h = Harness::new().await;
+        h.console_with("select 1;\nselect 2;", 1, 3);
+        h.key("Cmd+a");
+        h.key("Backspace");
+        assert_eq!(h.console_text(), "");
+        h.paste("select 3;");
+        h.app.run_action(crate::app::Action::ClearConsole);
+        assert_eq!(h.console_text(), "");
+        // 모르는 ⌘ 조합은 글자를 넣지 않는다
+        h.key("Cmd+x");
+        assert_eq!(h.console_text(), "");
+    }
 }
+
