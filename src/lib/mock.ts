@@ -119,6 +119,7 @@ const handlers: Record<string, (a: any) => unknown> = {
   pick_import_file: () => ["~ update \"[PROD] shop_app\": turns Read-only OFF"],
   import_picked: () => ({ added: 0, updated: 1 }),
   save_keymap: () => null,
+  install_update: () => new Promise((_, rej) => setTimeout(() => rej("Update failed: mock"), 800)),
   check_update: () => ({
     current: "0.1.0",
     latest: { version: "0.1.2", url: "https://github.com/Hkhyyy/dbtool/releases/tag/v0.1.2", notes: "## dbtool 0.1.2\n- something new", assets: [{ name: "dbtool_0.1.2_aarch64.dmg", url: "https://example.com/dbtool_0.1.2_aarch64.dmg" }] },

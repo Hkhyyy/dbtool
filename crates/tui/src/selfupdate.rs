@@ -26,9 +26,11 @@ fn trusted_url(url: &str) -> bool {
     url.starts_with(&format!("https://github.com/{}/releases/download/", update::REPO))
 }
 
-/// curl: HTTPS 만 (리다이렉트 포함)
-fn download(url: &str, to: &Path) -> std::io::Result<()> {
-    run(std::process::Command::new("curl").args(["-fL", "--proto", "=https", "--proto-redir", "=https", "--tlsv1.2", "--progress-bar", "-o"]).arg(to).arg(url))
+/// curl: HTTPS 만 (리다이렉트 포함). quiet = TUI 화면 안에서 (진행 막대를 찍지 않는다)
+fn download(url: &str, to: &Path, quiet: bool) -> std::io::Result<()> {
+    let mut cmd = std::process::Command::new("curl");
+    cmd.args(["-fL", "--proto", "=https", "--proto-redir", "=https", "--tlsv1.2", if quiet { "-sS" } else { "--progress-bar" }, "-o"]).arg(to).arg(url);
+    if quiet { run_quiet(&mut cmd) } else { run(&mut cmd) }
 }
 
 /// SHA256SUMS 에서 파일 이름의 해시
@@ -52,30 +54,54 @@ fn run(cmd: &mut std::process::Command) -> std::io::Result<()> {
     if st.success() { Ok(()) } else { Err(err(format!("{cmd:?} failed ({st})"))) }
 }
 
-pub async fn run_update() -> std::io::Result<()> {
+/// 출력을 화면에 내지 않고 실행한다 (실패하면 stderr 를 오류로)
+fn run_quiet(cmd: &mut std::process::Command) -> std::io::Result<()> {
+    let out = cmd.stdin(std::process::Stdio::null()).output()?;
+    if out.status.success() { Ok(()) } else { Err(err(format!("{} failed: {}", cmd.get_program().to_string_lossy(), String::from_utf8_lossy(&out.stderr).trim()))) }
+}
+
+/// 업데이트 결과
+pub enum Outcome {
+    UpToDate,
+    /// 바꿔 넣지 않은 이유 (소스 빌드, 이 플랫폼용 파일 없음 …)
+    Skipped(String),
+    Installed { version: String, paths: Vec<PathBuf> },
+}
+
+/// 소스에서 빌드했으면 그 안내
+fn source_build_note(exe: &Path) -> Option<String> {
+    from_source(exe).then(|| format!("This dbtool-tui was built from source ({}). Update it with: git pull && cargo build --release -p dbtool-tui -p dbtool-mcp", exe.display()))
+}
+
+/// 최신 릴리스를 받아 지금 실행 파일 자리에 바꿔 넣는다. quiet = TUI 화면 안에서 (아무것도 찍지 않는다)
+pub async fn install(quiet: bool) -> std::io::Result<Outcome> {
     let cur = env!("CARGO_PKG_VERSION");
     let exe = current_exe().ok_or_else(|| err("cannot find this executable"))?;
-    if from_source(&exe) {
-        println!("This dbtool-tui was built from source:\n  {}\nUpdate it with:\n  git pull && cargo build --release -p dbtool-tui -p dbtool-mcp", exe.display());
-        return Ok(());
+    if let Some(note) = source_build_note(&exe) {
+        return Ok(Outcome::Skipped(note));
     }
     let rel = update::latest_release().await.map_err(err)?;
     if !update::is_newer(cur, &rel.version) {
-        println!("dbtool-tui {cur} is up to date.");
-        return Ok(());
+        return Ok(Outcome::UpToDate);
     }
-    let Some(asset) = ASSET_SUFFIX.and_then(|s| rel.asset("dbtool-cli_", s)) else {
-        println!("dbtool {} is available, but there is no prebuilt binary for this platform.\nSee {}", rel.version, rel.url);
-        return Ok(());
+    let Some(asset) = ASSET_SUFFIX.and_then(|s| rel.asset("dbtool-cli_", s)).cloned() else {
+        return Ok(Outcome::Skipped(format!("dbtool {} is available, but there is no prebuilt binary for this platform. See {}", rel.version, rel.url)));
     };
-    let Some(sums) = rel.assets.iter().find(|a| a.name == "SHA256SUMS") else {
-        println!("dbtool {} has no SHA256SUMS file, so it can't be verified. Download it yourself from {}", rel.version, rel.url);
-        return Ok(());
+    let Some(sums) = rel.assets.iter().find(|a| a.name == "SHA256SUMS").cloned() else {
+        return Ok(Outcome::Skipped(format!("dbtool {} has no SHA256SUMS file, so it can't be verified. Download it yourself from {}", rel.version, rel.url)));
     };
     if !trusted_url(&asset.url) || !trusted_url(&sums.url) {
         return Err(err(format!("refusing to download from an unexpected address: {}", asset.url)));
     }
-    println!("Updating dbtool-tui {cur} → {} …", rel.version);
+    if !quiet {
+        println!("Updating dbtool-tui {cur} → {} …", rel.version);
+    }
+    let paths = tokio::task::spawn_blocking(move || replace(&exe, &asset, &sums, quiet)).await.map_err(err)??;
+    Ok(Outcome::Installed { version: rel.version, paths })
+}
+
+/// 받아서 검증하고 exe 와 같은 폴더의 dbtool-tui·dbtool-mcp 를 바꿔 넣는다
+fn replace(exe: &Path, asset: &update::Asset, sums: &update::Asset, quiet: bool) -> std::io::Result<Vec<PathBuf>> {
     // 임시 폴더는 새로 만든다 (이미 있으면 남이 만든 것일 수 있어 쓰지 않는다)
     let tmp = std::env::temp_dir().join(format!("dbtool-update-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)));
     std::fs::create_dir(&tmp)?;
@@ -87,16 +113,18 @@ pub async fn run_update() -> std::io::Result<()> {
     let tgz = tmp.join("cli.tar.gz");
     let result = (|| -> std::io::Result<Vec<PathBuf>> {
         let sums_file = tmp.join("SHA256SUMS");
-        download(&sums.url, &sums_file)?;
-        download(&asset.url, &tgz)?;
+        download(&sums.url, &sums_file, quiet)?;
+        download(&asset.url, &tgz, quiet)?;
         // 받은 파일이 릴리스에 올라간 것과 같은지
         let want = expected_sha(&std::fs::read_to_string(&sums_file)?, &asset.name).ok_or_else(|| err(format!("{} is not listed in SHA256SUMS", asset.name)))?;
         let got = sha256_of(&tgz)?;
         if want != got {
             return Err(err(format!("checksum mismatch for {} (expected {want}, got {got}) — not installed", asset.name)));
         }
-        println!("  checksum OK ({got})");
-        run(std::process::Command::new("tar").arg("-xzf").arg(&tgz).arg("-C").arg(&tmp))?;
+        if !quiet {
+            println!("  checksum OK ({got})");
+        }
+        run_quiet(std::process::Command::new("tar").arg("-xzf").arg(&tgz).arg("-C").arg(&tmp))?;
         // 지금 실행 파일과 같은 폴더에 바꿔 넣는다 (임시 이름으로 복사 → rename 이라 도중에 깨지지 않는다)
         let dir = exe.parent().ok_or_else(|| err("no install folder"))?;
         let mut done = vec![];
@@ -119,11 +147,20 @@ pub async fn run_update() -> std::io::Result<()> {
         Ok(done)
     })();
     let _ = std::fs::remove_dir_all(&tmp);
-    let done = result?;
-    for p in &done {
-        println!("  updated {}", p.display());
+    result
+}
+
+pub async fn run_update() -> std::io::Result<()> {
+    match install(false).await? {
+        Outcome::UpToDate => println!("dbtool-tui {} is up to date.", env!("CARGO_PKG_VERSION")),
+        Outcome::Skipped(why) => println!("{why}"),
+        Outcome::Installed { version, paths } => {
+            for p in &paths {
+                println!("  updated {}", p.display());
+            }
+            println!("dbtool {version} installed. Restart dbtool-tui (and your MCP client, if it runs dbtool-mcp).");
+        }
     }
-    println!("dbtool {} installed. Restart dbtool-tui (and your MCP client, if it runs dbtool-mcp).", rel.version);
     Ok(())
 }
 

@@ -13,11 +13,14 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             // 기본 메뉴의 "Close Window(⌘W)"가 탭 닫기 단축키를 가로채지 않도록 메뉴를 직접 구성
             use tauri::menu::{MenuBuilder, SubmenuBuilder};
+            let check_updates = tauri::menu::MenuItemBuilder::with_id("check-update", "Check for Updates…").build(app)?;
             let app_menu = SubmenuBuilder::new(app, "dbtool")
                 .about(None)
+                .item(&check_updates)
                 .separator()
                 .hide()
                 .hide_others()
@@ -40,9 +43,11 @@ pub fn run() {
             let help_menu = SubmenuBuilder::new(app, "Help").item(&keymap).build()?;
             app.set_menu(MenuBuilder::new(app).items(&[&app_menu, &edit_menu, &window_menu, &help_menu]).build()?)?;
             app.on_menu_event(|app, ev| {
+                use tauri::Emitter;
                 if ev.id() == "keymap" {
-                    use tauri::Emitter;
                     let _ = app.emit("open-keymap", ());
+                } else if ev.id() == "check-update" {
+                    let _ = app.emit("check-update", ());
                 }
             });
 
@@ -108,6 +113,7 @@ pub fn run() {
             commands::save_workspace,
             commands::save_keymap,
             commands::check_update,
+            commands::install_update,
         ])
         .run(app_context())
         .expect("error while running tauri application");

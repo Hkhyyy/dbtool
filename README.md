@@ -27,10 +27,10 @@ A new release is published automatically every time `main` changes.
 
 ### Updates
 
-Both apps check GitHub for a newer release once a day (one request to the GitHub API) and tell you when there is one.
+Both apps check GitHub for a newer release when they start and every hour while they run (one request to the GitHub API) and tell you when there is one. You can also check right away.
 
-- **GUI** — a `⬆ vX.Y.Z available` button appears in the status bar. It shows the release notes and **Download** fetches the new DMG (drag it into Applications to replace the old app). Turn the check off or run it now in **Settings › Appearance › Updates**.
-- **TUI** — the status line shows `⬆ vX.Y.Z available`. Quit and run `dbtool-tui --update` to download the release and replace `dbtool-tui` and `dbtool-mcp` in place. A TUI built from source (`target/release`) is not checked; update it with `git pull` and `cargo build`.
+- **GUI** — a `⬆ vX.Y.Z available` button appears in the status bar. It shows the release notes. **Update & Restart** downloads the new version, checks its signature, replaces the app and opens it again with your tabs. **Download DMG** is the manual fallback. Check now from **dbtool › Check for Updates…** or **Settings › Appearance › Updates**, where you can also turn the automatic check off. In-app updates start from 0.1.9: install that one from the DMG once.
+- **TUI** — the status line shows `⬆ vX.Y.Z available`. Run **⌃K › Update dbtool & Restart** to download the release, verify it against `SHA256SUMS`, replace `dbtool-tui` and `dbtool-mcp` in place and restart with your tabs. **⌃K › Check for Updates** checks now. From a shell, `dbtool-tui --update` does the same. A TUI built from source (`target/release`) is not checked or replaced; update it with `git pull` and `cargo build`.
 - Turn the check off with `dbtool-tui --no-update-check` or `DBTOOL_NO_UPDATE_CHECK=1`.
 
 ## Supported databases

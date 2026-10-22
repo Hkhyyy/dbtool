@@ -521,7 +521,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     let hints = disp(hints);
     let hints = hints.as_str();
     // 새 버전 알림은 상태 글 앞에 계속 보인다
-    let badge = app.update.as_ref().map(|v| format!(" ⬆ v{v} available — quit and run: dbtool-tui --update "));
+    let badge = app.update.as_ref().map(|v| format!(" ⬆ v{v} available — {} › Update dbtool & Restart ", app.keys.label(crate::app::Action::Palette)));
     let bw = badge.as_ref().map(|b| b.chars().count() as u16).unwrap_or(0);
     // 폭이 모자라면 오른쪽 힌트를 줄인다 (업데이트 알림이 잘리지 않게)
     let hw = (hints.chars().count() as u16 + 1).min(area.width.saturating_sub(bw + 12));

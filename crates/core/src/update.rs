@@ -1,5 +1,5 @@
 //! 새 버전 확인: GitHub 의 최신 릴리스(main 에 머지될 때마다 자동으로 올라간다)와 지금 버전을 비교한다.
-//! 하루 한 번만 묻고 결과는 설정 폴더의 update-check.json 에 둔다. DBTOOL_NO_UPDATE_CHECK=1 이면 묻지 않는다.
+//! 한 시간에 한 번만 묻고 결과는 설정 폴더의 update-check.json 에 둔다. DBTOOL_NO_UPDATE_CHECK=1 이면 묻지 않는다.
 //! HTTP 는 curl 로 한다 (macOS·Linux 기본 도구, 의존성 추가 없이)
 use crate::error::{AppError, AppResult};
 use serde::{Deserialize, Serialize};
@@ -7,7 +7,7 @@ use std::path::Path;
 
 pub const REPO: &str = "Hkhyyy/dbtool";
 const CACHE_FILE: &str = "update-check.json";
-const CHECK_EVERY_SECS: u64 = 24 * 60 * 60;
+const CHECK_EVERY_SECS: u64 = 60 * 60;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -85,7 +85,7 @@ fn parse_release(json: &[u8]) -> AppResult<Release> {
     Ok(Release { version, url: s("html_url"), notes: s("body"), assets })
 }
 
-/// 새 버전이 있으면 Some. force 가 아니면 하루에 한 번만 네트워크로 묻고 그 사이엔 저장해 둔 결과를 쓴다
+/// 새 버전이 있으면 Some. force 가 아니면 한 시간에 한 번만 네트워크로 묻고 그 사이엔 저장해 둔 결과를 쓴다
 pub async fn check(dir: &Path, current: &str, force: bool) -> AppResult<Option<Release>> {
     let path = dir.join(CACHE_FILE);
     let cached: Option<Cache> = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str(&t).ok());
@@ -127,7 +127,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cached_result_is_used_within_a_day() {
+    async fn cached_result_is_used_within_an_hour() {
         let dir = std::env::temp_dir().join(format!("dbtool-upd-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         let rel = Release { version: "9.9.9".into(), url: "u".into(), notes: String::new(), assets: vec![] };
