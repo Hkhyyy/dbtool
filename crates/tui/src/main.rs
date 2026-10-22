@@ -10,6 +10,7 @@ mod panes;
 mod workspace;
 #[cfg(test)]
 mod testkit;
+mod scope;
 mod selfupdate;
 mod tree;
 mod ui;
