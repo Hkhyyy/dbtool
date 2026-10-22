@@ -2501,14 +2501,23 @@ impl App {
         tokio::spawn(async move {
             let r = dbtool_core::update::check(&dir, env!("CARGO_PKG_VERSION"), true).await;
             let _ = tx.send(Box::new(move |a: &mut App| match r {
-                Ok(Some(r)) => {
-                    a.status = format!("dbtool {} is available — {} › Update dbtool & Restart", r.version, a.keys.label(Action::Palette));
-                    a.update = Some(r.version);
-                }
+                Ok(Some(r)) => a.show_update(r),
                 Ok(None) => a.status = format!("You have the latest version ({}).", env!("CARGO_PKG_VERSION")),
                 Err(e) => a.status = e.to_string(),
             }));
         });
+    }
+
+    /// 새 버전 창: 지금 버전 이후 바뀐 것 (버전마다) + 업데이트 방법
+    pub fn show_update(&mut self, r: dbtool_core::update::Release) {
+        let cur = env!("CARGO_PKG_VERSION");
+        let how = format!("{} › Update dbtool & Restart", self.keys.label(Action::Palette));
+        let changes = dbtool_core::update::changes_text(&r.changes_since(cur));
+        // 업데이트 방법은 맨 위에 (버전이 많으면 창 아래가 잘린다)
+        let text = format!("You have {cur} — {how}\n\n{}", if changes.is_empty() { "See the release page for what changed.\n".into() } else { changes });
+        self.status = format!("dbtool {} is available — {how}", r.version);
+        self.popup = Some(Popup::Message { title: format!("dbtool {} is available", r.version), text });
+        self.update = Some(r.version);
     }
 
     /// 최신 릴리스를 받아 바꿔 넣고, 끝나면 다시 켠다 (열어 둔 탭은 끝낼 때 저장된다)

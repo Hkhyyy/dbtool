@@ -251,6 +251,8 @@ pub fn save_keymap(state: State<'_, AppState>, map: crate::store::Keymap) -> App
 pub struct UpdateInfo {
     current: String,
     latest: Option<dbtool_core::update::Release>,
+    /// 지금 버전보다 새 버전들의 바뀐 것 (최신부터)
+    changes: Vec<dbtool_core::update::VersionNotes>,
 }
 
 /// 새 버전 확인. force 가 아니면 한 시간에 한 번만 GitHub 에 묻는다. 개발 빌드(pnpm tauri dev)는 force 일 때만
@@ -258,10 +260,11 @@ pub struct UpdateInfo {
 pub async fn check_update(state: State<'_, AppState>, force: bool) -> AppResult<UpdateInfo> {
     let current = env!("CARGO_PKG_VERSION").to_string();
     if (cfg!(debug_assertions) && !force) || (dbtool_core::update::disabled() && !force) {
-        return Ok(UpdateInfo { current, latest: None });
+        return Ok(UpdateInfo { current, latest: None, changes: vec![] });
     }
     let latest = dbtool_core::update::check(&state.store.dir(), &current, force).await?;
-    Ok(UpdateInfo { current, latest })
+    let changes = latest.as_ref().map(|r| r.changes_since(&current)).unwrap_or_default();
+    Ok(UpdateInfo { current, latest, changes })
 }
 
 /// 새 버전을 받아 지금 앱을 바꿔 넣고 다시 켠다 (Tauri updater: 릴리스의 latest.json + 서명 확인).

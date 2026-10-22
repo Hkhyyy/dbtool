@@ -94,6 +94,7 @@ pub async fn install(quiet: bool) -> std::io::Result<Outcome> {
         return Err(err(format!("refusing to download from an unexpected address: {}", asset.url)));
     }
     if !quiet {
+        print!("{}", update::changes_text(&rel.changes_since(cur)));
         println!("Updating dbtool-tui {cur} → {} …", rel.version);
     }
     let paths = tokio::task::spawn_blocking(move || replace(&exe, &asset, &sums, quiet)).await.map_err(err)??;
