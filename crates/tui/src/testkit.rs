@@ -108,6 +108,27 @@ impl Harness {
         self.app.push_tab("test", "postgres".into(), table.into(), TabKind::Table(tt))
     }
 
+    /// 빈 쿼리 콘솔을 열고 편집기에 포커스
+    pub fn console_tab(&mut self) -> u64 {
+        let id = self.app.restore_console("test", "postgres".into(), "console".into(), "").unwrap();
+        let i = self.app.tab_index(id).unwrap();
+        self.app.activate(i);
+        id
+    }
+
+    /// 지금 탭이 콘솔이면 편집기 내용
+    pub fn console_text(&self) -> String {
+        match self.app.tabs.get(self.app.active).map(|t| &t.kind) {
+            Some(TabKind::Console(c)) => c.editor.lines().join("\n"),
+            _ => panic!("active tab is not a console"),
+        }
+    }
+
+    /// 터미널 붙여넣기 (bracketed paste)
+    pub fn paste(&mut self, s: &str) {
+        crate::input::on_event(&mut self.app, Event::Paste(s.into()));
+    }
+
     pub fn table(&self, id: u64) -> &TableTab {
         match self.app.tabs.iter().find(|t| t.id == id).map(|t| &t.kind) {
             Some(TabKind::Table(tt)) => tt,

@@ -285,6 +285,8 @@ pub fn on_event(app: &mut App, ev: Event) {
 
 /// ⌘V / 터미널 붙여넣기: 열린 입력칸(한 줄 입력·팔레트·Data Source 폼)이 있으면 거기로, 아니면 콘솔 에디터로
 fn paste(app: &mut App, s: String) {
+    // 터미널(xterm.js, tmux 등)은 줄바꿈을 \r 로 보내기도 한다. \r 이 편집기에 남으면 화면이 깨진다
+    let s = s.replace("\r\n", "\n").replace('\r', "\n");
     // 한 줄 입력칸에는 줄바꿈을 공백으로
     let one = || s.trim_end_matches(['\r', '\n']).replace("\r\n", " ").replace(['\r', '\n'], " ");
     match &mut app.popup {
@@ -1181,5 +1183,14 @@ mod tests {
         let labels: Vec<_> = p.items.iter().map(|i| i.label.as_str()).collect();
         assert_eq!(labels, ["a", "b", "c"]);
         assert!(matches!(p.items[0].action, crate::app::PAction::Tab(id) if id == a));
+    }
+
+    /// 터미널은 붙여넣기 줄바꿈을 \r 로 보내기도 한다 (xterm.js, tmux): 줄은 그대로, \r 은 남지 않는다
+    #[tokio::test]
+    async fn paste_into_console_keeps_lines() {
+        let mut h = Harness::new().await;
+        h.console_tab();
+        h.paste("BEGIN;\r\r-- 1. 스키마\rGRANT USAGE\r\n  ON x;\rCOMMIT;\r");
+        assert_eq!(h.console_text(), "BEGIN;\n\n-- 1. 스키마\nGRANT USAGE\n  ON x;\nCOMMIT;\n");
     }
 }
