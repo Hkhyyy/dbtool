@@ -1288,6 +1288,19 @@ mod tests {
         assert_eq!(h.app.conn("c1").unwrap().config.scope.databases, Some(vec!["shop".to_string()]));
     }
 
+    /// 좌우로 나눈 화면: 두 칸의 탭 바 사이에 구분선이 있다 (이어진 한 줄로 보이지 않게)
+    #[tokio::test]
+    async fn split_tab_bars_are_separated() {
+        let mut h = Harness::new().await;
+        h.table_tab("left_table", &["id"], &[&["1"]], &["id"]);
+        h.table_tab("right_table", &["id"], &[&["1"]], &["id"]);
+        h.app.run_action(crate::app::Action::SplitRight);
+        let s = h.screen(160, 20);
+        let bar = s.lines().find(|l| l.contains("left_table") && l.contains("right_table")).unwrap_or_else(|| panic!("{s}"));
+        let between = &bar[bar.find("left_table").unwrap()..bar.find("right_table").unwrap()];
+        assert!(between.contains('┃'), "{bar}");
+    }
+
     /// 새 버전 알림은 TUI 안에서 바로 업데이트하는 길을 알려준다
     #[tokio::test]
     async fn update_badge_points_to_in_app_update() {
