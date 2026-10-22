@@ -7,6 +7,8 @@ mod input;
 mod keys;
 mod panes;
 mod workspace;
+#[cfg(test)]
+mod testkit;
 mod selfupdate;
 mod tree;
 mod ui;

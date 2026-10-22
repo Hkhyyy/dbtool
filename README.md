@@ -389,7 +389,11 @@ Options: `--config-dir DIR` (use another config folder), `--verbose` (engine log
 
 ## Tests
 
+Write the failing test first: a bug fix starts with a test that reproduces it, a feature with a test for the new behavior (screens and terminal keys that can't be tested are checked by hand). Every pull request runs the CI workflow: Rust unit tests, integration tests against PostgreSQL / MySQL / Redis containers, vitest and the web build.
+
 ```bash
+cargo test -p dbtool-core -p dbtool-tui -p dbtool-mcp   # unit tests (no database)
+pnpm test                                               # GUI logic (src/lib/*.test.ts, vitest)
 cargo test --workspace -- --include-ignored --skip tunnel   # needs a local PostgreSQL and the containers below
 DBTOOL_TEST_PG=127.0.0.1:15499:postgres:shop cargo test -p dbtool-core session -- --ignored   # PostgreSQL elsewhere (host:port:user:db)
 ```
@@ -402,6 +406,8 @@ docker run -d --name dbtool-redis-test -p 16379:6379 redis:7-alpine
 # TLS (16391), Sentinel (26392 → 16392) and Cluster (17001-17003) servers: see the test comments in crates/core/src/redisdb.rs
 # (TLS certificate folder: DBTOOL_TEST_TLS_DIR, default /tmp/dbtool-tls)
 ```
+
+TUI tests can drive the app without a database: `crates/tui/src/testkit.rs` opens table tabs with fixed rows, sends keys (`h.key("Ctrl+A")`, `h.type_str("ban")`) and renders the screen to text (`h.screen(120, 30)`). See the tests at the end of `crates/tui/src/input.rs`.
 
 After changing a shortcut, regenerate the tables in this README with `python3 scripts/gen-readme-keymap.py`.
 

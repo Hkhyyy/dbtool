@@ -1123,4 +1123,36 @@ mod tests {
         assert_eq!(plain(k(KeyCode::Char('D'), KeyModifiers::SHIFT)).map(|x| x.code), Some(KeyCode::Char('D')));
         assert_eq!(plain(k(KeyCode::Char('z'), KeyModifiers::CONTROL)).map(|x| x.code), Some(KeyCode::Char('z')));
     }
+
+    // ───────── 키를 넣어 확인 (testkit) ─────────
+    use crate::testkit::Harness;
+
+    /// ⌘← 가 ⌃A 로 와도 행을 추가하지 않는다 (a 는 행 추가)
+    #[tokio::test]
+    async fn ctrl_a_in_table_moves_to_first_column() {
+        let mut h = Harness::new().await;
+        let id = h.table_tab("bank_info", &["bank_code", "bank_name"], &[&["002", "산업"]], &["bank_code"]);
+        h.key("Right");
+        h.key("Ctrl+A");
+        assert_eq!(h.table(id).grid.as_ref().unwrap().added, 0);
+        assert_eq!(h.table(id).grid.as_ref().unwrap().col, 0);
+        h.key("a");
+        assert_eq!(h.table(id).grid.as_ref().unwrap().added, 1);
+    }
+
+    /// WHERE 입력에서 컬럼·키워드 자동완성
+    #[tokio::test]
+    async fn where_input_completes_columns_and_keywords() {
+        let mut h = Harness::new().await;
+        let id = h.table_tab("bank_info", &["bank_code", "bank_name"], &[&["002", "산업"]], &["bank_code"]);
+        h.key("w");
+        h.type_str("ban");
+        let s = h.screen(120, 30);
+        assert!(s.contains("bank_code") && s.contains("bank_name"), "{s}");
+        h.key("Tab");
+        h.type_str(" = '002' an");
+        h.key("Tab");
+        h.key("Enter");
+        assert_eq!(h.table(id).where_, "bank_code = '002' AND");
+    }
 }
