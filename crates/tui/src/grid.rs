@@ -170,6 +170,37 @@ impl Grid {
         self.row = self.rows() - 1;
     }
 
+    /// 칸 값을 바꾼다 (원래 값과 같으면 편집을 지운다)
+    pub fn set_value(&mut self, r: usize, c: usize, v: String) {
+        let orig = self.result.rows.get(r).and_then(|row| row.get(c)).and_then(raw_text);
+        if orig.as_deref() == Some(v.as_str()) {
+            self.edits.remove(&(r, c));
+        } else {
+            self.edits.insert((r, c), Some(v));
+        }
+    }
+
+    /// 붙여넣기: 현재 칸부터 채운다. 탭으로 여러 칸, 줄로 여러 행 (스프레드시트·DataGrip 복사). 모자라는 행은 새로 추가, 넘치는 열은 버린다
+    pub fn paste(&mut self, text: &str) {
+        let (row, col) = (self.row, self.col);
+        let mut lines: Vec<&str> = text.split('\n').collect();
+        if lines.len() > 1 && lines.last() == Some(&"") {
+            lines.pop();
+        }
+        for (i, line) in lines.into_iter().enumerate() {
+            let r = row + i;
+            while r >= self.rows() {
+                self.add_row();
+            }
+            let cells: Vec<&str> = if line.contains('\t') { line.split('\t').collect() } else { vec![line] };
+            let n = self.cols();
+            for (j, v) in cells.into_iter().enumerate().filter(|(j, _)| col + j < n) {
+                self.set_value(r, col + j, v.to_string());
+            }
+        }
+        (self.row, self.col) = (row, col);
+    }
+
     pub fn is_added(&self, r: usize) -> bool {
         r >= self.rows() - self.added
     }

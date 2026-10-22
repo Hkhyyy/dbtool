@@ -308,13 +308,18 @@ fn paste(app: &mut App, s: String) {
             }
         }
         Some(_) => {}
-        None => {
-            if let Some(TabKind::Console(c)) = app.tabs.get_mut(app.active).map(|t| &mut t.kind) {
-                if app.focus == Focus::Editor {
-                    c.editor.insert_str(s);
+        None => match app.tabs.get_mut(app.active).map(|t| &mut t.kind) {
+            Some(TabKind::Console(c)) if app.focus == Focus::Editor => {
+                c.editor.insert_str(s);
+            }
+            // 테이블 데이터: 현재 칸부터 채운다 (⌘V)
+            Some(TabKind::Table(tt)) if app.focus == Focus::Grid => {
+                if let Some(g) = tt.grid.as_mut().filter(|g| g.cols() > 0) {
+                    g.paste(&s);
                 }
             }
-        }
+            _ => {}
+        },
     }
 }
 
@@ -621,12 +626,7 @@ fn grid_key(app: &mut App, k: KeyEvent) {
                     app.input(format!("{name} (row {})", r + 1), &cur, move |a, s| {
                         if let Some(TabKind::Table(tt)) = a.tab_mut(id).map(|t| &mut t.kind) {
                             if let Some(g) = &mut tt.grid {
-                                let orig = g.result.rows.get(r).and_then(|row| row.get(c)).and_then(crate::grid::raw_text);
-                                if orig.as_deref() == Some(s.as_str()) {
-                                    g.edits.remove(&(r, c));
-                                } else {
-                                    g.edits.insert((r, c), Some(s));
-                                }
+                                g.set_value(r, c, s);
                             }
                         }
                     });
@@ -1242,6 +1242,33 @@ mod tests {
         // 모르는 ⌘ 조합은 글자를 넣지 않는다
         h.key("Cmd+x");
         assert_eq!(h.console_text(), "");
+    }
+
+    /// 표에 ⌘V (터미널 붙여넣기): 현재 칸부터 채운다. 탭·줄로 여러 칸, 모자라는 줄은 새 행
+    #[tokio::test]
+    async fn paste_into_table_cells() {
+        let mut h = Harness::new().await;
+        let id = h.table_tab("fee_rule", &["idx", "fee_type", "memo"], &[&["7", "PERCENT", ""], &["8", "FIXED", ""]], &["idx"]);
+        h.key("Right");
+        h.paste("FIXED");
+        let g = h.table(id).grid.as_ref().unwrap();
+        assert_eq!(g.value(0, 1).as_deref(), Some("FIXED"));
+        // 한 줄에 쉼표가 있어도 한 칸 값
+        h.key("Right");
+        h.paste("a, b");
+        assert_eq!(h.table(id).grid.as_ref().unwrap().value(0, 2).as_deref(), Some("a, b"));
+        // 여러 칸·여러 줄 (스프레드시트에서 복사): 넘치는 열은 버리고 모자라는 줄은 새 행
+        h.key("Left");
+        h.key("Down");
+        h.paste("RATE\tx\tdropped\r\nPERCENT\ty\r\n");
+        let g = h.table(id).grid.as_ref().unwrap();
+        assert_eq!((g.value(1, 1).as_deref(), g.value(1, 2).as_deref()), (Some("RATE"), Some("x")));
+        assert_eq!(g.added, 1);
+        assert_eq!((g.value(2, 1).as_deref(), g.value(2, 2).as_deref()), (Some("PERCENT"), Some("y")));
+        // 원래 값과 같으면 편집이 아니다
+        h.key("Up");
+        h.paste("PERCENT");
+        assert!(!h.table(id).grid.as_ref().unwrap().edits.contains_key(&(0, 1)));
     }
 }
 

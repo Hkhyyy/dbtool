@@ -303,6 +303,7 @@ Ctrl+Enter is only distinguishable in terminals that support the kitty keyboard 
 | `r` | Reload |
 | `x` | Export to CSV |
 | `y` `⌘C` | Copy cell value |
+| `⌘V` | Paste into cells from the selected one (tabs / lines fill several; extra lines add rows) |
 | `Esc` | Back |
 
 #### Redis browser (Medis style)
