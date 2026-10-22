@@ -232,6 +232,7 @@ pub enum Action {
     SearchEverywhere,
     RecentTabs,
     ExecSettings,
+    ClearConsole,
     Ddl,
     EditData,
     Submit,
@@ -274,6 +275,7 @@ pub const ACTIONS: &[(Action, &str, &str)] = &[
     (Action::Commit, "Commit", ""),
     (Action::Rollback, "Roll Back", ""),
     (Action::ExecSettings, "Query Execution Settings (what ⌃Enter runs)", ""),
+    (Action::ClearConsole, "Clear Console (delete all text)", "⌘A ⌫ (console)"),
     (Action::SearchEverywhere, "Search Everywhere (objects · columns · tabs · actions)", ""),
     (Action::GoToObject, "Go to Database Object", ""),
     (Action::RecentTabs, "Recent Tabs / Switcher", ""),
@@ -2140,6 +2142,14 @@ impl App {
             Action::SearchEverywhere => self.palette_everywhere(),
             Action::RecentTabs => self.palette_tabs(),
             Action::ExecSettings => self.palette_exec(),
+            Action::ClearConsole => {
+                if let Some(TabKind::Console(c)) = self.tabs.get_mut(self.active).map(|t| &mut t.kind) {
+                    c.editor.select_all();
+                    c.editor.cut();
+                    c.complete = None;
+                    self.focus = Focus::Editor;
+                }
+            }
             Action::Ddl => {
                 // 테이블 데이터 탭에서는 그 테이블의 DDL
                 if self.focus != Focus::Tree {

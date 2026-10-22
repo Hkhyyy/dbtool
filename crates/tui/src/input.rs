@@ -539,6 +539,9 @@ fn editor_key(app: &mut App, k: KeyEvent) {
             app.focus = Focus::Tree;
         }
         KeyCode::BackTab => app.focus = Focus::Grid,
+        // ⌘A = 전부 고르기 (⌫ 로 지운다). 그 밖의 ⌘+글자는 글자로 넣지 않는다
+        KeyCode::Char('a') if k.modifiers == KeyModifiers::SUPER => c.editor.select_all(),
+        KeyCode::Char(_) if k.modifiers.contains(KeyModifiers::SUPER) => {}
         _ => {
             c.editor.input(k);
         }
@@ -1224,4 +1227,21 @@ mod tests {
         h.settle().await;
         assert!(h.console_output().iter().any(|l| l.ends_with("> GRANT a TO x")));
     }
+
+    /// 콘솔 전체 지우기: ⌘A 로 전부 고르고 ⌫, 또는 ⌃K › Clear Console
+    #[tokio::test]
+    async fn console_select_all_and_clear() {
+        let mut h = Harness::new().await;
+        h.console_with("select 1;\nselect 2;", 1, 3);
+        h.key("Cmd+a");
+        h.key("Backspace");
+        assert_eq!(h.console_text(), "");
+        h.paste("select 3;");
+        h.app.run_action(crate::app::Action::ClearConsole);
+        assert_eq!(h.console_text(), "");
+        // 모르는 ⌘ 조합은 글자를 넣지 않는다
+        h.key("Cmd+x");
+        assert_eq!(h.console_text(), "");
+    }
 }
+

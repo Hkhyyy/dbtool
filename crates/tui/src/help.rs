@@ -18,6 +18,7 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
         ("Shift+Tab", "Go to the result grid (Esc / Tab returns)"),
         ("Esc", "Go to the explorer"),
         ("Ctrl+U / Ctrl+R", "Undo / redo (editor)"),
+        ("⌘A  ⌫", "Select all, then delete (or Ctrl+K › Clear Console)"),
         ("mouse drag", "Drag the editor/result border to resize"),
     ]),
     ("Tabs & split (mouse)", &[
