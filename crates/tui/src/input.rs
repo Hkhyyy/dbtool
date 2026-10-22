@@ -474,6 +474,7 @@ fn tree_key(app: &mut App, k: KeyEvent) {
         KeyCode::Char('c') => app.run_action(Action::Connect),
         KeyCode::Char('X') => app.run_action(Action::Disconnect),
         KeyCode::Char('r') => app.run_action(Action::Refresh),
+        KeyCode::Char('s') => app.run_action(Action::ManageSchemas),
         KeyCode::Char('?') => app.run_action(Action::Help),
         KeyCode::Char('y') => {
             if let Some(nd) = sel {
@@ -979,6 +980,26 @@ fn popup_key(app: &mut App, k: KeyEvent) {
                 }
             }
         }
+        Popup::Scope(mut e) => {
+            match k.code {
+                KeyCode::Esc => return,
+                KeyCode::Enter => return app.apply_scope(e),
+                KeyCode::Down | KeyCode::Char('j') => e.move_by(1),
+                KeyCode::Up | KeyCode::Char('k') => e.move_by(-1),
+                KeyCode::PageDown => e.move_by(15),
+                KeyCode::PageUp => e.move_by(-15),
+                KeyCode::Char(' ') => e.toggle(),
+                KeyCode::Left | KeyCode::Char('h') => e.collapse(),
+                KeyCode::Right | KeyCode::Char('l') => {
+                    if let Some(db) = e.expand() {
+                        app.popup = Some(Popup::Scope(e));
+                        return app.load_scope_schemas(db);
+                    }
+                }
+                _ => {}
+            }
+            app.popup = Some(Popup::Scope(e));
+        }
         Popup::Palette(mut p) => {
             let n = App::palette_matches(&p).len();
             match k.code {
@@ -1226,6 +1247,45 @@ mod tests {
         assert!(h.app.popup.is_none());
         h.settle().await;
         assert!(h.console_output().iter().any(|l| l.ends_with("> GRANT a TO x")));
+    }
+
+    /// Manage Shown Schemas: Space 로 고르고 Enter 로 저장 (Data Source 의 scope, GUI 와 공유). Esc 는 저장하지 않는다
+    #[tokio::test]
+    async fn manage_shown_schemas_saves_scope() {
+        use dbtool_core::store::{ConnectionConfig, DbKind};
+        let mut h = Harness::new().await;
+        let cfg = ConnectionConfig {
+            id: "c1".into(), name: "pg".into(), kind: DbKind::Postgres, host: "localhost".into(), port: 5432, user: "postgres".into(), database: "postgres".into(),
+            scope: Default::default(), password_saved: false, ssh_secret_saved: false, ssh: None, color: None, read_only: false, options: Default::default(), ssl: None, redis: None,
+        };
+        h.app.state.store.save(&cfg).unwrap();
+        h.app.reload_conns();
+        h.settle().await;
+        let dbs = || vec!["app".to_string(), "postgres".to_string(), "shop".to_string()];
+
+        h.app.open_scope("c1", dbs(), None);
+        assert!(h.screen(120, 30).contains("Manage Shown Schemas"));
+        // 줄: All databases · Default database · app · postgres · shop
+        h.key("Space"); // All databases 끄기
+        for _ in 0..4 {
+            h.key("Down");
+        }
+        h.key("Space"); // shop
+        h.key("Esc");
+        assert!(h.app.popup.is_none());
+        assert_eq!(h.app.state.store.get("c1").unwrap().unwrap().scope.databases, None);
+
+        h.app.open_scope("c1", dbs(), None);
+        h.key("Space");
+        for _ in 0..4 {
+            h.key("Down");
+        }
+        h.key("Space");
+        h.key("Enter");
+        assert!(h.app.popup.is_none());
+        assert_eq!(h.app.state.store.get("c1").unwrap().unwrap().scope.databases, Some(vec!["shop".to_string()]));
+        // 트리도 바로 새 범위를 쓴다
+        assert_eq!(h.app.conn("c1").unwrap().config.scope.databases, Some(vec!["shop".to_string()]));
     }
 
     /// 새 버전 알림은 TUI 안에서 바로 업데이트하는 길을 알려준다

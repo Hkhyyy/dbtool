@@ -208,6 +208,8 @@ pub enum Popup {
     Confirm { text: String, on_yes: Box<dyn FnOnce(&mut App)> },
     Palette(Palette),
     ConnForm(ConnForm),
+    /// Manage Shown Schemas (트리에 보일 DB·스키마)
+    Scope(crate::scope::ScopeEditor),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -261,6 +263,7 @@ pub enum Action {
     SplitGrow,
     ExplorerNarrower,
     ExplorerWider,
+    ManageSchemas,
     CheckUpdate,
     InstallUpdate,
     Help,
@@ -295,6 +298,7 @@ pub const ACTIONS: &[(Action, &str, &str)] = &[
     (Action::Connect, "Connect", "c (explorer)"),
     (Action::Disconnect, "Disconnect", ""),
     (Action::Refresh, "Refresh", "r (explorer) / F5 (table)"),
+    (Action::ManageSchemas, "Manage Shown Schemas… (databases · schemas in the explorer)", "s (explorer)"),
     (Action::CloseTab, "Close Tab", ""),
     (Action::NextTab, "Next Tab", ""),
     (Action::PrevTab, "Previous Tab", ""),
@@ -2285,6 +2289,10 @@ impl App {
             Action::PaneLeft => self.focus_pane(SplitDir::Right, true),
             Action::PaneRight => self.focus_pane(SplitDir::Right, false),
             Action::Help => self.popup = Some(Popup::Help { sel: 0, scroll: 0, record: None, message: None }),
+            Action::ManageSchemas => match sel {
+                Some(n) if self.kind_of(&n.conn) != DbKind::Redis => self.manage_schemas(&n.conn, n.db.clone()),
+                _ => self.status = "Select a PostgreSQL / MySQL data source in the explorer".into(),
+            },
             Action::CheckUpdate => self.check_update(),
             Action::InstallUpdate => {
                 let n = self.pending_tabs(None).len();
@@ -2424,6 +2432,63 @@ impl App {
     }
 
     /// 커서 위치로 후보를 다시 계산한다. explicit = Ctrl+Space (아니면 '.' 입력·목록이 열린 채 타이핑)
+    /// Manage Shown Schemas: DB 목록을 읽어 창을 연다 (db = DB 줄에서 열었으면 그 DB 를 펼친다)
+    fn manage_schemas(&mut self, conn: &str, db: Option<String>) {
+        self.status = "Loading databases…".into();
+        let st = self.state.clone();
+        let id = conn.to_string();
+        self.spawn(async move { st.list_databases(id).await.map_err(err) }, {
+            let conn = conn.to_string();
+            move |a, r| match r {
+                Ok(dbs) => {
+                    a.status.clear();
+                    a.open_scope(&conn, dbs, db.as_deref());
+                }
+                Err(e) => a.status = e,
+            }
+        });
+    }
+
+    pub fn open_scope(&mut self, conn: &str, dbs: Vec<String>, focus_db: Option<&str>) {
+        let Some(c) = self.conn(conn) else { return };
+        let e = crate::scope::ScopeEditor::new(conn.to_string(), dbs, self.default_db(conn), &c.config.scope, focus_db);
+        self.popup = Some(Popup::Scope(e));
+        if let Some(db) = focus_db {
+            self.load_scope_schemas(db.to_string());
+        }
+    }
+
+    /// 창에서 펼친 DB 의 스키마를 읽는다
+    pub fn load_scope_schemas(&mut self, db: String) {
+        let Some(Popup::Scope(e)) = &self.popup else { return };
+        let conn = e.conn.clone();
+        let st = self.state.clone();
+        let target = sql::target_id(&conn, Some(&db));
+        self.spawn(async move { st.list_schemas(target).await.map_err(err) }, move |a, r| {
+            if let Some(Popup::Scope(e)) = &mut a.popup {
+                if e.conn == conn {
+                    e.set_schemas(&db, r);
+                }
+            }
+        });
+    }
+
+    /// 고른 범위를 Data Source 에 저장하고 트리를 다시 그린다.
+    /// 접속 설정은 그대로라 store 에 바로 쓴다 (save_connection 은 풀을 닫아 열린 트랜잭션이 끊긴다)
+    pub fn apply_scope(&mut self, e: crate::scope::ScopeEditor) {
+        let Some(c) = self.conns.iter_mut().find(|c| c.config.id == e.conn) else { return };
+        c.config.scope = e.scope();
+        let cfg = c.config.clone();
+        if let Err(er) = self.state.store.save(&cfg) {
+            self.status = er.to_string();
+            return;
+        }
+        self.status = format!("Shown databases and schemas updated: {}", cfg.name);
+        if let Some(root) = self.tree.roots.iter().find(|n| n.conn == cfg.id && n.kind == NodeKind::Conn).cloned() {
+            self.refresh_node(&root);
+        }
+    }
+
     /// 지금 바로 새 버전을 확인한다 (⌃K › Check for Updates)
     fn check_update(&mut self) {
         self.status = "Checking for updates…".into();

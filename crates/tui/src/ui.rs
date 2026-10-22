@@ -602,6 +602,59 @@ fn draw_popup(f: &mut Frame, app: &mut App) {
             f.render_widget(Clear, r);
             f.render_widget(Paragraph::new(text.clone()).wrap(Wrap { trim: false }).block(block(format!(" {title} (Esc) "), true)), r);
         }
+        Popup::Scope(e) => {
+            use crate::scope::{Check, Row};
+            let name = app.conns.iter().find(|c| c.config.id == e.conn).map(|c| c.config.name.clone()).unwrap_or_default();
+            let rows = e.rows();
+            let r = centered(area, 70, (rows.len() as u16 + 4).min(area.height.saturating_sub(4)).max(8));
+            let inner_h = r.height.saturating_sub(3) as usize;
+            let top = e.sel.saturating_sub(inner_h.saturating_sub(1));
+            let hint = |s: String| Span::styled(s, Style::default().fg(DIM));
+            let mut lines: Vec<Line> = rows
+                .iter()
+                .enumerate()
+                .skip(top)
+                .take(inner_h)
+                .map(|(i, row)| {
+                    let box_ = match e.check(row) {
+                        Check::On => "[x] ",
+                        Check::Implicit => "[~] ",
+                        Check::Off => "[ ] ",
+                    };
+                    let mut l = match row {
+                        Row::AllDbs => Line::from(vec![Span::raw("   "), Span::raw(box_), Span::raw("All databases")]),
+                        Row::DefaultDb => Line::from(vec![Span::raw("   "), Span::raw(box_), Span::raw("Default database "), hint(format!("({})", e.default_db))]),
+                        Row::Db(db) => {
+                            let open = rows.get(i + 1).is_some_and(|n| !matches!(n, Row::Db(_)));
+                            let on = e.check(row) != Check::Off;
+                            Line::from(vec![
+                                Span::raw(if open { " ⌄ " } else { " › " }),
+                                Span::raw(box_),
+                                Span::styled(db.clone(), if on { Style::default().add_modifier(Modifier::BOLD) } else { Style::default() }),
+                                hint(if *db == e.default_db { "  (Default database)".into() } else { String::new() }),
+                            ])
+                        }
+                        Row::AllSchemas(_) => Line::from(vec![Span::raw("     "), Span::raw(box_), Span::raw("All schemas")]),
+                        Row::DefaultSchema(_) => Line::from(vec![Span::raw("     "), Span::raw(box_), Span::raw("Default schema "), hint("(public)".into())]),
+                        Row::Schema { name, system, .. } => Line::from(vec![
+                            Span::raw("     "),
+                            Span::raw(box_),
+                            Span::raw(name.clone()),
+                            Span::styled(if *system { " ⚡" } else { "" }, Style::default().fg(Color::Yellow)),
+                            hint(if name == "public" { "  (Default schema)".into() } else { String::new() }),
+                        ]),
+                        Row::Note(_, t) => Line::from(vec![Span::raw("       "), hint(t.clone())]),
+                    };
+                    if i == e.sel {
+                        l = l.style(Style::default().bg(Color::Rgb(46, 67, 110)));
+                    }
+                    l
+                })
+                .collect();
+            lines.push(Line::styled("Space check · → expand · ← collapse · Enter apply · Esc cancel", Style::default().fg(DIM)));
+            f.render_widget(Clear, r);
+            f.render_widget(Paragraph::new(lines).block(block(format!(" Manage Shown Schemas — {name} "), true)), r);
+        }
         Popup::Confirm { text, .. } => {
             // 여러 줄 (이유 · 문장 · 질문)
             let mut lines: Vec<Line> = text.lines().map(|l| Line::raw(l.to_string())).collect();

@@ -262,6 +262,7 @@ Ctrl+Enter is only distinguishable in terminals that support the kitty keyboard 
 | `n / e / D` | New / edit / remove data source |
 | `c / X` | Connect / disconnect |
 | `r / F5` | Refresh |
+| `s` | Manage shown databases and schemas (Space check · Enter apply · shared with the GUI) |
 | `y` `⌘C` | Copy name (OSC 52 clipboard) |
 | `Tab / Esc` | Go to the open tab |
 
