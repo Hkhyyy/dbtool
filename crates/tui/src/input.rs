@@ -1420,6 +1420,28 @@ mod tests {
         assert!(s.contains("Search everything"));
     }
 
+    /// Check for Updates 로 새 버전을 찾으면: 지금 버전 이후 바뀐 것을 버전마다 보여 주고 업데이트 방법을 알린다
+    #[tokio::test]
+    async fn update_found_shows_changes() {
+        use dbtool_core::update::{Release, VersionNotes};
+        let mut h = Harness::new().await;
+        let r = Release {
+            version: "9.0.1".into(), url: "u".into(), notes: String::new(), assets: vec![],
+            history: vec![
+                VersionNotes { version: "9.0.1".into(), changes: vec!["[fix] b (#2)".into()] },
+                VersionNotes { version: "9.0.0".into(), changes: vec!["[feat] a (#1)".into()] },
+                VersionNotes { version: "0.0.1".into(), changes: vec!["old".into()] },
+            ],
+        };
+        h.app.show_update(r);
+        assert_eq!(h.app.update.as_deref(), Some("9.0.1"));
+        let s = h.screen(120, 30);
+        for want in ["dbtool 9.0.1 is available", "• [fix] b (#2)", "• [feat] a (#1)", "Update dbtool & Restart"] {
+            assert!(s.contains(want), "{want:?} in {s}");
+        }
+        assert!(!s.contains("old"), "{s}");
+    }
+
     /// 새 버전 알림은 TUI 안에서 바로 업데이트하는 길을 알려준다
     #[tokio::test]
     async fn update_badge_points_to_in_app_update() {

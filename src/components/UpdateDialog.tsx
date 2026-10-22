@@ -43,7 +43,21 @@ export function UpdateDialog({ info, onClose, beforeInstall }: { info: UpdateInf
         <div className="hint" style={{ marginTop: 0 }}>
           You have {info.current}. Update &amp; Restart downloads it, replaces this app and opens it again (open tabs are kept).
         </div>
-        <pre className="update-notes">{r.notes || "No release notes."}</pre>
+        {/* 바뀐 것만, 버전마다 (설치 안내는 Release Page 에) */}
+        <div className="update-notes">
+          {info.changes?.length ? (
+            info.changes.map((v) => (
+              <div key={v.version} className="update-version">
+                <div className="update-version-title">{v.version}</div>
+                <ul>
+                  {v.changes.length ? v.changes.map((c, i) => <li key={i}>{c}</li>) : <li className="muted">No notes</li>}
+                </ul>
+              </div>
+            ))
+          ) : (
+            <div className="muted">See the release page for what changed.</div>
+          )}
+        </div>
         {progress && <div className="hint">{progress}</div>}
         {error && <div className="hint" style={{ color: "var(--danger)" }}>{error}</div>}
         <div className="modal-actions">

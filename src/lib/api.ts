@@ -92,6 +92,8 @@ export interface ReleaseInfo {
 export interface UpdateInfo {
   current: string;
   latest: ReleaseInfo | null;
+  /** 지금 버전보다 새 버전들의 바뀐 것 (최신부터) */
+  changes?: { version: string; changes: string[] }[];
 }
 /** 새 버전 자동 확인 (시작할 때 + 1시간마다. Settings 에서 끈다) */
 const UPDATE_PREF = "dbtool.updateCheck";

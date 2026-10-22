@@ -559,7 +559,11 @@ pre.grid-overlay { text-align: left; background: var(--bg); }
 .sb-update { background: none; border-top: 0; border-right: 0; border-bottom: 0; color: var(--accent); font: inherit; cursor: pointer; height: 100%; }
 .sb-update:hover { color: var(--text); }
 .modal.update { width: 620px; max-width: calc(100vw - 32px); }
-.update-notes { max-height: 50vh; overflow: auto; white-space: pre-wrap; font-size: 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; margin: 10px 0; }
+.update-notes { max-height: 50vh; overflow: auto; font-size: 13px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; margin: 10px 0; }
+.update-notes ul { margin: 4px 0 10px; padding-left: 18px; }
+.update-notes li { margin: 2px 0; }
+.update-version-title { font-weight: 600; }
+.update-notes .muted { color: var(--muted); }
 
 /* Redis browser (Medis style) */
 .redis-browser { height: 100%; display: flex; flex-direction: column; background: var(--bg); }
