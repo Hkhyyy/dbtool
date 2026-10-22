@@ -207,6 +207,21 @@ Command shortcuts can be changed in **Settings › Keymap** (or **Edit Keymap…
 Press **F1** inside `dbtool-tui`, or run `dbtool-tui --help`, to see the same list. In the F1 window the **Commands** at the top can be changed: select one, press Enter and then the new key (`a` adds a second key, `Del` resets it). The mouse works too: click to select, double-click to open or edit, scroll with the wheel.
 Ctrl+Enter is only distinguishable in terminals that support the kitty keyboard protocol (iTerm2, kitty, WezTerm, Ghostty). Elsewhere use F5 or Alt+Enter.
 
+**New to it? `Ctrl+P` alone is enough to start.** It searches tables, columns, open tabs and actions. The status bar always shows the keys for what you are looking at (explorer, console, table, results), followed by the most useful global keys. The F1 window starts with the same short list:
+
+| Key | Action |
+|---|---|
+| `Ctrl+P` | Search everything: tables, columns, tabs, actions |
+| `Ctrl+K` | All actions, each with its shortcut |
+| `Ctrl+L` | New query console for the selected data source |
+| `F5 / Ctrl+Enter` | Run (asks what to run when there are several statements) |
+| `Ctrl+E` | Recent tabs |
+| `Ctrl+W` | Close tab |
+| `Enter` (explorer) | Connect · open a table |
+| `s` (explorer) | Choose the databases and schemas shown |
+| `Esc` | Back to the explorer |
+| `Ctrl+Q` | Quit |
+
 <!-- keymap:tui:start -->
 
 #### Commands (default keys — change them in the F1 window)
