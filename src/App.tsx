@@ -203,6 +203,14 @@ export default function App() {
       .catch(() => {});
     return () => off?.();
   }, []);
+  // dbtool › Settings…
+  useEffect(() => {
+    let off: (() => void) | undefined;
+    listen("open-settings", () => setSettingsOpen("appearance"))
+      .then((u) => (off = u))
+      .catch(() => {});
+    return () => off?.();
+  }, []);
   // Auto-disconnect 등으로 백엔드가 접속을 닫으면 트리 상태를 갱신
   useEffect(() => {
     let off: (() => void) | undefined;

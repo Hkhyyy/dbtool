@@ -18,9 +18,13 @@ pub fn run() {
             // 기본 메뉴의 "Close Window(⌘W)"가 탭 닫기 단축키를 가로채지 않도록 메뉴를 직접 구성
             use tauri::menu::{MenuBuilder, SubmenuBuilder};
             let check_updates = tauri::menu::MenuItemBuilder::with_id("check-update", "Check for Updates…").build(app)?;
+            // Settings (⌘, 는 웹뷰 키맵이 처리 — 메뉴 가속키를 달면 이중 실행)
+            let settings = tauri::menu::MenuItemBuilder::with_id("settings", "Settings…").build(app)?;
             let app_menu = SubmenuBuilder::new(app, "dbtool")
                 .about(None)
                 .item(&check_updates)
+                .separator()
+                .item(&settings)
                 .separator()
                 .hide()
                 .hide_others()
@@ -46,6 +50,8 @@ pub fn run() {
                 use tauri::Emitter;
                 if ev.id() == "keymap" {
                     let _ = app.emit("open-keymap", ());
+                } else if ev.id() == "settings" {
+                    let _ = app.emit("open-settings", ());
                 } else if ev.id() == "check-update" {
                     let _ = app.emit("check-update", ());
                 }
