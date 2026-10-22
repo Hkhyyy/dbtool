@@ -1193,4 +1193,35 @@ mod tests {
         h.paste("BEGIN;\r\r-- 1. 스키마\rGRANT USAGE\r\n  ON x;\rCOMMIT;\r");
         assert_eq!(h.console_text(), "BEGIN;\n\n-- 1. 스키마\nGRANT USAGE\n  ON x;\nCOMMIT;\n");
     }
+
+    /// ⌃Enter: 문장이 여럿이면 무엇을 실행할지 묻는다 (DataGrip). 고른 것부터 실행한다
+    #[tokio::test]
+    async fn execute_asks_what_to_run() {
+        let mut h = Harness::new().await;
+        h.console_with("BEGIN;\nGRANT a TO x;\n\nGRANT b TO x;\nCOMMIT;", 3, 2);
+        h.key("F5");
+        let Some(crate::app::Popup::Palette(p)) = &h.app.popup else { panic!("no chooser") };
+        let labels: Vec<_> = p.items.iter().map(|i| i.label.as_str()).collect();
+        assert_eq!(labels, ["GRANT b TO x", "All statements (4)", "From caret to end"]);
+        h.key("Down");
+        h.key("Down");
+        h.key("Enter");
+        h.settle().await;
+        // 접속이 없어 첫 문장에서 멈춘다: 고른 범위의 첫 문장이 GRANT b
+        let out = h.console_output();
+        assert!(out.iter().any(|l| l.ends_with("> GRANT b TO x")), "{out:?}");
+        assert!(!out.iter().any(|l| l.contains("BEGIN")), "{out:?}");
+    }
+
+    /// 실행 설정을 Smallest 로 바꾸면 묻지 않고 커서 문장만
+    #[tokio::test]
+    async fn execute_smallest_runs_caret_statement() {
+        let mut h = Harness::new().await;
+        h.app.exec.inside = crate::exec::Inside::Smallest;
+        h.console_with("BEGIN;\nGRANT a TO x;\n\nGRANT b TO x;\nCOMMIT;", 1, 2);
+        h.key("F5");
+        assert!(h.app.popup.is_none());
+        h.settle().await;
+        assert!(h.console_output().iter().any(|l| l.ends_with("> GRANT a TO x")));
+    }
 }

@@ -110,10 +110,26 @@ impl Harness {
 
     /// 빈 쿼리 콘솔을 열고 편집기에 포커스
     pub fn console_tab(&mut self) -> u64 {
-        let id = self.app.restore_console("test", "postgres".into(), "console".into(), "").unwrap();
+        self.console_with("", 0, 0)
+    }
+
+    /// 내용이 든 쿼리 콘솔을 열고 커서를 (줄, 칸) 에 둔다
+    pub fn console_with(&mut self, sql: &str, row: u16, col: u16) -> u64 {
+        let id = self.app.restore_console("test", "postgres".into(), "console".into(), sql).unwrap();
         let i = self.app.tab_index(id).unwrap();
         self.app.activate(i);
+        if let Some(TabKind::Console(c)) = self.app.tabs.get_mut(i).map(|t| &mut t.kind) {
+            c.editor.move_cursor(tui_textarea::CursorMove::Jump(row, col));
+        }
         id
+    }
+
+    /// 지금 콘솔의 Output 줄들
+    pub fn console_output(&self) -> Vec<String> {
+        match self.app.tabs.get(self.app.active).map(|t| &t.kind) {
+            Some(TabKind::Console(c)) => c.output.iter().map(|x| x.1.clone()).collect(),
+            _ => panic!("active tab is not a console"),
+        }
     }
 
     /// 지금 탭이 콘솔이면 편집기 내용

@@ -81,7 +81,7 @@ export const KEYMAP: KeySection[] = [
   {
     title: "Query console",
     rows: [
-      ["⌘↩", "Execute (statement at caret, or the selection)", "editor.run"],
+      ["⌘↩", "Execute: asks what to run when there are several statements (⚙ Query Execution Settings), or the selection", "editor.run"],
       ["⌘F2", "Cancel running statement", "editor.cancel"],
       ["⌥⌘E", "Query history", "editor.history"],
       ["⌃Space", "Code completion"],

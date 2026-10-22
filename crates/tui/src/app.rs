@@ -152,6 +152,10 @@ pub enum PAction {
     Act(Action),
     Object { conn: String, db: String, e: IndexEntryLite },
     Tab(u64),
+    /// 실행 선택 팝업에서 고른 문장들
+    Run { stmts: Vec<String>, explain: bool },
+    /// 실행 설정 바꾸기
+    Exec(crate::exec::ExecSettings),
 }
 #[derive(Clone)]
 pub struct IndexEntryLite {
@@ -227,6 +231,7 @@ pub enum Action {
     GoToObject,
     SearchEverywhere,
     RecentTabs,
+    ExecSettings,
     Ddl,
     EditData,
     Submit,
@@ -262,12 +267,13 @@ pub enum Action {
 /// 액션 팔레트 목록: (액션, 이름, 힌트). 바꿀 수 있는 명령(keys::DEFAULT_KEYS)의 힌트는 현재 키맵에서 가져온다
 pub const ACTIONS: &[(Action, &str, &str)] = &[
     (Action::NewConsole, "New Query Console", ""),
-    (Action::Execute, "Execute", ""),
+    (Action::Execute, "Execute (asks what to run — see Query Execution Settings)", ""),
     (Action::Explain, "Explain Plan", ""),
     (Action::Cancel, "Cancel Running Statement", ""),
     (Action::TxToggle, "Toggle Transaction Mode (Auto/Manual)", ""),
     (Action::Commit, "Commit", ""),
     (Action::Rollback, "Roll Back", ""),
+    (Action::ExecSettings, "Query Execution Settings (what ⌃Enter runs)", ""),
     (Action::SearchEverywhere, "Search Everywhere (objects · columns · tabs · actions)", ""),
     (Action::GoToObject, "Go to Database Object", ""),
     (Action::RecentTabs, "Recent Tabs / Switcher", ""),
@@ -395,6 +401,8 @@ pub struct App {
     /// 새 버전이 있으면 그 버전 (상태줄에 알린다)
     pub update: Option<String>,
     next_id: u64,
+    /// ⌃Enter 로 무엇을 실행할지 (Query Execution Settings, workspace 에 저장)
+    pub exec: crate::exec::ExecSettings,
     /// 지난번 탭을 되살렸는지 (Data Source 목록을 처음 읽은 뒤 한 번), 마지막으로 저장한 내용
     restored: bool,
     saved_ws: String,
@@ -474,6 +482,7 @@ impl App {
             restored: false,
             saved_ws: String::new(),
             next_id: 1,
+            exec: Default::default(),
         };
         if let Some(e) = keys_err {
             a.status = e;
@@ -1333,15 +1342,12 @@ impl App {
         self.execute_checked(explain, false)
     }
 
-    /// confirmed = 위험 문장(WHERE 없는 UPDATE/DELETE, DROP, TRUNCATE) 확인을 받았는지
+    /// 무엇을 실행할지는 실행 설정(self.exec)을 따른다. 물어봐야 하면 고르는 창을 띄운다 (DataGrip)
     fn execute_checked(&mut self, explain: bool, confirmed: bool) {
         let Some(t) = self.tabs.get(self.active) else { return };
         let kind = self.kind_of(&t.conn);
         let id = t.id;
-        let target = t.target.clone();
-        let conn_name = self.conn(&t.conn).map(|c| c.config.name.clone()).unwrap_or_default();
-        let t = &mut self.tabs[self.active];
-        let TabKind::Console(c) = &mut t.kind else {
+        let TabKind::Console(c) = &t.kind else {
             if let TabKind::Table(_) = t.kind {
                 self.reload_table_checked(id);
             }
@@ -1350,16 +1356,50 @@ impl App {
         if c.running {
             return;
         }
-        let text = c.editor.lines().join("\n");
-        let stmts: Vec<String> = if let Some(((r0, c0), (r1, c1))) = c.editor.selection_range() {
-            let sel = selected_text(c.editor.lines(), r0, c0, r1, c1);
-            sql::split_statements(&sel, kind).into_iter().map(|(s, e)| sel[s..e].trim().to_string()).collect()
+        let plan = if let Some(((r0, c0), (r1, c1))) = c.editor.selection_range() {
+            crate::exec::plan_selection(&selected_text(c.editor.lines(), r0, c0, r1, c1), kind, self.exec)
         } else {
             let (row, col) = c.editor.cursor();
-            let off = byte_offset(c.editor.lines(), row, col);
-            sql::statement_at(&text, off, kind).into_iter().collect()
+            crate::exec::plan(&c.editor.lines().join("\n"), byte_offset(c.editor.lines(), row, col), kind, self.exec)
         };
-        if stmts.is_empty() {
+        match plan {
+            crate::exec::Plan::Nothing => {}
+            crate::exec::Plan::Run(stmts) => self.run_stmts(stmts, explain, confirmed),
+            crate::exec::Plan::Ask(opts) => {
+                let items = opts.into_iter().map(|(label, stmts)| PItem { label, hint: String::new(), action: PAction::Run { stmts, explain } }).collect();
+                self.popup = Some(Popup::Palette(Palette { title: "Execute".into(), input: TextArea::default(), items, sel: 0, loading: 0, cache: Default::default() }));
+            }
+        }
+    }
+
+    /// 실행 설정 (DataGrip Settings › Database › Query Execution). 고르면 바로 바뀌고 창은 그대로
+    pub fn palette_exec(&mut self) {
+        use crate::exec::{ExecSettings, Inside, Outside, Selection};
+        let e = self.exec;
+        let mut items = vec![];
+        let mut add = |group: &str, on: bool, label: &str, v: ExecSettings| items.push(PItem { label: format!("{} {label}", if on { "●" } else { " " }), hint: group.into(), action: PAction::Exec(v) });
+        for (v, l) in [(Inside::Ask, "Ask what to execute"), (Inside::Smallest, "Smallest statement"), (Inside::Whole, "Whole script"), (Inside::FromCaret, "Everything from caret")] {
+            add("caret inside statement", e.inside == v, l, ExecSettings { inside: v, ..e });
+        }
+        for (v, l) in [(Outside::Nothing, "Nothing"), (Outside::Whole, "Whole script"), (Outside::Below, "Everything below caret")] {
+            add("caret outside statement", e.outside == v, l, ExecSettings { outside: v, ..e });
+        }
+        for (v, l) in [(Selection::Single, "Exactly as a single statement"), (Selection::Separate, "Exactly as separate statements")] {
+            add("selection", e.selection == v, l, ExecSettings { selection: v, ..e });
+        }
+        self.popup = Some(Popup::Palette(Palette { title: "Query Execution Settings".into(), input: TextArea::default(), items, sel: 0, loading: 0, cache: Default::default() }));
+    }
+
+    /// confirmed = 위험 문장(WHERE 없는 UPDATE/DELETE, DROP, TRUNCATE) 확인을 받았는지
+    pub fn run_stmts(&mut self, stmts: Vec<String>, explain: bool, confirmed: bool) {
+        let Some(t) = self.tabs.get(self.active) else { return };
+        let kind = self.kind_of(&t.conn);
+        let id = t.id;
+        let target = t.target.clone();
+        let conn_name = self.conn(&t.conn).map(|c| c.config.name.clone()).unwrap_or_default();
+        let t = &mut self.tabs[self.active];
+        let TabKind::Console(c) = &mut t.kind else { return };
+        if c.running || stmts.is_empty() {
             return;
         }
         if !confirmed
@@ -1367,7 +1407,7 @@ impl App {
             && let Some((why, s)) = stmts.iter().find_map(|s| dbtool_core::guard::unsafe_statement(s, kind).map(|w| (w, s.clone())))
         {
             let preview: String = s.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(80).collect();
-            self.popup = Some(Popup::Confirm { text: format!("{why}:\n  {preview}\nRun it anyway?"), on_yes: Box::new(move |a| a.execute_checked(explain, true)) });
+            self.popup = Some(Popup::Confirm { text: format!("{why}:\n  {preview}\nRun it anyway?"), on_yes: Box::new(move |a| a.run_stmts(stmts, explain, true)) });
             return;
         }
         c.running = true;
@@ -1973,6 +2013,15 @@ impl App {
                     self.activate(i)
                 }
             }
+            PAction::Run { stmts, explain } => self.run_stmts(stmts, explain, false),
+            PAction::Exec(e) => {
+                self.exec = e;
+                self.palette_exec();
+                // 고른 줄에 그대로 둔다
+                if let Some(Popup::Palette(p)) = &mut self.popup {
+                    p.sel = p.items.iter().position(|i| i.hint == item.hint && i.label.chars().skip(2).eq(item.label.chars().skip(2))).unwrap_or(0);
+                }
+            }
             PAction::Object { conn, db, e } => {
                 let kind = match e.kind.as_str() {
                     "function" | "procedure" => "routine".to_string(),
@@ -2090,6 +2139,7 @@ impl App {
             Action::GoToObject => self.palette_objects("Go to Database Object", vec![]),
             Action::SearchEverywhere => self.palette_everywhere(),
             Action::RecentTabs => self.palette_tabs(),
+            Action::ExecSettings => self.palette_exec(),
             Action::Ddl => {
                 // 테이블 데이터 탭에서는 그 테이블의 DDL
                 if self.focus != Focus::Tree {

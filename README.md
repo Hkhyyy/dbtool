@@ -161,7 +161,7 @@ Command shortcuts can be changed in **Settings › Keymap** (or **Edit Keymap…
 
 | macOS | Action |
 |---|---|
-| `⌘↩` | Execute (statement at caret, or the selection) |
+| `⌘↩` | Execute: asks what to run when there are several statements (⚙ Query Execution Settings), or the selection |
 | `⌘F2` | Cancel running statement |
 | `⌥⌘E` | Query history |
 | `⌃Space` | Code completion |
@@ -233,7 +233,7 @@ Ctrl+Enter is only distinguishable in terminals that support the kitty keyboard 
 | `Alt+Shift+Right` | Move Split Divider Right / Down |
 | `Alt+[` | Database Explorer Narrower |
 | `Alt+]` | Database Explorer Wider |
-| `F5 / Ctrl+Enter / Alt+Enter` | Execute |
+| `F5 / Ctrl+Enter / Alt+Enter` | Execute (asks what to run — see Query Execution Settings) |
 | `Alt+E` | Explain Plan |
 | `Ctrl+Space` | Code Completion |
 | `Ctrl+C` | Cancel Running Statement |

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { QueryResult, Dialect } from "../lib/api";
 import { splitStatements } from "../lib/sqlSplit";
+import { DEFAULT_EXEC, ExecSettings, planExecution } from "../lib/execPlan";
 import { ConsoleEditor, EditorApi, RunRequest } from "./ConsoleEditor";
 import { ContextMenu, MenuItem } from "./Explorer";
 import { ResultGrid } from "./ResultGrid";
@@ -9,18 +10,12 @@ import { IcClock, IcGear, IcReload, IcStop } from "./icons";
 
 const isMac = navigator.platform.toLowerCase().includes("mac");
 
-/** DataGrip Settings > Database > Query Execution */
-export interface ExecSettings {
-  inside: "ask" | "smallest" | "whole" | "fromCaret";
-  outside: "nothing" | "whole" | "below";
-  selection: "single" | "separate";
-}
 const SETTINGS_KEY = "dbtool.execSettings";
 export function loadExecSettings(): ExecSettings {
   try {
-    return { inside: "smallest", outside: "nothing", selection: "separate", ...JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? "{}") };
+    return { ...DEFAULT_EXEC, ...JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? "{}") };
   } catch {
-    return { inside: "smallest", outside: "nothing", selection: "separate" };
+    return DEFAULT_EXEC;
   }
 }
 
@@ -121,36 +116,14 @@ export function ConsolePane(p: Props) {
       req.highlight(segs.map((s) => ({ start: selection.start + s.start, end: selection.start + s.end })));
       return p.onExecute(segs.map((s) => selection.text.slice(s.start, s.end).trim()), req.explain);
     }
-    const segs = splitFn(text);
-    if (!segs.length) return;
-    const trimmed = segs.map((s) => {
-      const raw = text.slice(s.start, s.end);
-      const lead = raw.length - raw.trimStart().length;
-      return { start: s.start + lead, end: s.start + lead + raw.trim().length, sql: raw.trim() };
-    });
-    const idx = trimmed.findIndex((s) => offset >= s.start && offset <= s.end + 1);
-    const exec = (list: typeof trimmed) => {
-      req.highlight(list.map((s) => ({ start: s.start, end: s.end })));
-      p.onExecute(list.map((s) => s.sql), req.explain);
-    };
-    if (idx < 0) {
-      if (settings.outside === "whole") return exec(trimmed);
-      if (settings.outside === "below") return exec(trimmed.filter((s) => s.start >= offset));
-      // Nothing: 바로 앞 문장이 같은 줄 끝이면 그 문장 (세미콜론 직후 캐럿)
-      const prev = [...trimmed].reverse().find((s) => s.end <= offset && !text.slice(s.end, offset).includes("\n"));
-      return prev ? exec([prev]) : undefined;
+    const plan = planExecution(text, offset, splitFn(text), settings);
+    if (!plan) return;
+    if ("run" in plan) {
+      req.highlight(plan.run.map((x) => ({ start: x.start, end: x.end })));
+      return p.onExecute(plan.run.map((x) => x.sql), req.explain);
     }
-    if (settings.inside === "smallest") return exec([trimmed[idx]]);
-    if (settings.inside === "whole") return exec(trimmed);
-    if (settings.inside === "fromCaret") return exec(trimmed.slice(idx));
     // Ask what to execute: Statements 팝업
-    const options = [
-      { label: trimmed[idx].sql.replace(/\s+/g, " ").slice(0, 80), stmts: [trimmed[idx].sql], ranges: [trimmed[idx]] },
-      ...(trimmed.length > 1 ? [{ label: `All statements (${trimmed.length})`, stmts: trimmed.map((s) => s.sql), ranges: trimmed }] : []),
-      ...(idx < trimmed.length - 1 && idx > 0 ? [{ label: "From caret to end", stmts: trimmed.slice(idx).map((s) => s.sql), ranges: trimmed.slice(idx) }] : []),
-    ];
-    if (options.length === 1) return exec([trimmed[idx]]);
-    setChooser({ options, idx: 0, req });
+    setChooser({ options: plan.ask.map((o) => ({ label: o.label, stmts: o.stmts.map((x) => x.sql), ranges: o.stmts })), idx: 0, req });
   };
 
   const pickChoice = (i: number) => {

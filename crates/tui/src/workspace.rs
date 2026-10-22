@@ -44,11 +44,15 @@ pub fn to_json(app: &App) -> Value {
         "panes": pane_json(&app.panes),
         "active": app.tabs.get(app.active).map(|_| app.active),
         "groupActive": app.group_active.iter().map(|x| index(*x)).collect::<Vec<_>>(),
+        "exec": app.exec.to_json(),
     })
 }
 
 /// 저장해 둔 탭을 되살린다. 없어진 Data Source 의 탭은 버린다
 pub fn restore(app: &mut App, v: &Value) {
+    if let Some(e) = v.get("exec") {
+        app.exec = crate::exec::ExecSettings::from_json(e);
+    }
     let Some(tabs) = v.get("tabs").and_then(Value::as_array) else { return };
     let mut panes = v.get("panes").and_then(pane_from).unwrap_or(Pane::Leaf(0));
     let leaves = panes.leaves();
