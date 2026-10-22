@@ -160,7 +160,7 @@ fn tx_around(all: &[String], idx: usize) -> Option<(usize, usize)> {
 /// 선택 영역이 없을 때 커서 위치(offset, 바이트)로 실행할 문장을 정한다
 pub fn plan(text: &str, offset: usize, kind: DbKind, s: ExecSettings) -> Plan {
     // (커서 판정용 시작 — 제목 줄 포함, 끝, 실행할 문장 — 제목 줄 뺌)
-    let segs: Vec<(usize, usize, String)> = sql::split_statements(text, kind)
+    let segs: Vec<(usize, usize, String)> = sql::split_script(text, kind)
         .into_iter()
         .map(|(a, b)| {
             let raw = &text[a..b];
@@ -211,7 +211,7 @@ pub fn plan(text: &str, offset: usize, kind: DbKind, s: ExecSettings) -> Plan {
 pub fn plan_selection(sel: &str, kind: DbKind, s: ExecSettings) -> Plan {
     let v: Vec<String> = match s.selection {
         Selection::Single => vec![sel.trim().to_string()],
-        Selection::Separate => sql::split_statements(sel, kind).into_iter().map(|(a, b)| sel[a..b].trim().to_string()).collect(),
+        Selection::Separate => sql::split_script(sel, kind).into_iter().map(|(a, b)| sel[a..b].trim().to_string()).collect(),
     };
     let v: Vec<String> = v.into_iter().filter(|x| !x.is_empty()).collect();
     if v.is_empty() { Plan::Nothing } else { Plan::Run(v) }
@@ -245,6 +245,17 @@ mod tests {
         assert_eq!(opts.len(), 2);
         // 문장이 하나면 묻지 않는다
         assert_eq!(plan("select 1", 3, DbKind::Postgres, ExecSettings::default()), run(&["select 1"]));
+    }
+
+    /// `;` 없이 줄마다 쓴 문장: 캐럿 줄의 문장만 (앞 줄과 붙여 보내지 않는다)
+    #[test]
+    fn statements_without_semicolons() {
+        let t = "select * from logs.user_activity_log where user_idx = 1\nselect * from logs.user_activity_log where user_idx = 3\nselect * from public.users";
+        let s = ExecSettings { inside: Inside::Smallest, ..Default::default() };
+        let at = t.find("public.users").unwrap();
+        assert_eq!(plan(t, at, DbKind::Postgres, s), run(&["select * from public.users"]));
+        let Plan::Ask(opts) = plan(t, at, DbKind::Postgres, ExecSettings::default()) else { panic!("should ask") };
+        assert_eq!(opts[0].0, "select * from public.users");
     }
 
     #[test]

@@ -140,6 +140,29 @@ impl Harness {
         }
     }
 
+    /// 마우스 왼쪽 버튼: "down" / "drag" / "up"
+    pub fn mouse(&mut self, kind: &str, x: u16, y: u16) {
+        use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+        let kind = match kind {
+            "down" => MouseEventKind::Down(MouseButton::Left),
+            "drag" => MouseEventKind::Drag(MouseButton::Left),
+            "up" => MouseEventKind::Up(MouseButton::Left),
+            _ => panic!("unknown mouse {kind}"),
+        };
+        crate::input::on_event(&mut self.app, Event::Mouse(MouseEvent { kind, column: x, row: y, modifiers: KeyModifiers::NONE }));
+    }
+
+    /// 지금 콘솔 편집기의 (커서, 선택한 글)
+    pub fn console_cursor(&self) -> ((usize, usize), Option<String>) {
+        match self.app.tabs.get(self.app.active).map(|t| &t.kind) {
+            Some(TabKind::Console(c)) => {
+                let sel = c.editor.selection_range().map(|((r0, c0), (r1, c1))| crate::app::selected_text(c.editor.lines(), r0, c0, r1, c1));
+                (c.editor.cursor(), sel)
+            }
+            _ => panic!("active tab is not a console"),
+        }
+    }
+
     /// 터미널 붙여넣기 (bracketed paste)
     pub fn paste(&mut self, s: &str) {
         crate::input::on_event(&mut self.app, Event::Paste(s.into()));

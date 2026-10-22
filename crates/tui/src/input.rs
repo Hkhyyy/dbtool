@@ -156,6 +156,17 @@ fn mouse_drag(app: &mut App, x: u16, y: u16) {
                 g.hscroll_to(x);
             }
         }
+        Some(Drag::Editor { anchor, selecting }) => {
+            let Some(pos) = editor_pos(app, x, y) else { return };
+            if let Some(TabKind::Console(c)) = app.tabs.get_mut(app.active).map(|t| &mut t.kind) {
+                if !selecting {
+                    c.editor.move_cursor(tui_textarea::CursorMove::Jump(anchor.0 as u16, anchor.1 as u16));
+                    c.editor.start_selection();
+                }
+                c.editor.move_cursor(tui_textarea::CursorMove::Jump(pos.0 as u16, pos.1 as u16));
+            }
+            app.drag = Some(Drag::Editor { anchor, selecting: true });
+        }
         Some(Drag::Tab { id, moved }) => {
             if moved || (x, y) != app.drag_pos {
                 app.drag = Some(Drag::Tab { id, moved: true });
@@ -165,6 +176,27 @@ fn mouse_drag(app: &mut App, x: u16, y: u16) {
         }
         None => {}
     }
+}
+
+/// 화면 칸 → 콘솔 글자 위치 (줄, 칸). 마지막으로 그린 커서 칸을 기준으로 (편집기 밖이면 가장 가까운 줄·칸)
+fn editor_pos(app: &App, x: u16, y: u16) -> Option<(usize, usize)> {
+    use unicode_width::UnicodeWidthChar;
+    let (cx, cy, row, col) = app.hits.caret?;
+    let Some(TabKind::Console(c)) = app.tabs.get(app.active).map(|t| &t.kind) else { return None };
+    let lines = c.editor.lines();
+    let w = |ch: char| ch.width().unwrap_or(0) as i32;
+    let r = (row as i32 + y as i32 - cy as i32).clamp(0, lines.len().saturating_sub(1) as i32) as usize;
+    // 0번 칸이 그려졌을 화면 x (커서 줄 기준. 가로로 밀려 있어도 맞다)
+    let x0 = cx as i32 - lines.get(row)?.chars().take(col).map(w).sum::<i32>();
+    let (mut acc, mut n) = (0, 0);
+    for ch in lines[r].chars() {
+        if acc >= x as i32 - x0 {
+            break;
+        }
+        acc += w(ch);
+        n += 1;
+    }
+    Some((r, n))
 }
 
 fn mouse_up(app: &mut App, x: u16, y: u16) {
@@ -217,9 +249,17 @@ fn click(app: &mut App, x: u16, y: u16) {
         }
         return;
     }
-    // 에디터
+    // 에디터: 누른 곳으로 커서, 끌면 선택
     if inside(app.hits.editor, x, y) {
         app.focus = Focus::Editor;
+        if let Some(pos) = editor_pos(app, x, y) {
+            if let Some(TabKind::Console(c)) = app.tabs.get_mut(app.active).map(|t| &mut t.kind) {
+                c.editor.cancel_selection();
+                c.editor.move_cursor(tui_textarea::CursorMove::Jump(pos.0 as u16, pos.1 as u16));
+                c.complete = None;
+            }
+            app.drag = Some(Drag::Editor { anchor: pos, selecting: false });
+        }
         return;
     }
     // Redis 키 목록
@@ -545,8 +585,14 @@ fn editor_key(app: &mut App, k: KeyEvent) {
             app.focus = Focus::Tree;
         }
         KeyCode::BackTab => app.focus = Focus::Grid,
-        // ⌘A = 전부 고르기 (⌫ 로 지운다). 그 밖의 ⌘+글자는 글자로 넣지 않는다
+        // ⌘A = 전부 고르기 (⌫ 로 지운다), ⌘C = 고른 글 복사. 그 밖의 ⌘+글자는 글자로 넣지 않는다
         KeyCode::Char('a') if k.modifiers == KeyModifiers::SUPER => c.editor.select_all(),
+        KeyCode::Char('c') if k.modifiers == KeyModifiers::SUPER => {
+            if let Some(((r0, c0), (r1, c1))) = c.editor.selection_range() {
+                let t = crate::app::selected_text(c.editor.lines(), r0, c0, r1, c1);
+                return copy(app, &t);
+            }
+        }
         KeyCode::Char(_) if k.modifiers.contains(KeyModifiers::SUPER) => {}
         _ => {
             c.editor.input(k);
@@ -1299,6 +1345,35 @@ mod tests {
         let bar = s.lines().find(|l| l.contains("left_table") && l.contains("right_table")).unwrap_or_else(|| panic!("{s}"));
         let between = &bar[bar.find("left_table").unwrap()..bar.find("right_table").unwrap()];
         assert!(between.contains('┃'), "{bar}");
+    }
+
+    /// 콘솔 마우스: 누른 곳으로 커서, 끌면 선택 (선택한 것만 실행), 다시 누르면 선택이 풀린다
+    #[tokio::test]
+    async fn console_mouse_click_and_drag_select() {
+        let mut h = Harness::new().await;
+        h.console_with("select 1\nselect * from public.users", 0, 0);
+        let s = h.screen(120, 30);
+        let (y, line) = s.lines().enumerate().find(|(_, l)| l.contains("public.users")).unwrap();
+        let x = line[..line.find("public").unwrap()].chars().count() as u16;
+        let y = y as u16;
+        h.mouse("down", x, y);
+        h.mouse("drag", x + 3, y);
+        h.screen(120, 30);
+        h.mouse("drag", x + 6, y);
+        h.mouse("up", x + 6, y);
+        assert_eq!(h.console_cursor(), ((1, 20), Some("public".to_string())));
+        // ⌘C 는 고른 글을 클립보드로 (터미널의 끌어서 복사는 앱이 마우스를 잡아서 안 된다)
+        h.key("Cmd+c");
+        assert_eq!(h.app.status, "Copied: public");
+        // 윗줄 "1" 을 누르면 커서가 거기로, 선택은 풀린다
+        h.screen(120, 30);
+        h.mouse("down", x - 7, y - 1);
+        h.mouse("up", x - 7, y - 1);
+        assert_eq!(h.console_cursor(), ((0, 7), None));
+        // 줄 끝 너머를 누르면 그 줄 끝
+        h.mouse("down", x + 40, y);
+        h.mouse("up", x + 40, y);
+        assert_eq!(h.console_cursor(), ((1, 26), None));
     }
 
     /// 새 버전 알림은 TUI 안에서 바로 업데이트하는 길을 알려준다

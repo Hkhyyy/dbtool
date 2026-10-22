@@ -199,6 +199,7 @@ fn draw_tabs(f: &mut Frame, app: &mut App, area: Rect) {
         f.render_widget(p, area);
         return;
     }
+    app.hits.caret = None;
     for r in [&mut app.hits.editor, &mut app.hits.results, &mut app.hits.redis_keys, &mut app.hits.redis_value, &mut app.hits.console, &mut app.hits.divider] {
         *r = Rect::default();
     }
@@ -334,11 +335,15 @@ fn draw_pane(f: &mut Frame, app: &mut App, idx: usize, body: Rect, focused: bool
             }
             c.editor.set_block(block(title, editing));
             c.editor.set_line_number_style(Style::default().fg(DIM));
-            c.editor.set_cursor_style(if editing { Style::default().add_modifier(Modifier::REVERSED) } else { Style::default() });
+            // 커서 칸에는 보이지 않는 표시(밑줄 색)를 단다: 그린 뒤 찾아서 자동완성 위치·마우스 위치 계산에 쓴다
+            let mark = Style::default().underline_color(CARET_MARK);
+            c.editor.set_cursor_style(if editing { mark.add_modifier(Modifier::REVERSED) } else { mark });
             f.render_widget(&c.editor, ed);
-            // 자동완성 목록 위치: 방금 그린 커서 칸 (tui-textarea 는 스크롤 위치를 공개하지 않는다)
-            let caret = if editing && c.complete.is_some() { find_caret(f, ed) } else { None };
+            // tui-textarea 는 스크롤 위치를 공개하지 않는다 → 방금 그린 커서 칸
+            let drawn = find_caret(f, ed);
+            let caret = if editing && c.complete.is_some() { drawn } else { None };
             if focused {
+                app.hits.caret = drawn.map(|(x, y)| (x, y, c.editor.cursor().0, c.editor.cursor().1));
                 app.hits.editor = ed;
                 app.hits.results = res;
                 app.hits.console = body;
@@ -460,11 +465,14 @@ fn draw_pane(f: &mut Frame, app: &mut App, idx: usize, body: Rect, focused: bool
 }
 
 /// 에디터 안에서 커서(반전 칸) 위치
+/// 콘솔 커서 칸 표시 (밑줄을 켜지 않으니 보이지 않는다)
+const CARET_MARK: Color = Color::Rgb(1, 2, 3);
+
 fn find_caret(f: &mut Frame, area: Rect) -> Option<(u16, u16)> {
     let buf = f.buffer_mut();
     for y in area.top()..area.bottom() {
         for x in area.left()..area.right() {
-            if buf[(x, y)].modifier.contains(Modifier::REVERSED) {
+            if buf[(x, y)].underline_color == CARET_MARK {
                 return Some((x, y));
             }
         }

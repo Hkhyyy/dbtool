@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { QueryResult, Dialect } from "../lib/api";
-import { splitStatements } from "../lib/sqlSplit";
+import { splitScript } from "../lib/sqlSplit";
 import { DEFAULT_EXEC, ExecSettings, planExecution } from "../lib/execPlan";
 import { ConsoleEditor, EditorApi, RunRequest } from "./ConsoleEditor";
 import { ContextMenu, MenuItem } from "./Explorer";
@@ -104,7 +104,7 @@ export function ConsolePane(p: Props) {
   };
 
   /** ⌘↩ 실행 규칙 (DataGrip Query Execution 설정) */
-  const splitFn = p.dialect?.split ?? ((t: string) => splitStatements(t, p.dialect?.monaco === "mysql"));
+  const splitFn = p.dialect?.split ?? ((t: string) => splitScript(t, p.dialect?.monaco === "mysql"));
   const onRun = (req: RunRequest) => {
     const { text, offset, selection } = req;
     if (selection && selection.text.trim()) {
