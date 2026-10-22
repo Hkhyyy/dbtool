@@ -187,12 +187,22 @@ fn draw_tree(f: &mut Frame, app: &mut App, area: Rect) {
 
 fn draw_tabs(f: &mut Frame, app: &mut App, area: Rect) {
     if app.tabs.is_empty() {
+        let key = |a| app.keys.keys(a).first().cloned().unwrap_or_default();
         let p = Paragraph::new(vec![
             Line::raw(""),
             Line::styled("dbtool", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
             Line::raw(""),
-            Line::raw("Enter on a data source to connect · Enter on a table to edit data"),
-            Line::raw(disp("Ctrl+L new query console · Ctrl+P search everywhere · Ctrl+K actions · F1 keymap")),
+            Line::styled(format!("Not sure? Press {}", disp(&key(crate::app::Action::SearchEverywhere))), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Line::raw("search tables, columns, open tabs and actions"),
+            Line::raw(""),
+            Line::styled(
+                format!(
+                    "Enter on a data source connects · {} new console · {} all actions · F1 keymap",
+                    disp(&key(crate::app::Action::NewConsole)),
+                    disp(&key(crate::app::Action::Palette))
+                ),
+                Style::default().fg(DIM),
+            ),
         ])
         .alignment(Alignment::Center)
         .block(block("", false));
@@ -519,30 +529,79 @@ fn draw_completion(f: &mut Frame, cmp: &crate::app::Completion, x: u16, y: u16) 
     f.render_widget(List::new(items).block(block(title, true)).style(Style::default().bg(Color::Rgb(30, 31, 34))), r);
 }
 
-fn draw_status(f: &mut Frame, app: &App, area: Rect) {
-    let hints = match app.focus {
-        Focus::Tree => "↑↓ move · → expand · Enter open · F4 console · Ctrl+B DDL · n new · e edit · / filter",
-        Focus::Editor => "F5/Ctrl+Enter run · Ctrl+Space complete · Alt+E explain · Alt+T tx · Shift+Tab result · Ctrl+O object · Ctrl+K actions",
-        Focus::Grid => match app.tabs.get(app.active).map(|t| &t.kind) {
-            Some(TabKind::Table(_)) => "Enter edit · n NULL · a add · d delete · Ctrl+S submit · s sort · w where · o order · x export",
-            Some(TabKind::Redis(_)) => "Enter value · / pattern · m more · e edit · x del item · D del key · t TTL · R rename · : command",
-            Some(TabKind::Text(_)) => "arrows move · PgUp/PgDn · y copy · Esc explorer",
-            _ => "arrows move · PgUp/PgDn · Home/End · s sort · Esc editor · x export",
-        },
+/// 하단 안내: (이 화면에서 쓰는 키, 자주 쓰는 전역 키). 바꿀 수 있는 명령은 지금 키맵의 첫 키로
+fn status_hints(app: &App) -> (Vec<(String, &'static str)>, Vec<(String, &'static str)>) {
+    use crate::app::Action as A;
+    let key = |a: A| app.keys.keys(a).first().map(|k| disp(k));
+    let fixed = |k: &str, l: &'static str| Some((disp(k), l));
+    let cmd = |a: A, l: &'static str| key(a).map(|k| (k, l));
+    let (ctx, glob) = match app.focus {
+        Focus::Tree => (
+            vec![fixed("Enter", "open"), fixed("F4", "console"), fixed("s", "schemas"), fixed("/", "filter"), fixed("n", "new"), fixed("e", "edit"), fixed("r", "refresh"), cmd(A::Ddl, "DDL")],
+            vec![cmd(A::SearchEverywhere, "search"), cmd(A::Palette, "actions"), cmd(A::Help, "keys")],
+        ),
+        Focus::Editor => (
+            vec![cmd(A::Execute, "run"), cmd(A::Complete, "complete"), cmd(A::Explain, "explain"), cmd(A::TxToggle, "tx"), fixed("⇧Tab", "result"), fixed("⌘A ⌫", "clear"), fixed("Esc", "explorer")],
+            vec![cmd(A::SearchEverywhere, "search"), cmd(A::RecentTabs, "tabs"), cmd(A::Palette, "actions")],
+        ),
+        Focus::Grid => (
+            match app.tabs.get(app.active).map(|t| &t.kind) {
+                Some(TabKind::Table(_)) => vec![
+                    fixed("Enter", "edit"), fixed("a", "add"), fixed("d", "delete"), fixed("n", "NULL"), fixed("Ctrl+S", "submit"), fixed("Ctrl+Z", "revert"), fixed("w", "where"), fixed("o", "order"), fixed("s", "sort"), fixed("x", "export"),
+                ],
+                Some(TabKind::Redis(_)) => vec![fixed("Enter", "value"), fixed("/", "pattern"), fixed("a", "add"), fixed("D", "del key"), fixed("t", "TTL"), fixed("R", "rename"), fixed(":", "command")],
+                Some(TabKind::Text(_)) => vec![fixed("y", "copy"), fixed("Esc", "explorer")],
+                _ => vec![fixed("s", "sort"), fixed("y", "copy"), fixed("x", "export"), fixed("Esc", "editor")],
+            },
+            vec![cmd(A::NewConsole, "console"), cmd(A::RecentTabs, "tabs"), cmd(A::SearchEverywhere, "search"), cmd(A::Palette, "actions")],
+        ),
     };
-    let hints = disp(hints);
-    let hints = hints.as_str();
+    (ctx.into_iter().flatten().collect(), glob.into_iter().flatten().collect())
+}
+
+/// 안내 한 줄: 화면 키 · … │ 전역 키 · … (폭 w 를 넘으면 화면 키를 뒤에서부터 뺀다)
+fn hint_line(mut ctx: Vec<(String, &'static str)>, glob: Vec<(String, &'static str)>, w: usize) -> Line<'static> {
+    use unicode_width::UnicodeWidthStr;
+    let width = |v: &[(String, &str)]| v.iter().map(|(k, l)| k.width() + 1 + l.width() + 3).sum::<usize>();
+    while !ctx.is_empty() && width(&ctx) + width(&glob) + 1 > w {
+        ctx.pop();
+    }
+    let mut spans = vec![];
+    let push = |v: Vec<(String, &'static str)>, spans: &mut Vec<Span<'static>>| {
+        for (i, (k, l)) in v.into_iter().enumerate() {
+            if i > 0 {
+                spans.push(Span::styled(" · ", Style::default().fg(DIM)));
+            }
+            spans.push(Span::styled(k, Style::default().fg(ACCENT)));
+            spans.push(Span::styled(format!(" {l}"), Style::default().fg(DIM)));
+        }
+    };
+    let has_ctx = !ctx.is_empty();
+    push(ctx, &mut spans);
+    if has_ctx {
+        spans.push(Span::styled(" │ ", Style::default().fg(DIM)));
+    }
+    push(glob, &mut spans);
+    spans.push(Span::raw(" "));
+    Line::from(spans)
+}
+
+fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     // 새 버전 알림은 상태 글 앞에 계속 보인다
     let badge = app.update.as_ref().map(|v| format!(" ⬆ v{v} available — {} › Update dbtool & Restart ", app.keys.label(crate::app::Action::Palette)));
     let bw = badge.as_ref().map(|b| b.chars().count() as u16).unwrap_or(0);
-    // 폭이 모자라면 오른쪽 힌트를 줄인다 (업데이트 알림이 잘리지 않게)
-    let hw = (hints.chars().count() as u16 + 1).min(area.width.saturating_sub(bw + 12));
+    // 폭이 모자라면 오른쪽 안내를 줄인다 (업데이트 알림·상태 글이 잘리지 않게)
+    let (ctx, glob) = status_hints(app);
+    // 상태 글은 화면 폭의 절반까지는 먼저 자리를 잡는다 (오류·결과 문구가 잘리지 않게)
+    let sw = (disp(&app.status).chars().count() as u16 + 2).clamp(12, area.width / 2);
+    let hints = hint_line(ctx, glob, area.width.saturating_sub(bw + sw) as usize);
+    let hw = (hints.width() as u16).min(area.width.saturating_sub(bw + 12));
     let [u, l, r] = Layout::horizontal([Constraint::Length(bw), Constraint::Min(10), Constraint::Length(hw)]).areas(area);
     if let Some(b) = badge {
         f.render_widget(Paragraph::new(b).style(Style::default().fg(Color::Black).bg(Color::Rgb(201, 162, 109))), u);
     }
     f.render_widget(Paragraph::new(format!(" {}", disp(&app.status))).style(Style::default().fg(Color::Gray).bg(Color::Rgb(43, 45, 48))), l);
-    f.render_widget(Paragraph::new(hints).style(Style::default().fg(DIM).bg(Color::Rgb(43, 45, 48))), r);
+    f.render_widget(Paragraph::new(hints).style(Style::default().bg(Color::Rgb(43, 45, 48))), r);
 }
 
 fn centered(area: Rect, w: u16, h: u16) -> Rect {
@@ -555,10 +614,15 @@ fn draw_popup(f: &mut Frame, app: &mut App) {
     let area = f.area();
     match app.popup.as_mut().unwrap() {
         Popup::Help { sel, scroll, record, message } => {
-            let mut lines = vec![Line::styled(
-                "Commands — ↑↓ select · Enter change · a add key · Del reset to default",
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
-            )];
+            // Start here (고르지 않는 줄) → Commands → 고정 키
+            let bold = Style::default().fg(Color::White).add_modifier(Modifier::BOLD);
+            let mut lines = vec![Line::styled("Start here", bold)];
+            for (k, d) in crate::help::start_here(&app.keys) {
+                lines.push(Line::from(vec![Span::styled(format!("  {k:<30}"), Style::default().fg(ACCENT)), Span::raw(d)]));
+            }
+            lines.push(Line::raw(""));
+            lines.push(Line::styled("Commands — ↑↓ select · Enter change · a add key · Del reset to default", bold));
+            let top = lines.len();
             for (i, (a, _)) in crate::keys::DEFAULT_KEYS.iter().enumerate() {
                 let custom = app.keys.is_custom(*a);
                 let keys = if i == *sel && record.is_some() { "press a key… (Esc cancels)".to_string() } else { app.keys.label(*a) };
@@ -575,7 +639,7 @@ fn draw_popup(f: &mut Frame, app: &mut App) {
             lines.push(Line::raw(""));
             // 고정 키 목록: Commands 다음 번호부터 이어서 고를 수 있다 (바꾸지는 못한다)
             let mut i = crate::keys::DEFAULT_KEYS.len();
-            let mut sel_line = *sel + 1;
+            let mut sel_line = top + *sel;
             for (title, rows) in crate::help::HELP {
                 lines.push(Line::styled(title.to_string(), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)));
                 for (k, d) in *rows {

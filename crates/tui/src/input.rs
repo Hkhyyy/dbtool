@@ -1376,6 +1376,50 @@ mod tests {
         assert_eq!(h.console_cursor(), ((1, 26), None));
     }
 
+    /// 하단 안내: 포커스마다 그 화면 키 + 자주 쓰는 전역 키. 좁으면 화면 키를 줄이고 전역 키는 남긴다
+    #[tokio::test]
+    async fn status_bar_guides_by_focus() {
+        use crate::keys::disp;
+        let mut h = Harness::new().await;
+        let last = |s: &str| s.lines().last().unwrap().to_string();
+        // 탐색기
+        let s = last(&h.screen(220, 20));
+        for want in ["Enter open", "F4 console", "s schemas", "/ filter", &disp("Ctrl+P search"), &disp("Ctrl+K actions")] {
+            assert!(s.contains(want), "tree: {want:?} in {s}");
+        }
+        // 표 데이터
+        let id = h.table_tab("t", &["id"], &[&["1"]], &["id"]);
+        let i = h.app.tab_index(id).unwrap();
+        h.app.activate(i);
+        h.app.focus = crate::app::Focus::Grid;
+        let s = last(&h.screen(220, 20));
+        for want in ["Enter edit", "a add", "d delete", &disp("Ctrl+S submit"), "w where", &disp("Ctrl+L console"), &disp("Ctrl+E tabs"), &disp("Ctrl+K actions")] {
+            assert!(s.contains(want), "table: {want:?} in {s}");
+        }
+        // 좁은 화면: 전역 키는 남는다
+        let s = last(&h.screen(90, 20));
+        assert!(s.contains(&disp("Ctrl+K actions")), "narrow: {s}");
+        // 콘솔 편집기
+        h.console_tab();
+        let s = last(&h.screen(220, 20));
+        for want in [&disp("F5 run"), &disp("Ctrl+Space complete"), "⇧Tab result", &disp("Ctrl+E tabs"), &disp("Ctrl+P search")] {
+            assert!(s.contains(want), "editor: {want:?} in {s}");
+        }
+    }
+
+    /// 처음 화면과 F1: 모르겠으면 ⌃P 부터
+    #[tokio::test]
+    async fn start_here_points_to_search() {
+        use crate::keys::disp;
+        let mut h = Harness::new().await;
+        assert!(h.screen(140, 30).contains(&disp("Not sure? Press Ctrl+P")));
+        h.key("F1");
+        let s = h.screen(140, 40);
+        let start = s.find("Start here").expect("F1 starts with Start here");
+        assert!(start < s.find("Commands").unwrap());
+        assert!(s.contains("Search everything"));
+    }
+
     /// 새 버전 알림은 TUI 안에서 바로 업데이트하는 길을 알려준다
     #[tokio::test]
     async fn update_badge_points_to_in_app_update() {

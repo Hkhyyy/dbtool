@@ -83,8 +83,30 @@ pub const HELP: &[(&str, &[(&str, &str)])] = &[
 ];
 
 /// `--help` 출력 (명령 단축키는 기본값)
+/// F1 맨 위 "Start here": 처음 쓸 때 알아야 할 키 (명령은 지금 키맵으로)
+pub fn start_here(keys: &crate::keys::Keymap) -> Vec<(String, &'static str)> {
+    use crate::app::Action as A;
+    let k = |a: A| keys.label(a);
+    vec![
+        (k(A::SearchEverywhere), "Search everything: tables, columns, tabs, actions (not sure? start here)"),
+        (k(A::Palette), "All actions, each with its shortcut"),
+        (k(A::NewConsole), "New query console for the selected data source"),
+        (k(A::Execute), "Run (asks what to run when there are several statements)"),
+        (k(A::RecentTabs), "Recent tabs"),
+        (k(A::CloseTab), "Close tab"),
+        ("Enter (explorer)".into(), "Connect · open a table"),
+        ("s (explorer)".into(), "Choose the databases and schemas shown"),
+        ("Esc".into(), "Back to the explorer"),
+        (k(A::Quit), "Quit"),
+    ]
+}
+
 pub fn text() -> String {
-    let mut s = String::from("\nCommands (change them with F1)\n");
+    let mut s = String::from("\nStart here\n");
+    for (k, d) in start_here(&crate::keys::Keymap::new(&Default::default())) {
+        s.push_str(&format!("  {:<30} {}\n", k, d));
+    }
+    s.push_str("\nCommands (change them with F1)\n");
     for (a, keys) in crate::keys::DEFAULT_KEYS {
         s.push_str(&format!("  {:<30} {}\n", crate::keys::disp(&keys.join(" / ")), crate::input::name_of(*a)));
     }

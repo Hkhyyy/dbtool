@@ -483,7 +483,7 @@ impl App {
             focus: Focus::Tree,
             explorer: true,
             popup: None,
-            status: "Ready — F1 keymap · Ctrl+K actions · Ctrl+O go to object".into(),
+            status: "Ready — not sure? Ctrl+P searches everything · F1 keymap".into(),
             quit: false,
             panes: crate::panes::Pane::Leaf(0),
             group_active: [None; crate::panes::MAX],
