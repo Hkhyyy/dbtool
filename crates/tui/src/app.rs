@@ -78,6 +78,8 @@ pub enum Drag {
     Explorer,
     /// 탭 (moved = 실제로 끌었는지. 그냥 클릭이면 false)
     Tab { id: u64, moved: bool },
+    /// 콘솔에서 글 선택 (anchor = 누른 곳, selecting = 끌기 시작했는지)
+    Editor { anchor: (usize, usize), selecting: bool },
 }
 
 /// 탭을 놓을 곳
@@ -376,6 +378,8 @@ pub struct Hits {
     pub divider: ratatui::layout::Rect,
     /// 더블클릭 판정: (시각, x, y)
     pub last_click: Option<(std::time::Instant, u16, u16)>,
+    /// 콘솔 커서를 그린 화면 칸과 그때 커서 (줄, 칸) — 마우스 위치를 글자 위치로 바꿀 때 (tui-textarea 는 스크롤 위치를 공개하지 않는다)
+    pub caret: Option<(u16, u16, usize, usize)>,
 }
 
 pub struct App {

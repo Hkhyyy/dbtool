@@ -275,6 +275,7 @@ Ctrl+Enter is only distinguishable in terminals that support the kitty keyboard 
 | `Esc` | Go to the explorer |
 | `Ctrl+U / Ctrl+R` | Undo / redo (editor) |
 | `⌘A  ⌫` | Select all, then delete (or Ctrl+K › Clear Console) |
+| `click / drag  ⌘C` | Move the cursor / select text (runs only the selection) · copy the selection |
 | `mouse drag` | Drag the editor/result border to resize |
 
 #### Tabs & split (mouse)
