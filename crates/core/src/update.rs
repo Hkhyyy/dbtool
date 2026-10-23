@@ -56,6 +56,8 @@ pub fn changes(notes: &str) -> Vec<String> {
             None => (item, None),
         };
         let title = title.rsplit_once(" by @").map(|(t, _)| t).unwrap_or(title).trim();
+        // 터미널에 그대로 찍히므로 제어문자(ESC 등)는 뺀다
+        let title: String = title.chars().filter(|c| !c.is_control()).collect();
         out.push(match pr {
             Some(n) => format!("{title} (#{n})"),
             None => title.to_string(),
@@ -200,6 +202,8 @@ mod tests {
         let body = "## dbtool 0.1.12 (macOS)\n\n### Install\n* not this\n\n## What's Changed\n* [fix] ; 없는 문장 나누기 by @Hkhyyy in https://github.com/Hkhyyy/dbtool/pull/17\n* [feat] 다른 것 by @someone in https://github.com/Hkhyyy/dbtool/pull/16\n\n## New Contributors\n* @x made their first contribution\n\n**Full Changelog**: https://github.com/Hkhyyy/dbtool/compare/v0.1.11...v0.1.12";
         assert_eq!(changes(body), ["[fix] ; 없는 문장 나누기 (#17)", "[feat] 다른 것 (#16)"]);
         assert!(changes("no section").is_empty());
+        // PR 제목의 터미널 제어문자는 지운다 (--update 가 그대로 찍는다)
+        assert_eq!(changes("## What's Changed\n* [fix] a\x1b]0;x\x07b by @u in https://github.com/Hkhyyy/qurry/pull/9"), ["[fix] a]0;xb (#9)"]);
     }
 
     /// 릴리스 목록 → 최신 + 버전마다 바뀐 것, 지금 버전보다 새 것만 (최신부터)

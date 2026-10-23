@@ -1332,6 +1332,20 @@ mod tests {
         assert_eq!(h.app.state.store.get("c1").unwrap().unwrap().scope.databases, Some(vec!["shop".to_string()]));
         // 트리도 바로 새 범위를 쓴다
         assert_eq!(h.app.conn("c1").unwrap().config.scope.databases, Some(vec!["shop".to_string()]));
+
+        // 그 사이 다른 곳(GUI·MCP)에서 바꾼 설정을 예전 값으로 되돌리지 않는다 (읽기 전용을 켜 둔 것 등)
+        let mut changed = h.app.state.store.get("c1").unwrap().unwrap();
+        changed.read_only = true;
+        changed.host = "db.internal".into();
+        h.app.state.store.save(&changed).unwrap();
+        h.app.open_scope("c1", dbs(), None);
+        h.key("Down");
+        h.key("Space"); // Default database 켜기
+        h.key("Enter");
+        let saved = h.app.state.store.get("c1").unwrap().unwrap();
+        assert!(saved.read_only, "read_only reverted");
+        assert_eq!(saved.host, "db.internal");
+        assert_eq!(saved.scope.databases, Some(vec!["shop".to_string(), "@default".to_string()]));
     }
 
     /// 좌우로 나눈 화면: 두 칸의 탭 바 사이에 구분선이 있다 (이어진 한 줄로 보이지 않게)

@@ -7,6 +7,9 @@
 # 이름 변경(dbtool → Qurry) 이전 설치도 업데이트되게: CLI 묶음을 dbtool-cli_… 이름으로도 올리고, 묶음 안에 dbtool-tui / dbtool-mcp 도 넣는다
 #   (0.1.x 의 dbtool-tui --update 는 dbtool-cli_ 묶음에서 dbtool-tui · dbtool-mcp 를 찾는다).
 #   서명 키는 레포 Secrets(TAURI_SIGNING_PRIVATE_KEY / _PASSWORD), 공개키는 src-tauri/tauri.conf.json.
+#   키는 Sign 단계에만 넘긴다: 빌드(빌드 스크립트·플러그인이 모두 도는 단계)에는 넘기지 않는다.
+#   SHA256SUMS 도 같은 키로 서명한다 (SHA256SUMS.sig — qurry-tui --update 가 확인).
+# main 에서만 돈다 (다른 브랜치에서 수동 실행해 latest 로 내보내지 못하게).
 name: Release
 
 on:
@@ -26,6 +29,7 @@ concurrency:
 
 jobs:
   release:
+    if: github.ref == 'refs/heads/main'
     runs-on: macos-14
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -79,11 +83,9 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build GUI (dmg + in-app update bundle)
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: pnpm tauri build --bundles app,dmg -- --locked
+      - name: Build GUI (dmg + app, unsigned)
+        # 업데이트 묶음은 아래에서 직접 만들고 Sign 단계에서 서명한다 (여기엔 서명 키가 없다)
+        run: pnpm tauri build --bundles app,dmg --config '{"bundle":{"createUpdaterArtifacts":false}}' -- --locked
 
       - name: Build TUI and MCP
         run: cargo build --release --locked -p qurry-tui -p qurry-mcp
@@ -101,17 +103,29 @@ jobs:
           cp cli/qurry-mcp cli/dbtool-mcp
           tar -czf "dist-release/qurry-cli_${V}_aarch64-apple-darwin.tar.gz" -C cli qurry-tui qurry-mcp dbtool-tui dbtool-mcp
           cp "dist-release/qurry-cli_${V}_aarch64-apple-darwin.tar.gz" "dist-release/dbtool-cli_${V}_aarch64-apple-darwin.tar.gz"
-          # 앱 안 업데이트: 서명된 .app.tar.gz + latest.json (앱은 releases/latest/download/latest.json 을 본다)
+          # 앱 안 업데이트 묶음 (Tauri 와 같은 형식: 맨 위가 Qurry.app/). 서명은 다음 단계에서
+          COPYFILE_DISABLE=1 tar --no-mac-metadata -czf "dist-release/Qurry_${V}_aarch64.app.tar.gz" -C target/release/bundle/macos Qurry.app
+          sed "s/{{VERSION}}/${V}/g" .github/release-notes.md > release-notes.md
+
+      - name: Sign (updater bundle, SHA256SUMS)
+        # 서명 키는 이 단계에만. 실행하는 것은 tauri signer 뿐이다
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          V: ${{ steps.ver.outputs.version }}
+        run: |
           app="Qurry_${V}_aarch64.app.tar.gz"
-          cp target/release/bundle/macos/Qurry.app.tar.gz "dist-release/$app"
-          jq -n --arg v "$V" --arg sig "$(cat target/release/bundle/macos/Qurry.app.tar.gz.sig)" \
+          pnpm tauri signer sign "dist-release/$app" > /dev/null
+          mv "dist-release/$app.sig" app.sig
+          # latest.json: 앱은 releases/latest/download/latest.json 을 본다
+          jq -n --arg v "$V" --arg sig "$(cat app.sig)" \
             --arg url "https://github.com/${GITHUB_REPOSITORY}/releases/download/v${V}/$app" \
             --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             '{version: $v, pub_date: $date, platforms: {"darwin-aarch64": {signature: $sig, url: $url}}}' > dist-release/latest.json
           cat dist-release/latest.json
-          sed "s/{{VERSION}}/${V}/g" .github/release-notes.md > release-notes.md
-          # 체크섬 (qurry-tui --update 가 검증한다)
+          # 체크섬 + 그 서명 (qurry-tui --update 가 둘 다 확인한다)
           (cd dist-release && shasum -a 256 * > SHA256SUMS && cat SHA256SUMS)
+          pnpm tauri signer sign dist-release/SHA256SUMS > /dev/null
           ls -la dist-release
 
       - name: Attest build provenance

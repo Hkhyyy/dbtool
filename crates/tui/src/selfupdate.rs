@@ -92,15 +92,33 @@ pub async fn install(quiet: bool) -> std::io::Result<Outcome> {
     let Some(sums) = rel.assets.iter().find(|a| a.name == "SHA256SUMS").cloned() else {
         return Ok(Outcome::Skipped(format!("Qurry {} has no SHA256SUMS file, so it can't be verified. Download it yourself from {}", rel.version, rel.url)));
     };
-    if !trusted_url(&asset.url) || !trusted_url(&sums.url) {
+    let Some(sums_sig) = rel.assets.iter().find(|a| a.name == "SHA256SUMS.sig").cloned() else {
+        return Ok(Outcome::Skipped(format!("Qurry {} has no signed SHA256SUMS, so it can't be verified. Download it yourself from {}", rel.version, rel.url)));
+    };
+    if !trusted_url(&asset.url) || !trusted_url(&sums.url) || !trusted_url(&sums_sig.url) {
         return Err(err(format!("refusing to download from an unexpected address: {}", asset.url)));
     }
     if !quiet {
         print!("{}", update::changes_text(&rel.changes_since(cur)));
         println!("Updating qurry-tui {cur} → {} …", rel.version);
     }
-    let paths = tokio::task::spawn_blocking(move || replace(&exe, &asset, &sums, quiet)).await.map_err(err)??;
+    let paths = tokio::task::spawn_blocking(move || replace(&exe, &asset, &sums, &sums_sig, quiet)).await.map_err(err)??;
     Ok(Outcome::Installed { version: rel.version, paths })
+}
+
+/// 업데이트 서명 공개키 (GUI tauri.conf.json 의 plugins.updater.pubkey 와 같다 — 테스트가 확인)
+pub const UPDATE_PUBKEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDA0MjA1NDlDN0EyODFEM0YKUldRL0hTaDZuRlFnQklTVks5ZFNkdVBNamNqK0JJWEY0akRmR3p3azVGQ2ZiTXUwM2xiL3VtUWwK";
+
+/// SHA256SUMS 의 서명(릴리스의 SHA256SUMS.sig, tauri signer 형식 = minisign 서명 글의 base64) 확인
+fn verify_sums(sums: &[u8], sig_b64: &str) -> Result<(), String> {
+    use base64::Engine;
+    let b64 = |s: &str| -> Result<String, String> {
+        let raw = base64::engine::general_purpose::STANDARD.decode(s.trim()).map_err(|e| format!("bad base64: {e}"))?;
+        String::from_utf8(raw).map_err(|e| e.to_string())
+    };
+    let pk = minisign_verify::PublicKey::decode(&b64(UPDATE_PUBKEY)?).map_err(|e| format!("bad public key: {e}"))?;
+    let sig = minisign_verify::Signature::decode(&b64(sig_b64)?).map_err(|e| format!("bad signature: {e}"))?;
+    pk.verify(sums, &sig, false).map_err(|e| format!("signature check failed: {e}"))
 }
 
 /// 설치할 이름: 새 이름은 늘, 예전 이름(dbtool-*)은 이미 있을 때만
@@ -111,7 +129,7 @@ fn install_names(exists: impl Fn(&str) -> bool) -> Vec<&'static str> {
 }
 
 /// 받아서 검증하고 exe 와 같은 폴더의 qurry-tui·qurry-mcp 를 바꿔 넣는다
-fn replace(exe: &Path, asset: &update::Asset, sums: &update::Asset, quiet: bool) -> std::io::Result<Vec<PathBuf>> {
+fn replace(exe: &Path, asset: &update::Asset, sums: &update::Asset, sums_sig: &update::Asset, quiet: bool) -> std::io::Result<Vec<PathBuf>> {
     // 임시 폴더는 새로 만든다 (이미 있으면 남이 만든 것일 수 있어 쓰지 않는다)
     let tmp = std::env::temp_dir().join(format!("dbtool-update-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)));
     std::fs::create_dir(&tmp)?;
@@ -124,6 +142,10 @@ fn replace(exe: &Path, asset: &update::Asset, sums: &update::Asset, quiet: bool)
     let result = (|| -> std::io::Result<Vec<PathBuf>> {
         let sums_file = tmp.join("SHA256SUMS");
         download(&sums.url, &sums_file, quiet)?;
+        // 체크섬 목록이 업데이트 키로 서명됐는지 먼저 (GUI 업데이트와 같은 키)
+        let sig_file = tmp.join("SHA256SUMS.sig");
+        download(&sums_sig.url, &sig_file, quiet)?;
+        verify_sums(&std::fs::read(&sums_file)?, &std::fs::read_to_string(&sig_file)?).map_err(|e| err(format!("SHA256SUMS {e} — not installed")))?;
         download(&asset.url, &tgz, quiet)?;
         // 받은 파일이 릴리스에 올라간 것과 같은지
         let want = expected_sha(&std::fs::read_to_string(&sums_file)?, &asset.name).ok_or_else(|| err(format!("{} is not listed in SHA256SUMS", asset.name)))?;
@@ -201,6 +223,19 @@ mod tests {
         assert_eq!(super::install_names(has(&[])), ["qurry-tui", "qurry-mcp"]);
         assert_eq!(super::install_names(has(&["dbtool-tui", "dbtool-mcp"])), ["qurry-tui", "qurry-mcp", "dbtool-tui", "dbtool-mcp"]);
         assert_eq!(super::install_names(has(&["dbtool-mcp"])), ["qurry-tui", "qurry-mcp", "dbtool-mcp"]);
+    }
+
+    /// SHA256SUMS 는 GUI 업데이트와 같은 키로 서명돼 있어야 한다 (릴리스·계정이 털려도 체크섬만 바꿔서는 못 넘어온다)
+    #[test]
+    fn sums_must_be_signed_with_the_update_key() {
+        // 실제 키로 "hello\n" 에 서명한 것
+        const SIG: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRL0hTaDZuRlFnQkFMUWNzY1hnK3BORU8rU2hESWFGWnJOb0hEZTZBT1lUVFc1QmNjWEs5TVdaYnRhSllBbXVDUDJuYUR6azJCd1dLd0JaU3V3akJMRExwQiswdkhyZVFBPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkyNzIyOTE5CWZpbGU6U0hBMjU2U1VNUwpCbytybzN4VVNOeXJlVFRHZXFGRHZidGJBV00zU1JKMk1SRXRJZVhCcEZIbS9TNUVuWm5FZVhKeGh0RG15VFNQVDFtTFUzdXpTd3VFelhVUlg2VldCUT09Cg==";
+        assert!(super::verify_sums(b"hello\n", SIG).is_ok());
+        assert!(super::verify_sums(b"hello!\n", SIG).is_err());
+        assert!(super::verify_sums(b"hello\n", "bm90IGEgc2lnbmF0dXJl").is_err());
+        // GUI(tauri.conf.json) 와 같은 공개키
+        let conf: serde_json::Value = serde_json::from_str(include_str!("../../../src-tauri/tauri.conf.json")).unwrap();
+        assert_eq!(conf["plugins"]["updater"]["pubkey"].as_str(), Some(super::UPDATE_PUBKEY));
     }
 
     #[test]

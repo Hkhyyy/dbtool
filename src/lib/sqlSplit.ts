@@ -25,7 +25,7 @@ export function splitStatements(text: string, backslashEscapes = false): Segment
     if (c === "'" || c === '"' || c === "`") {
       let j = i + 1;
       while (j < n) {
-        if (backslashEscapes && text[j] === "\\") {
+        if (backslashEscapes && c !== "`" && text[j] === "\\") {
           j += 2;
           continue;
         }
@@ -140,7 +140,7 @@ function scriptCuts(text: string, s: number, e: number, backslashEscapes: boolea
     if (c === "'" || c === '"' || c === "`") {
       let j = i + 1;
       while (j < e) {
-        if (backslashEscapes && text[j] === "\\") {
+        if (backslashEscapes && c !== "`" && text[j] === "\\") {
           j += 2;
           continue;
         }
