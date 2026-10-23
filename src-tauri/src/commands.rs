@@ -278,8 +278,9 @@ pub async fn install_update(app: tauri::AppHandle) -> AppResult<()> {
         return Err(crate::error::AppError::Msg("No update to install (the latest release has no in-app update for this platform — download it from the Release Page).".into()));
     };
     let mut got = 0u64;
-    update
-        .download_and_install(
+    // download 가 서명까지 확인한다
+    let bytes = update
+        .download(
             |n, total| {
                 got += n as u64;
                 let _ = app.emit("update-progress", (got, total));
@@ -288,6 +289,15 @@ pub async fn install_update(app: tauri::AppHandle) -> AppResult<()> {
         )
         .await
         .map_err(msg)?;
+    // macOS: 앱 폴더는 그대로 두고 Contents 만 바꾼다 (Dock 고정 아이콘이 계속 이 앱을 가리키게).
+    // 못 하면(관리자 권한이 필요한 위치 등) updater 기본 설치로
+    #[cfg(target_os = "macos")]
+    if let Some(bundle) = std::env::current_exe().ok().and_then(|e| crate::bundle::app_bundle(&e))
+        && crate::bundle::install_contents(&bundle, &bytes).is_ok()
+    {
+        app.restart()
+    }
+    update.install(&bytes).map_err(msg)?;
     app.restart()
 }
 
