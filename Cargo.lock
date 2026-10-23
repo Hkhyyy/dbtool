@@ -4207,6 +4207,7 @@ dependencies = [
  "qurry-core",
  "ratatui",
  "serde_json",
+ "sha2 0.10.9",
  "tokio",
  "tui-textarea",
  "unicode-width 0.2.0",

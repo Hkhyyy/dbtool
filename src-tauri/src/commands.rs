@@ -275,7 +275,7 @@ pub async fn install_update(app: tauri::AppHandle) -> AppResult<()> {
     use tauri_plugin_updater::UpdaterExt;
     let msg = |e: tauri_plugin_updater::Error| crate::error::AppError::Msg(format!("Update failed: {e}"));
     let Some(update) = app.updater().map_err(msg)?.check().await.map_err(msg)? else {
-        return Err(crate::error::AppError::Msg("No update to install (the latest release has no in-app update yet — use Download DMG).".into()));
+        return Err(crate::error::AppError::Msg("No update to install (the latest release has no in-app update for this platform — download it from the Release Page).".into()));
     };
     let mut got = 0u64;
     update
