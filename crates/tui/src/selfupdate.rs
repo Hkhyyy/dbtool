@@ -4,8 +4,15 @@
 use qurry_core::update;
 use std::path::{Path, PathBuf};
 
-/// 이 실행 파일이 받을 릴리스 파일 이름의 끝 (지금은 Apple Silicon macOS 만 빌드한다)
-const ASSET_SUFFIX: Option<&str> = if cfg!(all(target_os = "macos", target_arch = "aarch64")) { Some("aarch64-apple-darwin.tar.gz") } else { None };
+/// 이 플랫폼이 받을 릴리스 파일 이름의 끝 (릴리스는 Apple Silicon · Intel macOS, x86_64 Linux 를 빌드한다)
+fn asset_suffix(os: &str, arch: &str) -> Option<&'static str> {
+    match (os, arch) {
+        ("macos", "aarch64") => Some("aarch64-apple-darwin.tar.gz"),
+        ("macos", "x86_64") => Some("x86_64-apple-darwin.tar.gz"),
+        ("linux", "x86_64") => Some("x86_64-unknown-linux-gnu.tar.gz"),
+        _ => None,
+    }
+}
 
 /// cargo 로 빌드한 실행 파일인지 (…/target/release/qurry-tui, …/target/debug/…)
 pub fn from_source(exe: &Path) -> bool {
@@ -43,11 +50,10 @@ fn expected_sha(sums: &str, name: &str) -> Option<String> {
 }
 
 fn sha256_of(path: &Path) -> std::io::Result<String> {
-    let out = std::process::Command::new("shasum").args(["-a", "256"]).arg(path).output()?;
-    if !out.status.success() {
-        return Err(err("shasum failed"));
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).split_whitespace().next().unwrap_or("").to_lowercase())
+    use sha2::Digest;
+    let mut h = sha2::Sha256::new();
+    std::io::copy(&mut std::fs::File::open(path)?, &mut h)?;
+    Ok(h.finalize().iter().map(|b| format!("{b:02x}")).collect())
 }
 
 fn run(cmd: &mut std::process::Command) -> std::io::Result<()> {
@@ -86,7 +92,7 @@ pub async fn install(quiet: bool) -> std::io::Result<Outcome> {
         return Ok(Outcome::UpToDate);
     }
     // 묶음 이름: qurry-cli_… (이름을 바꾸기 전 릴리스는 dbtool-cli_…)
-    let Some(asset) = ASSET_SUFFIX.and_then(|s| rel.asset("qurry-cli_", s).or_else(|| rel.asset("dbtool-cli_", s))).cloned() else {
+    let Some(asset) = asset_suffix(std::env::consts::OS, std::env::consts::ARCH).and_then(|s| rel.asset("qurry-cli_", s).or_else(|| rel.asset("dbtool-cli_", s))).cloned() else {
         return Ok(Outcome::Skipped(format!("Qurry {} is available, but there is no prebuilt binary for this platform. See {}", rel.version, rel.url)));
     };
     let Some(sums) = rel.assets.iter().find(|a| a.name == "SHA256SUMS").cloned() else {
@@ -236,6 +242,25 @@ mod tests {
         // GUI(tauri.conf.json) 와 같은 공개키
         let conf: serde_json::Value = serde_json::from_str(include_str!("../../../src-tauri/tauri.conf.json")).unwrap();
         assert_eq!(conf["plugins"]["updater"]["pubkey"].as_str(), Some(super::UPDATE_PUBKEY));
+    }
+
+    /// 릴리스는 Apple Silicon · Intel macOS 와 x86_64 Linux 묶음을 올린다
+    #[test]
+    fn asset_suffix_per_platform() {
+        assert_eq!(super::asset_suffix("macos", "aarch64"), Some("aarch64-apple-darwin.tar.gz"));
+        assert_eq!(super::asset_suffix("macos", "x86_64"), Some("x86_64-apple-darwin.tar.gz"));
+        assert_eq!(super::asset_suffix("linux", "x86_64"), Some("x86_64-unknown-linux-gnu.tar.gz"));
+        assert_eq!(super::asset_suffix("windows", "x86_64"), None);
+    }
+
+    /// 체크섬은 직접 계산한다 (shasum 이 없는 Linux 도 있다)
+    #[test]
+    fn sha256_of_file() {
+        let f = std::env::temp_dir().join(format!("qurry-sha-test-{}", std::process::id()));
+        std::fs::write(&f, b"abc").unwrap();
+        let got = super::sha256_of(&f).unwrap();
+        let _ = std::fs::remove_file(&f);
+        assert_eq!(got, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
     }
 
     #[test]
