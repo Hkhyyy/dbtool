@@ -25,7 +25,13 @@ All three share the same data sources and passwords, so a connection created in 
 
 ## Download
 
-Get the latest build from [Releases](https://github.com/Hkhyyy/qurry/releases):
+**TUI + MCP with Homebrew** (macOS, Linux):
+
+```bash
+brew install hkhyyy/qurry/qurry      # update: brew upgrade qurry
+```
+
+Or get the latest build from [Releases](https://github.com/Hkhyyy/qurry/releases):
 
 | | GUI | TUI + MCP |
 |---|---|---|
@@ -44,7 +50,7 @@ A new release is published automatically every time `main` changes.
 Both apps check GitHub for a newer release when they start and every hour while they run (one request to the GitHub API) and tell you when there is one. You can also check right away.
 
 - **GUI** — a `⬆ vX.Y.Z available` button appears in the status bar. It lists what changed in each version since yours. **Update & Restart** downloads the new version, checks its signature, replaces the app and opens it again with your tabs. The release page is the manual fallback. Check now from **Qurry › Check for Updates…** or **Settings › Appearance › Updates**, where you can also turn the automatic check off. In-app updates start from 0.1.9 (Apple Silicon), and from the first Intel / Linux release.
-- **TUI** — the status line shows `⬆ vX.Y.Z available`. Run **⌃k › Update Qurry & Restart** to download the release, verify it against the signed `SHA256SUMS`, replace `qurry-tui` and `qurry-mcp` in place and restart with your tabs. **⌃k › Check for Updates** checks now and lists what changed in each version since yours. From a shell, `qurry-tui --update` does the same. A TUI built from source (`target/release`) is not checked or replaced; update it with `git pull` and `cargo build`.
+- **TUI** — the status line shows `⬆ vX.Y.Z available`. Run **⌃k › Update Qurry & Restart** to download the release, verify it against the signed `SHA256SUMS`, replace `qurry-tui` and `qurry-mcp` in place and restart with your tabs. **⌃k › Check for Updates** checks now and lists what changed in each version since yours. From a shell, `qurry-tui --update` does the same. A TUI built from source (`target/release`) is not checked or replaced; update it with `git pull` and `cargo build`. A Homebrew install is updated with `brew upgrade qurry`.
 - Turn the check off with `qurry-tui --no-update-check` or `QURRY_NO_UPDATE_CHECK=1`.
 
 ## Supported databases

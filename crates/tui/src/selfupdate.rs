@@ -75,8 +75,12 @@ pub enum Outcome {
     Installed { version: String, paths: Vec<PathBuf> },
 }
 
-/// 소스에서 빌드했으면 그 안내
+/// 소스에서 빌드했거나 Homebrew 로 깔았으면 그 안내 (바꿔 넣지 않는다)
 fn source_build_note(exe: &Path) -> Option<String> {
+    // Homebrew (…/Cellar/qurry/<v>/bin) 는 brew 가 관리한다
+    if exe.components().any(|c| c.as_os_str() == "Cellar") {
+        return Some("This qurry-tui was installed with Homebrew. Update it with: brew upgrade qurry".into());
+    }
     from_source(exe).then(|| format!("This qurry-tui was built from source ({}). Update it with: git pull && cargo build --release -p qurry-tui -p qurry-mcp", exe.display()))
 }
 
@@ -261,6 +265,15 @@ mod tests {
         let got = super::sha256_of(&f).unwrap();
         let _ = std::fs::remove_file(&f);
         assert_eq!(got, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    }
+
+    /// Homebrew 로 깐 것은 brew 가 관리한다 (바꿔 넣지 않고 brew upgrade 를 안내)
+    #[test]
+    fn homebrew_installs_are_left_to_brew() {
+        let note = super::source_build_note(Path::new("/opt/homebrew/Cellar/qurry/0.1.19/bin/qurry-tui")).unwrap();
+        assert!(note.contains("brew upgrade qurry"), "{note}");
+        assert!(super::source_build_note(Path::new("/home/linuxbrew/.linuxbrew/Cellar/qurry/0.1.19/bin/qurry-tui")).is_some());
+        assert!(super::source_build_note(Path::new("/Users/me/.local/bin/qurry-tui")).is_none());
     }
 
     #[test]

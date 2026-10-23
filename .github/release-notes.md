@@ -21,7 +21,7 @@ or right-click the app in Finder → Open.
 
 **GUI (Linux)** — `chmod +x Qurry_{{VERSION}}_amd64.AppImage` and run it, or `sudo apt install ./Qurry_{{VERSION}}_amd64.deb` (needs WebKitGTK 4.1).
 
-**TUI / MCP**
+**TUI / MCP** — `brew install hkhyyy/qurry/qurry`, or by hand:
 ```bash
 tar -xzf qurry-cli_{{VERSION}}_<target>.tar.gz
 xattr -d com.apple.quarantine qurry-tui qurry-mcp 2>/dev/null   # macOS

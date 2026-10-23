@@ -231,3 +231,34 @@ jobs:
             --title "Qurry ${V}" \
             --notes-file release-notes.md \
             --generate-notes
+
+      - name: Update Homebrew tap
+        # brew install hkhyyy/qurry/qurry — Formula/qurry.rb 를 이 릴리스 버전·체크섬으로.
+        # 키는 Hkhyyy/homebrew-qurry 에만 쓰기 권한이 있는 deploy key, 이 단계에만 넘긴다
+        env:
+          TAP_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+        run: |
+          grep -v '^# Homebrew formula 틀' .github/homebrew/qurry.rb | sed "s/{{VERSION}}/${V}/g" > qurry.rb
+          for t in aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-gnu; do
+            sha=$(awk -v n="qurry-cli_${V}_${t}.tar.gz" '$2 == n { print $1 }' dist-release/SHA256SUMS)
+            [ -n "$sha" ] || { echo "no checksum for $t"; exit 1; }
+            sed -i "s/{{SHA_${t}}}/${sha}/" qurry.rb
+          done
+          if grep -q '{{' qurry.rb; then echo "unfilled placeholder"; exit 1; fi
+          cat qurry.rb
+          mkdir -p ~/.ssh
+          install -m 600 /dev/null ~/.ssh/tap_key
+          printf '%s\n' "$TAP_KEY" > ~/.ssh/tap_key
+          # GitHub 의 SSH 호스트 키 (HTTPS 로 받은 공식 목록)
+          curl -fsSL https://api.github.com/meta | jq -r '.ssh_keys[] | "github.com " + .' > ~/.ssh/known_hosts
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/tap_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes"
+          git clone -q git@github.com:Hkhyyy/homebrew-qurry.git tap
+          mkdir -p tap/Formula
+          cp qurry.rb tap/Formula/qurry.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/qurry.rb
+          git commit -qm "qurry ${V}"
+          git push -q
+          rm -f ~/.ssh/tap_key
