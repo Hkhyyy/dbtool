@@ -1,14 +1,18 @@
 import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { api, UpdateInfo } from "../lib/api";
+import { api, isReleaseUrl, UpdateInfo } from "../lib/api";
 
 /** 새 버전 안내: 릴리스 노트 + Update & Restart (앱 안에서 받아 바꿔 넣고 다시 켠다). 안 되면 DMG 를 받는다 */
 /** beforeInstall: 다시 켜기 전에 할 일 (작업 공간 저장). false 면 취소 */
 export function UpdateDialog({ info, onClose, beforeInstall }: { info: UpdateInfo; onClose: () => void; beforeInstall?: () => boolean }) {
   const r = info.latest!;
   const dmg = r.assets.find((a) => a.name.endsWith(".dmg"));
-  const open = (url: string) => openUrl(url).catch(() => window.open(url, "_blank"));
+  // 이 저장소의 릴리스 주소만 연다 (아니면 릴리스 목록으로)
+  const open = (u: string) => {
+    const url = isReleaseUrl(u) ? u : "https://github.com/Hkhyyy/qurry/releases";
+    openUrl(url).catch(() => window.open(url, "_blank"));
+  };
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);

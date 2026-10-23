@@ -15,6 +15,11 @@ describe("splitStatements", () => {
   it("MySQL 은 백슬래시 이스케이프를 따른다", () => {
     expect(parts("select 'a\\';b'; select 2", true)).toEqual(["select 'a\\';b'", "select 2"]);
   });
+
+  it("MySQL 백틱 이름 안의 \\ 는 이스케이프가 아니다 (서버처럼 나눈다)", () => {
+    expect(parts("select 1 as `a\\`, 1 as `b`; delete from t; -- `", true)).toHaveLength(3);
+    expect(splitScript("select 1 as `a\\`\nselect 2", true)).toHaveLength(2);
+  });
 });
 
 describe("statementAt", () => {

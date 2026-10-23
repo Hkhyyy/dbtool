@@ -2485,12 +2485,24 @@ impl App {
     /// 고른 범위를 Data Source 에 저장하고 트리를 다시 그린다.
     /// 접속 설정은 그대로라 store 에 바로 쓴다 (save_connection 은 풀을 닫아 열린 트랜잭션이 끊긴다)
     pub fn apply_scope(&mut self, e: crate::scope::ScopeEditor) {
-        let Some(c) = self.conns.iter_mut().find(|c| c.config.id == e.conn) else { return };
-        c.config.scope = e.scope();
-        let cfg = c.config.clone();
+        // 저장된 설정을 다시 읽어 범위만 바꾼다 (그 사이 GUI·MCP 에서 바꾼 읽기 전용·호스트 등을 되돌리지 않게)
+        let cfg = match self.state.store.get(&e.conn) {
+            Ok(Some(mut cfg)) => {
+                cfg.scope = e.scope();
+                cfg
+            }
+            Ok(None) => return,
+            Err(er) => {
+                self.status = er.to_string();
+                return;
+            }
+        };
         if let Err(er) = self.state.store.save(&cfg) {
             self.status = er.to_string();
             return;
+        }
+        if let Some(c) = self.conns.iter_mut().find(|c| c.config.id == cfg.id) {
+            c.config = cfg.clone();
         }
         self.status = format!("Shown databases and schemas updated: {}", cfg.name);
         if let Some(root) = self.tree.roots.iter().find(|n| n.conn == cfg.id && n.kind == NodeKind::Conn).cloned() {

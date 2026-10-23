@@ -90,6 +90,11 @@ pub fn split_statements(text: &str, kind: DbKind) -> Vec<(usize, usize)> {
                 i += 3;
                 continue;
             }
+            // MariaDB /*M! … */ 도 실행되는 코드
+            if kind == DbKind::Mysql && i + 3 < n && b[i + 2] == b'M' && b[i + 3] == b'!' {
+                i += 4;
+                continue;
+            }
             // PG 주석은 중첩된다
             let (mut depth, mut j) = (1, i + 2);
             while j < n && depth > 0 {
@@ -111,7 +116,8 @@ pub fn split_statements(text: &str, kind: DbKind) -> Vec<(usize, usize)> {
             let e_string = kind == DbKind::Postgres && c == b'\'' && i > 0 && (b[i - 1] == b'e' || b[i - 1] == b'E') && (i < 2 || !(b[i - 2].is_ascii_alphanumeric() || b[i - 2] == b'_'));
             let mut j = i + 1;
             while j < n {
-                if (backslash || e_string) && b[j] == b'\\' {
+                // MySQL 백틱 이름 안의 \ 는 이스케이프가 아니다
+                if ((backslash && c != b'`') || e_string) && b[j] == b'\\' {
                     j += 2;
                     continue;
                 }
@@ -207,7 +213,7 @@ fn script_cuts(text: &str, s: usize, e: usize, kind: DbKind) -> Vec<usize> {
             i = text[i..e].find('\n').map(|j| i + j).unwrap_or(e);
             continue;
         }
-        if c == b'/' && d == b'*' && !(kind == DbKind::Mysql && i + 2 < e && b[i + 2] == b'!') {
+        if c == b'/' && d == b'*' && !(kind == DbKind::Mysql && i + 2 < e && (b[i + 2] == b'!' || (b[i + 2] == b'M' && i + 3 < e && b[i + 3] == b'!'))) {
             let (mut dep, mut j) = (1, i + 2);
             while j < e && dep > 0 {
                 if b[j] == b'/' && j + 1 < e && b[j + 1] == b'*' && kind == DbKind::Postgres {
@@ -234,7 +240,7 @@ fn script_cuts(text: &str, s: usize, e: usize, kind: DbKind) -> Vec<usize> {
             let e_string = kind == DbKind::Postgres && c == b'\'' && i > 0 && (b[i - 1] == b'e' || b[i - 1] == b'E');
             let mut j = i + 1;
             while j < e {
-                if (kind == DbKind::Mysql || e_string) && b[j] == b'\\' {
+                if ((kind == DbKind::Mysql && c != b'`') || e_string) && b[j] == b'\\' {
                     j += 2;
                     continue;
                 }
@@ -389,6 +395,10 @@ mod tests {
         // MySQL /*! … */ 안은 코드
         assert_eq!(n("/*! COMMIT; DELETE FROM t; */ select 1", DbKind::Mysql), 3);
         assert_eq!(n("/* c; */ select 1", DbKind::Mysql), 1);
+        // MariaDB /*M! … */ 안도 코드
+        assert_eq!(n("/*M! COMMIT; DELETE FROM t; */ select 1", DbKind::Mysql), 3);
+        // MySQL 백틱 안의 \ 는 이스케이프가 아니다 (서버는 문장 셋으로 본다)
+        assert_eq!(n("select 1 as `a\\`, 1 as `b`; delete from t; -- `", DbKind::Mysql), 3);
         // PG: 중첩 주석, E'' 의 \'
         assert_eq!(n("/* a /* b */ ; */ select 1", DbKind::Postgres), 1);
         assert_eq!(n("select E'\\'; x'; select 2", DbKind::Postgres), 2);

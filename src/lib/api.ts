@@ -95,6 +95,9 @@ export interface UpdateInfo {
   /** 지금 버전보다 새 버전들의 바뀐 것 (최신부터) */
   changes?: { version: string; changes: string[] }[];
 }
+/** 이 저장소(지금 이름 · 예전 이름)의 릴리스 주소인지. 업데이트 창은 이것만 연다 (설정 폴더의 캐시가 바뀌어도) */
+export const isReleaseUrl = (u: string) => /^https:\/\/github\.com\/Hkhyyy\/(qurry|dbtool)\/releases(\/|$)/.test(u);
+
 /** 새 버전 자동 확인 (시작할 때 + 1시간마다. Settings 에서 끈다) */
 const UPDATE_PREF = "dbtool.updateCheck";
 export const updateCheckEnabled = () => {

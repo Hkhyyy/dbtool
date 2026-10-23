@@ -805,8 +805,9 @@ export default function App() {
     const tab = tabsRef.current.find((t) => t.id === tabId);
     if (!tab || !stmts.length) return;
     const c = conns.find((x) => x.id === tab.connId);
-    // 위험 문장 확인 (WHERE 없는 UPDATE/DELETE, DROP, TRUNCATE — 판정은 core guard 와 같다)
-    if (!explain) {
+    // 위험 문장 확인 (WHERE 없는 UPDATE/DELETE, DROP, TRUNCATE — 판정은 core guard 와 같다).
+    // Explain Analyze 는 실제로 실행하므로 확인한다 (그냥 Explain 만 건너뛴다)
+    if (explain !== "plan") {
       for (const s of stmts) {
         const why = await api.unsafeReason(c?.kind ?? "postgres", s).catch(() => null);
         if (why && !confirm(`${why}:\n\n${s.slice(0, 300)}\n\nRun it anyway?`)) return;

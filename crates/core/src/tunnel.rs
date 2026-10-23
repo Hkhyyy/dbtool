@@ -6,8 +6,22 @@ use russh::keys::{PrivateKeyWithHashAlg, PublicKeyOrCertificate};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-/// 처음 보는 서버 키: (host, port) → 키. 사용자가 지문을 확인하고 trust_host_key 를 부르면 known_hosts 에 등록한다
-static PENDING_KEYS: Mutex<Option<HashMap<(String, u16), russh::keys::PublicKey>>> = Mutex::new(None);
+/// 처음 보는 서버 키: (host, port) → 키. 사용자가 지문을 확인하고 trust_host_key 를 부르면 known_hosts 에 등록한다.
+/// None = 지문을 보여 준 뒤 다른 키가 왔다 (중간자일 수 있어 등록하지 않는다)
+static PENDING_KEYS: Mutex<Option<HashMap<(String, u16), Option<russh::keys::PublicKey>>>> = Mutex::new(None);
+
+/// 확인을 기다리는 키를 기억한다. 이미 다른 키가 기다리고 있으면 둘 다 믿지 않는다
+fn remember_pending(host: &str, port: u16, key: &russh::keys::PublicKey) {
+    let mut g = PENDING_KEYS.lock().unwrap();
+    let m = g.get_or_insert_with(HashMap::new);
+    let k = (host.to_string(), port);
+    let next = match m.get(&k) {
+        Some(Some(old)) if old != key => None,
+        Some(None) => None,
+        _ => Some(key.clone()),
+    };
+    m.insert(k, next);
+}
 
 /// 처음 보는 SSH 서버라 접속을 멈췄을 때 오류 메시지에 들어가는 말 (UI 가 "Trust host key" 를 보여 주는 기준)
 pub const UNKNOWN_HOST: &str = "Unknown SSH host key";
@@ -20,8 +34,14 @@ fn known_hosts_path() -> Option<String> {
 /// 사용자가 지문을 확인한 서버 키를 known_hosts 에 등록한다 (그다음 접속부터 통과)
 pub fn trust_host_key(host: &str, port: u16) -> AppResult<String> {
     let key = PENDING_KEYS.lock().unwrap().as_mut().and_then(|m| m.remove(&(host.to_string(), port)));
-    let Some(key) = key else {
-        return Err(AppError::Msg(format!("No pending host key for {host}:{port} — connect (or Test SSH) first")));
+    let key = match key {
+        None => return Err(AppError::Msg(format!("No pending host key for {host}:{port} — connect (or Test SSH) first"))),
+        Some(None) => {
+            return Err(AppError::Msg(format!(
+                "The host key for {host}:{port} changed after its fingerprint was shown — not trusted (possible man-in-the-middle). Connect again and check the new fingerprint."
+            )))
+        }
+        Some(Some(k)) => k,
     };
     match known_hosts_path() {
         Some(p) => russh::keys::known_hosts::learn_known_hosts_path(host, port, &key, p),
@@ -59,7 +79,7 @@ impl client::Handler for Client {
             Ok(true) => Ok(true),
             Ok(false) => {
                 let fp = key.fingerprint(russh::keys::ssh_key::HashAlg::Sha256);
-                PENDING_KEYS.lock().unwrap().get_or_insert_with(HashMap::new).insert((self.host.clone(), self.port), key.clone());
+                remember_pending(&self.host, self.port, key);
                 *self.reject.lock().unwrap() = Some(format!(
                     "{UNKNOWN_HOST} for {}:{} — {} {fp}. Check that it matches the server, then choose \"Trust host key\".",
                     self.host,
@@ -180,6 +200,18 @@ pub async fn open(ssh: &SshConfig, secret: Option<&str>, remote_host: &str, remo
 
 #[cfg(test)]
 mod tests {
+    /// 지문을 보여 준 뒤 다른 키가 오면 (중간자) 등록하지 않는다
+    #[test]
+    fn pending_key_swap_is_refused() {
+        let k1 = russh::keys::PublicKey::from_openssh("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIhyj/8bbpg1Zf+HsFbmlTYF7gtrlPjwARofRnF50jlT").unwrap();
+        let k2 = russh::keys::PublicKey::from_openssh("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJJn7OrkIc5LbrfWKCXp2+paFsn4xCxkpDR06FUpA0z4").unwrap();
+        remember_pending("swap.test", 2222, &k1);
+        remember_pending("swap.test", 2222, &k1); // 같은 키로 다시 접속은 괜찮다
+        remember_pending("swap.test", 2222, &k2);
+        let err = trust_host_key("swap.test", 2222).unwrap_err().to_string();
+        assert!(err.contains("changed"), "{err}");
+    }
+
     use super::*;
     use crate::db::connect_via;
     use crate::store::{ConnectionConfig, DbKind};
