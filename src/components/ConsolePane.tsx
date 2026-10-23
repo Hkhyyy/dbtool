@@ -161,7 +161,7 @@ export function ConsolePane(p: Props) {
         >
           Explain ▾
         </button>
-        <button className="tb" title={`Browse Query History (${isMac ? "⌥⌘E" : "Ctrl+Alt+E"})`} onClick={p.onHistory}><IcClock /></button>
+        <button className="tb" title={`Browse Query History (${isMac ? "⌥⌘e" : "Ctrl+Alt+e"})`} onClick={p.onHistory}><IcClock /></button>
         <button
           className="tb"
           title="Query Execution Settings"

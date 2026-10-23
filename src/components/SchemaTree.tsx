@@ -6,7 +6,7 @@ import { invalidateCompletion } from "../lib/completion";
 import { TYPE_COLOR } from "./RedisBrowser";
 import { Chevron, ColumnIcon, DatabaseIcon, FkIcon, FolderIcon, IndexIcon, KeyIcon, MySqlIcon, PgIcon, RedisIcon, RoutineIcon, SchemaIcon, SequenceIcon, TableIcon, ViewIcon } from "./icons";
 
-/** 트리 노드가 가리키는 대상. 우클릭 메뉴와 단축키(F4, ⌘B, ⌘⇧L)가 이걸 기준으로 동작한다. */
+/** 트리 노드가 가리키는 대상. 우클릭 메뉴와 단축키(F4, ⌘b, ⌘⇧L)가 이걸 기준으로 동작한다. */
 export interface NodeInfo {
   kind: "conn" | "db" | "schema" | "table" | "view" | "matview" | "foreign" | "partitioned" | "sequence" | "routine" | "key";
   conn: ConnectionView;

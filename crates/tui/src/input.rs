@@ -1442,6 +1442,82 @@ mod tests {
         assert!(!s.contains("old"), "{s}");
     }
 
+    /// 키를 바꾸면 화면 안내도 바뀐 키로 (콘솔 Output/결과 제목, 표 저장 안내, 팔레트 힌트)
+    #[tokio::test]
+    async fn labels_follow_remapped_keys() {
+        use crate::app::Action;
+        use crate::keys::disp;
+        let mut h = Harness::new().await;
+        h.app.keys.bind(Action::ToggleOutput, "Alt+P".into(), false);
+        h.app.keys.bind(Action::Submit, "Ctrl+G".into(), false);
+        h.app.keys.bind(Action::Execute, "F9".into(), false);
+        h.app.keys.bind(Action::Commit, "Alt+M".into(), false);
+        h.console_tab();
+        let s = h.screen(160, 30);
+        assert!(s.contains(&disp("Alt+P: result")), "{s}");
+        assert!(s.contains("(F9)"), "{s}");
+        assert!(!s.contains(&disp("Alt+O")), "{s}");
+        let id = h.table_tab("t", &["id", "name"], &[&["1", "a"]], &["id"]);
+        let i = h.app.tab_index(id).unwrap();
+        h.app.activate(i);
+        if let crate::app::TabKind::Table(tt) = &mut h.app.tabs[i].kind {
+            tt.grid.as_mut().unwrap().set_value(0, 1, "b".into());
+        }
+        let s = h.screen(160, 30);
+        assert!(s.contains(&disp("Ctrl+G submit")), "{s}");
+        assert!(!s.contains(&disp("Ctrl+S")), "{s}");
+        // 팔레트 이름·힌트도 같은 표기 (Ctrl+Z → ⌃z)
+        h.key("Ctrl+K");
+        h.type_str("Revert Changes");
+        let s = h.screen(160, 30);
+        assert!(s.contains(&disp("Ctrl+Z (grid)")), "{s}");
+    }
+
+    /// 위아래로만 나눴을 때도 Move Split Divider 가 경계선을 옮긴다 (이름이 "Left / Up")
+    #[tokio::test]
+    async fn split_divider_moves_in_top_bottom_split() {
+        use crate::app::Action;
+        let mut h = Harness::new().await;
+        h.table_tab("a", &["id"], &[&["1"]], &["id"]);
+        h.table_tab("b", &["id"], &[&["1"]], &["id"]);
+        h.app.run_action(Action::SplitDown);
+        let pct = |h: &mut Harness| h.app.panes.pct_mut(&vec![]).map(|p| *p);
+        let before = pct(&mut h).unwrap();
+        h.app.run_action(Action::SplitGrow);
+        assert_eq!(pct(&mut h), Some(before + 5));
+        h.app.run_action(Action::SplitShrink);
+        assert_eq!(pct(&mut h), Some(before));
+    }
+
+    /// 표 데이터에서 Explain 은 다시 읽기가 아니라 안내만 (Explain 은 쿼리 콘솔에서)
+    #[tokio::test]
+    async fn explain_on_table_tab_does_not_reload() {
+        let mut h = Harness::new().await;
+        let id = h.table_tab("t", &["id"], &[&["1"]], &["id"]);
+        h.app.run_action(crate::app::Action::Explain);
+        assert!(!h.table(id).running);
+        assert!(h.app.status.contains("query console"), "{}", h.app.status);
+    }
+
+    /// Redis: 키 목록과 값 쪽 상태줄 안내가 다르다 (값 쪽에선 D·t·R·: 가 안 된다)
+    #[tokio::test]
+    async fn redis_status_bar_follows_side() {
+        use crate::app::{RedisTab, TabKind};
+        let mut h = Harness::new().await;
+        let r = RedisTab { pattern: "*".into(), keys: vec![], cursor: "0".into(), sel: 0, off: 0, detail: None, text: None, value: None, focus_value: false, scanning: false, want: None };
+        h.app.push_tab("test", "db0".into(), "redis".into(), TabKind::Redis(r));
+        h.app.focus = crate::app::Focus::Grid;
+        let last = |h: &mut Harness| h.screen(220, 20).lines().last().unwrap().to_string();
+        let s = last(&mut h);
+        assert!(s.contains("D del key") && s.contains("/ pattern"), "{s}");
+        if let Some(TabKind::Redis(r)) = h.app.tabs.last_mut().map(|t| &mut t.kind) {
+            r.focus_value = true;
+        }
+        let s = last(&mut h);
+        assert!(s.contains("e edit") && s.contains("x delete") && s.contains("Esc keys"), "{s}");
+        assert!(!s.contains("D del key"), "{s}");
+    }
+
     /// 새 버전 알림은 TUI 안에서 바로 업데이트하는 길을 알려준다
     #[tokio::test]
     async fn update_badge_points_to_in_app_update() {

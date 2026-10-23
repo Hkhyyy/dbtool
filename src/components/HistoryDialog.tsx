@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 
-/** DataGrip "Browse Query History" (⌥⌘E): 데이터 소스별 실행 기록. 타이핑 = 필터, 더블클릭/↩ = 콘솔에 붙여넣기, ⌦ = 삭제 */
+/** DataGrip "Browse Query History" (⌥⌘e): 데이터 소스별 실행 기록. 타이핑 = 필터, 더블클릭/↩ = 콘솔에 붙여넣기, ⌦ = 삭제 */
 export interface HistoryItem {
   id: string;
   connId: string;

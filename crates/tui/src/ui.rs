@@ -327,6 +327,10 @@ fn draw_pane(f: &mut Frame, app: &mut App, idx: usize, body: Rect, focused: bool
     let focus = if focused { app.focus } else { Focus::Tree };
     let ro = app.tabs.get(idx).and_then(|t| app.conn(&t.conn)).map(|c| c.config.read_only).unwrap_or(false);
     let pct = app.console_pct;
+    // 바꿀 수 있는 명령은 지금 키맵의 첫 키로 안내한다
+    let k = |a: crate::app::Action| app.keys.keys(a).first().map(|s| disp(s)).unwrap_or_else(|| "—".into());
+    use crate::app::Action as A;
+    let (k_out, k_run, k_commit, k_rollback, k_cancel, k_submit) = (k(A::ToggleOutput), k(A::Execute), k(A::Commit), k(A::Rollback), k(A::Cancel), k(A::Submit));
     let tab = &mut app.tabs[idx];
     let db = tab.db.clone();
     match &mut tab.kind {
@@ -335,8 +339,8 @@ fn draw_pane(f: &mut Frame, app: &mut App, idx: usize, body: Rect, focused: bool
             let title = format!(
                 " {db} · Tx: {}{}{}{} ",
                 if c.tx_manual { "Manual" } else { "Auto" },
-                if c.in_tx { disp(" (pending — Alt+C commit / Alt+R rollback)") } else { String::new() },
-                if c.running { disp(" · running… Ctrl+C cancel") } else { String::new() },
+                if c.in_tx { format!(" (pending — {k_commit} commit / {k_rollback} rollback)") } else { String::new() },
+                if c.running { format!(" · running… {k_cancel} cancel") } else { String::new() },
                 if ro { " · read-only" } else { "" }
             );
             let editing = focus == Focus::Editor;
@@ -368,12 +372,12 @@ fn draw_pane(f: &mut Frame, app: &mut App, idx: usize, body: Rect, focused: bool
                     .rev()
                     .map(|(e, s)| Line::styled(s.clone(), Style::default().fg(if *e { Color::Red } else if s.contains("> ") { ACCENT } else { Color::Gray })))
                     .collect();
-                let p = Paragraph::new(if lines.is_empty() { vec![Line::styled(disp("Execute a statement (F5 / Ctrl+Enter) to see the output."), Style::default().fg(DIM))] } else { lines })
+                let p = Paragraph::new(if lines.is_empty() { vec![Line::styled(format!("Execute a statement ({k_run}) to see the output."), Style::default().fg(DIM))] } else { lines })
                     .wrap(Wrap { trim: false })
-                    .block(block(disp(" Output (Alt+O: result) "), focus == Focus::Grid));
+                    .block(block(format!(" Output ({k_out}: result) "), focus == Focus::Grid));
                 f.render_widget(p, res);
             } else if let Some(g) = &mut c.grid {
-                let t = format!(" {} — {}{} rows ({}O: output) ", c.result_title, g.rows(), if g.result.truncated { "+" } else { "" }, disp("Alt+"));
+                let t = format!(" {} — {}{} rows ({k_out}: output) ", c.result_title, g.rows(), if g.result.truncated { "+" } else { "" });
                 g.render(f, res, t, focus == Focus::Grid);
             }
             if let (Some((x, y)), Some(cmp)) = (caret, &c.complete) {
@@ -400,7 +404,7 @@ fn draw_pane(f: &mut Frame, app: &mut App, idx: usize, body: Rect, focused: bool
                 let [msg, rest] = Layout::vertical([Constraint::Length(2), Constraint::Min(3)]).areas(grid);
                 let mut hint = vec![Span::styled(" w ", Style::default().fg(ACCENT)), Span::raw("fix WHERE · "), Span::styled("o ", Style::default().fg(ACCENT)), Span::raw("fix ORDER BY · "), Span::styled("r ", Style::default().fg(ACCENT)), Span::raw("run again")];
                 if let Some(n) = tt.grid.as_ref().filter(|g| g.dirty()).map(|g| g.edits.len() + g.deleted.len() + g.added) {
-                    hint.push(Span::styled(disp(&format!("   · {n} pending change(s) not saved yet (Ctrl+S submit · Ctrl+Z revert)")), Style::default().fg(Color::Yellow)));
+                    hint.push(Span::styled(format!("   · {n} pending change(s) not saved yet ({k_submit} submit · {} revert)", disp("Ctrl+Z")), Style::default().fg(Color::Yellow)));
                 }
                 let first = e.lines().next().unwrap_or_default().to_string();
                 f.render_widget(Paragraph::new(vec![Line::styled(format!(" ✗ {first}"), Style::default().fg(Color::Red)), Line::from(hint)]), msg);
@@ -409,7 +413,7 @@ fn draw_pane(f: &mut Frame, app: &mut App, idx: usize, body: Rect, focused: bool
                 grid
             };
             if let Some(g) = &mut tt.grid {
-                let pend = if g.dirty() { disp(&format!(" · {} pending (Ctrl+S submit, Ctrl+Z revert)", g.edits.len() + g.deleted.len() + g.added)) } else { String::new() };
+                let pend = if g.dirty() { format!(" · {} pending ({k_submit} submit, {} revert)", g.edits.len() + g.deleted.len() + g.added, disp("Ctrl+Z")) } else { String::new() };
                 let rows = if tt.error.is_some() && !g.dirty() { "query failed — no rows".to_string() } else { format!("{}{} rows", g.rows(), if g.result.truncated { "+" } else { "" }) };
                 let t = format!(" {}.{} — {rows}{}{}{} ", tt.schema, tt.table, if tt.pk.is_empty() { " · no PK (read-only)" } else { "" }, if ro { " · read-only" } else { "" }, pend);
                 g.render(f, grid, t, focus == Focus::Grid);
@@ -547,8 +551,9 @@ fn status_hints(app: &App) -> (Vec<(String, &'static str)>, Vec<(String, &'stati
         Focus::Grid => (
             match app.tabs.get(app.active).map(|t| &t.kind) {
                 Some(TabKind::Table(_)) => vec![
-                    fixed("Enter", "edit"), fixed("a", "add"), fixed("d", "delete"), fixed("n", "NULL"), fixed("Ctrl+S", "submit"), fixed("Ctrl+Z", "revert"), fixed("w", "where"), fixed("o", "order"), fixed("s", "sort"), fixed("x", "export"),
+                    fixed("Enter", "edit"), fixed("a", "add"), fixed("d", "delete"), fixed("n", "NULL"), cmd(A::Submit, "submit"), fixed("Ctrl+Z", "revert"), fixed("w", "where"), fixed("o", "order"), fixed("s", "sort"), fixed("x", "export"),
                 ],
+                Some(TabKind::Redis(r)) if r.focus_value => vec![fixed("e", "edit"), fixed("a", "add"), fixed("x", "delete"), fixed("Esc", "keys")],
                 Some(TabKind::Redis(_)) => vec![fixed("Enter", "value"), fixed("/", "pattern"), fixed("a", "add"), fixed("D", "del key"), fixed("t", "TTL"), fixed("R", "rename"), fixed(":", "command")],
                 Some(TabKind::Text(_)) => vec![fixed("y", "copy"), fixed("Esc", "explorer")],
                 _ => vec![fixed("s", "sort"), fixed("y", "copy"), fixed("x", "export"), fixed("Esc", "editor")],
@@ -735,7 +740,7 @@ fn draw_popup(f: &mut Frame, app: &mut App) {
             // 여러 줄 (이유 · 문장 · 질문)
             let mut lines: Vec<Line> = text.lines().map(|l| Line::raw(l.to_string())).collect();
             lines.push(Line::raw(""));
-            lines.push(Line::styled("y = yes · n / Esc = no", Style::default().fg(DIM)));
+            lines.push(Line::styled("y / Enter = yes · n / Esc = no", Style::default().fg(DIM)));
             let r = centered(area, 90, lines.len() as u16 + 2);
             f.render_widget(Clear, r);
             f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }).block(block(" Confirm ", true)), r);
@@ -780,7 +785,8 @@ fn draw_popup(f: &mut Frame, app: &mut App) {
                 .skip(off)
                 .take(h)
                 .map(|(i, it)| {
-                    let mut l = Line::from(vec![Span::raw(it.label.clone()), Span::styled(format!("  {}", it.hint), Style::default().fg(DIM))]);
+                    // 이름·힌트 안의 키 표기도 화면 규칙으로 ("Ctrl+Z (grid)" → ⌃z)
+                    let mut l = Line::from(vec![Span::raw(disp(&it.label)), Span::styled(format!("  {}", disp(&it.hint)), Style::default().fg(DIM))]);
                     if i == sel {
                         l = l.style(Style::default().bg(Color::Rgb(46, 67, 110)));
                     }
@@ -788,7 +794,8 @@ fn draw_popup(f: &mut Frame, app: &mut App) {
                 })
                 .collect();
             p.sel = sel;
-            let hint = if p.title.starts_with("Go to") || p.title == "Search Everywhere" { disp(" Enter open · Ctrl+B DDL · Esc ") } else { " Enter · Esc ".into() };
+            let ddl = app.keys.keys(crate::app::Action::Ddl).first().map(|k| disp(k)).unwrap_or_else(|| "—".into());
+            let hint = if p.title.starts_with("Go to") || p.title == "Search Everywhere" { format!(" Enter open · {ddl} DDL · Esc ") } else { " Enter · Esc ".into() };
             f.render_widget(List::new(items).block(block(hint, false)), list);
         }
         Popup::ConnForm(form) => {

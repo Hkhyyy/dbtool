@@ -30,7 +30,7 @@ A new release is published automatically every time `main` changes.
 Both apps check GitHub for a newer release when they start and every hour while they run (one request to the GitHub API) and tell you when there is one. You can also check right away.
 
 - **GUI** — a `⬆ vX.Y.Z available` button appears in the status bar. It lists what changed in each version since yours. **Update & Restart** downloads the new version, checks its signature, replaces the app and opens it again with your tabs. **Download DMG** is the manual fallback. Check now from **dbtool › Check for Updates…** or **Settings › Appearance › Updates**, where you can also turn the automatic check off. In-app updates start from 0.1.9: install that one from the DMG once.
-- **TUI** — the status line shows `⬆ vX.Y.Z available`. Run **⌃K › Update dbtool & Restart** to download the release, verify it against `SHA256SUMS`, replace `dbtool-tui` and `dbtool-mcp` in place and restart with your tabs. **⌃K › Check for Updates** checks now and lists what changed in each version since yours. From a shell, `dbtool-tui --update` does the same. A TUI built from source (`target/release`) is not checked or replaced; update it with `git pull` and `cargo build`.
+- **TUI** — the status line shows `⬆ vX.Y.Z available`. Run **⌃k › Update dbtool & Restart** to download the release, verify it against `SHA256SUMS`, replace `dbtool-tui` and `dbtool-mcp` in place and restart with your tabs. **⌃k › Check for Updates** checks now and lists what changed in each version since yours. From a shell, `dbtool-tui --update` does the same. A TUI built from source (`target/release`) is not checked or replaced; update it with `git pull` and `cargo build`.
 - Turn the check off with `dbtool-tui --no-update-check` or `DBTOOL_NO_UPDATE_CHECK=1`.
 
 ## Supported databases
@@ -42,7 +42,7 @@ Both apps check GitHub for a newer release when they start and every hour while 
 | Redis | Medis-style browser (key list with type and TTL, per-type value editor), redis-cli style terminal, **Standalone / Sentinel / Cluster** |
 
 Connection options:
-- **SSH tunnel** with a key or password. Host keys are checked against `~/.ssh/known_hosts`: a changed key is refused, and an unknown server stops with its SHA256 fingerprint until you choose **Trust host key** (GUI: data source dialog; TUI: `Ctrl+Y` in the form or `Ctrl+K › Trust SSH Host Key`).
+- **SSH tunnel** with a key or password. Host keys are checked against `~/.ssh/known_hosts`: a changed key is refused, and an unknown server stops with its SHA256 fingerprint until you choose **Trust host key** (GUI: data source dialog; TUI: `Ctrl+y` in the form or `Ctrl+k › Trust SSH Host Key`).
 - **SSL/TLS**: Require / Verify CA / Full Verification, with optional CA and client certificate. Works for PostgreSQL, MySQL and Redis.
 - **Options tab**: read-only, transaction control and isolation level, time zone, keep-alive, auto-disconnect when idle, single database mode, startup script.
 
@@ -90,13 +90,13 @@ Command shortcuts can be changed in **Settings › Keymap** (or **Edit Keymap…
 
 | macOS | Action |
 |---|---|
-| `⇧⇧` | Search Everywhere (All / Database / Files / Symbols / Actions, ⇥ switches tabs). Data sources you are not connected to are searched from the list saved the last time they were loaded (marked *cached*, stored 0600 in the config folder's `search-cache/`); opening a result connects |
-| `⌘O` | Go to Database Object |
-| `⌥⌘O` | Go to Symbol (columns) |
+| `⇧⇧` | Search Everywhere (All / Database / Files / Symbols / Actions, ⇥ switches tabs). Data sources you are not connected to are searched from the list saved the last time they were loaded (marked cached); opening a result connects |
+| `⌘o` | Go to Database Object |
+| `⌥⌘o` | Go to Symbol (columns) |
 | `⇧⌘O` | Go to File (open and recent tabs) |
 | `⇧⌘A` | Find Action |
 | `⌥⇧⌘F` | Full-text Search in database |
-| `⌘E` | Recent Files |
+| `⌘e` | Recent Files |
 | `⌃⇥ / ⌃⇧⇥` | Switcher (hold ⌃, release to open) |
 | `⇧⌘/` | Keymap Reference (this window) |
 
@@ -106,8 +106,9 @@ Command shortcuts can be changed in **Settings › Keymap** (or **Edit Keymap…
 |---|---|
 | `↩` | Select in Database Explorer |
 | `⌘↓` | Edit data (open table) |
-| `⌘B` | Go to DDL |
+| `⌘b` | Go to DDL |
 | `F1` | Quick documentation |
+| `⌥F1` | Select in Database Explorer |
 
 #### Tool windows & appearance
 
@@ -118,7 +119,7 @@ Command shortcuts can be changed in **Settings › Keymap** (or **Edit Keymap…
 | `⇧⎋` | Hide active tool window |
 | `⇧⌘F12` | Maximize editor (also: double-click a tab) |
 | `⌘,` | Settings (theme) |
-| `⌃`` | Quick switch theme (Dark / Light / High contrast / Sync with OS) |
+| `` ⌃` `` | Quick switch theme (Dark / Light / High contrast / Sync with OS) |
 | `⌃⇧.` | Editor font size bigger |
 | `⌃⇧,` | Editor font size smaller |
 
@@ -126,11 +127,12 @@ Command shortcuts can be changed in **Settings › Keymap** (or **Edit Keymap…
 
 | macOS | Action |
 |---|---|
-| `⌘W` | Close tab (middle-click also closes) |
+| `⌘w` | Close tab (middle-click also closes) |
 | `⌥ + click ×` | Close other tabs |
 | `⇧⌘T` | Reopen closed tab |
 | `⇧⌘]` | Next tab |
 | `⇧⌘[` | Previous tab |
+| `⇧F6` | Rename console |
 | `⌥⇥` | Go to the next split (⇧ previous) |
 | `right-click tab` | Pin, Split Right/Down (up to 4 panes), Move to Next Group, Close others… |
 | `drag tab` | Reorder, or drop on a pane's right/bottom edge to split it (up to 4) |
@@ -142,17 +144,17 @@ Command shortcuts can be changed in **Settings › Keymap** (or **Edit Keymap…
 | `⌘↓ / F4` | Edit data (table) / open console (data source; Redis: key browser) |
 | `⇧⌘L` | New query console |
 | `⇧⌘F10` | Jump to query console |
-| `⌘B` | Go to DDL |
-| `⌥⌘G` | SQL Generator |
+| `⌘b` | Go to DDL |
+| `⌥⌘g` | SQL Generator |
 | `⌥⇧⌘G` | Copy DDL to clipboard |
 | `⌥⇧⌘B` | Open DDL in console |
 | `⌥⇧⌘C` | Copy reference |
 | `F1` | Quick documentation |
 | `⌘;` | Data source properties |
-| `⌘N` | New data source |
-| `⌘D` | Duplicate data source |
-| `⌘R` | Refresh |
-| `⌥⌘Y` | Refresh (anywhere) |
+| `⌘n` | New data source |
+| `⌘d` | Duplicate data source |
+| `⌘r` | Refresh |
+| `⌥⌘y` | Refresh (anywhere) |
 | `⌘F2` | Disconnect |
 | `⌦` | Remove data source / drop object (asks first) |
 | `type letters` | Speed search in the tree |
@@ -163,22 +165,22 @@ Command shortcuts can be changed in **Settings › Keymap** (or **Edit Keymap…
 |---|---|
 | `⌘↩` | Execute: asks what to run when there are several statements (⚙ Query Execution Settings), or the selection |
 | `⌘F2` | Cancel running statement |
-| `⌥⌘E` | Query history |
+| `⌥⌘e` | Query history |
 | `⌃Space` | Code completion |
-| `⌥⌘L` | Reformat code |
+| `⌥⌘l` | Reformat code |
 | `⌘/` | Line comment |
 | `⌥⌘/` | Block comment |
-| `⌘D` | Duplicate line |
+| `⌘d` | Duplicate line |
 | `⌘⌫` | Delete line |
 | `⌥⇧↑` | Move line up |
 | `⌥⇧↓` | Move line down |
 | `⌥↑` | Extend selection |
 | `⌥↓` | Shrink selection |
-| `⌃G` | Select next occurrence |
-| `⌃⌘G` | Select all occurrences |
+| `⌃g` | Select next occurrence |
+| `⌃⌘g` | Select all occurrences |
 | `⇧⌘U` | Toggle case |
-| `⌘L` | Go to line |
-| `⌘F` | Find in editor |
+| `⌘l` | Go to line |
+| `⌘f` | Find in editor |
 
 #### Data grid (results & table editor)
 
@@ -186,19 +188,28 @@ Command shortcuts can be changed in **Settings › Keymap** (or **Edit Keymap…
 |---|---|
 | `↩ / F2` | Edit cell |
 | `⇧↩` | Open value editor |
-| `⌥⌘N` | Set NULL |
-| `⌥⌘D` | Set DEFAULT |
-| `⌘N` | Add row |
-| `⌘D` | Clone row |
+| `⌥⌘n` | Set NULL |
+| `⌥⌘d` | Set DEFAULT |
+| `⌘n` | Add row |
+| `⌘d` | Clone row |
 | `⌘⌫` | Delete rows |
-| `⌥⌘Z` | Revert selected changes |
+| `⌥⌘z` | Revert selected changes |
 | `⌘↩` | Submit changes |
-| `⌘C / ⌘V` | Copy (with chosen extractor) / paste |
-| `⌘A` | Select all |
-| `⌘F` | Find in grid |
-| `⌘R` | Reload |
+| `⌘c / ⌘v` | Copy (with chosen extractor) / paste |
+| `⌘a` | Select all |
+| `⌘f` | Find in grid |
+| `⌘r` | Reload |
 | `⌘F2` | Cancel |
 | `click header · ⌥ click` | Sort · add to multi-column sort |
+
+#### Query history & Redis browser
+
+| macOS | Action |
+|---|---|
+| `⌦ / ⌘⌫` | Delete the selected history entry |
+| `⌘r` | Redis: scan keys again |
+| `⌘s` | Redis: save the value being edited |
+| `⌃l` | Redis terminal: clear |
 
 <!-- keymap:gui:end -->
 
@@ -207,20 +218,20 @@ Command shortcuts can be changed in **Settings › Keymap** (or **Edit Keymap…
 Press **F1** inside `dbtool-tui`, or run `dbtool-tui --help`, to see the same list. In the F1 window the **Commands** at the top can be changed: select one, press Enter and then the new key (`a` adds a second key, `Del` resets it). The mouse works too: click to select, double-click to open or edit, scroll with the wheel.
 Ctrl+Enter is only distinguishable in terminals that support the kitty keyboard protocol (iTerm2, kitty, WezTerm, Ghostty). Elsewhere use F5 or Alt+Enter.
 
-**New to it? `Ctrl+P` alone is enough to start.** It searches tables, columns, open tabs and actions. The status bar always shows the keys for what you are looking at (explorer, console, table, results), followed by the most useful global keys. The F1 window starts with the same short list:
+**New to it? `Ctrl+p` alone is enough to start.** It searches tables, columns, open tabs and actions (data sources you are not connected to are searched from the list saved the last time they were loaded). The status bar always shows the keys for what you are looking at (explorer, console, table, results, Redis), followed by the most useful global keys. The F1 window starts with the same short list. Keys are shown lowercase when Shift is not needed (`Ctrl+k`); an uppercase letter means Shift (`D`, `Alt+Shift+X`).
 
 | Key | Action |
 |---|---|
-| `Ctrl+P` | Search everything: tables, columns, tabs, actions |
-| `Ctrl+K` | All actions, each with its shortcut |
-| `Ctrl+L` | New query console for the selected data source |
-| `F5 / Ctrl+Enter` | Run (asks what to run when there are several statements) |
-| `Ctrl+E` | Recent tabs |
-| `Ctrl+W` | Close tab |
+| `Ctrl+p` | Search everything: tables, columns, tabs, actions (not sure? start here) |
+| `Ctrl+k` | All actions, each with its shortcut |
+| `Ctrl+l` | New query console for the selected data source |
+| `F5 / Ctrl+Enter / Alt+Enter` | Run (asks what to run when there are several statements) |
+| `Ctrl+e` | Recent tabs |
+| `Ctrl+w` | Close tab |
 | `Enter` (explorer) | Connect · open a table |
 | `s` (explorer) | Choose the databases and schemas shown |
-| `Esc` | Back to the explorer |
-| `Ctrl+Q` | Quit |
+| `Esc` | Back (to the explorer, or from results to the editor) |
+| `Ctrl+q` | Quit |
 
 <!-- keymap:tui:start -->
 
@@ -228,15 +239,15 @@ Ctrl+Enter is only distinguishable in terminals that support the kitty keyboard 
 
 | Key | Action |
 |---|---|
-| `Ctrl+Q` | Quit |
+| `Ctrl+q` | Quit |
 | `F1` | Keymap |
-| `Ctrl+K` | Actions Palette |
-| `Ctrl+P` | Search Everywhere (objects · columns · tabs · actions; not-connected data sources from the saved list) |
-| `Ctrl+O` | Go to Database Object |
-| `Ctrl+B` | Go to DDL |
-| `Ctrl+E` | Recent Tabs / Switcher |
-| `Ctrl+L` | New Query Console |
-| `Ctrl+W` | Close Tab |
+| `Ctrl+k` | Actions Palette |
+| `Ctrl+p` | Search Everywhere (objects · columns · tabs · actions) |
+| `Ctrl+o` | Go to Database Object |
+| `Ctrl+b` | Go to DDL |
+| `Ctrl+e` | Recent Tabs / Switcher |
+| `Ctrl+l` | New Query Console |
+| `Ctrl+w` | Close Tab |
 | `Alt+Right / Ctrl+PgDn` | Next Tab |
 | `Alt+Left / Ctrl+PgUp` | Previous Tab |
 | `Alt+1` | Database Explorer |
@@ -249,20 +260,20 @@ Ctrl+Enter is only distinguishable in terminals that support the kitty keyboard 
 | `Alt+[` | Database Explorer Narrower |
 | `Alt+]` | Database Explorer Wider |
 | `F5 / Ctrl+Enter / Alt+Enter` | Execute (asks what to run — see Query Execution Settings) |
-| `Alt+E` | Explain Plan |
+| `Alt+e` | Explain Plan |
 | `Ctrl+Space` | Code Completion |
-| `Ctrl+C` | Cancel Running Statement |
-| `Alt+T` | Toggle Transaction Mode (Auto/Manual) |
-| `Alt+C` | Commit |
-| `Alt+R` | Roll Back |
-| `Alt+O` | Toggle Output / Result |
+| `Ctrl+c` | Cancel Running Statement |
+| `Alt+t` | Toggle Transaction Mode (Auto/Manual) |
+| `Alt+c` | Commit |
+| `Alt+r` | Roll Back |
+| `Alt+o` | Toggle Output / Result |
 | `Ctrl+Alt+Up` | Go to the Split Above |
 | `Ctrl+Alt+Down` | Go to the Split Below |
 | `Ctrl+Alt+Left` | Go to the Split on the Left |
 | `Ctrl+Alt+Right` | Go to the Split on the Right |
 | `Alt+Shift+Up` | Shrink Editor (console) |
 | `Alt+Shift+Down` | Grow Editor (console) |
-| `Ctrl+S` | Submit Changes |
+| `Ctrl+s` | Submit Changes |
 | `Ctrl+F2` | Disconnect |
 
 #### Database Explorer
@@ -278,7 +289,9 @@ Ctrl+Enter is only distinguishable in terminals that support the kitty keyboard 
 | `c / X` | Connect / disconnect |
 | `r / F5` | Refresh |
 | `s` | Manage shown databases and schemas (Space check · Enter apply · shared with the GUI) |
-| `y` `⌘C` | Copy name (OSC 52 clipboard) |
+| `y  ⌘c` | Copy name (OSC 52 clipboard) |
+| `PgUp / PgDn · Home / End` | Page · first / last node |
+| `?` | Keymap (same as F1) |
 | `Tab / Esc` | Go to the open tab |
 
 #### Query console
@@ -288,9 +301,9 @@ Ctrl+Enter is only distinguishable in terminals that support the kitty keyboard 
 | `completion list` | Opens as you type (or Ctrl+Space) · ↑↓ choose · Enter/Tab insert · Esc close |
 | `Shift+Tab` | Go to the result grid (Esc / Tab returns) |
 | `Esc` | Go to the explorer |
-| `Ctrl+U / Ctrl+R` | Undo / redo (editor) |
-| `⌘A  ⌫` | Select all, then delete (or Ctrl+K › Clear Console) |
-| `click / drag  ⌘C` | Move the cursor / select text (runs only the selection) · copy the selection |
+| `Ctrl+u / Ctrl+r` | Undo / redo (editor) |
+| `⌘a  ⌫` | Select all, then delete (or Ctrl+k › Clear Console) |
+| `click / drag  ⌘c` | Move the cursor / select text (runs only the selection) · copy the selection |
 | `mouse drag` | Drag the editor/result border to resize |
 
 #### Tabs & split (mouse)
@@ -311,17 +324,25 @@ Ctrl+Enter is only distinguishable in terminals that support the kitty keyboard 
 | `Home / End` | First / last column |
 | `Shift+← / Shift+→` | Scroll columns sideways (mouse: wheel over the header row, ⌥+wheel, or click / drag the bar on the bottom border) |
 | `Enter / F2` | Edit cell (table data) |
-| `n` | Set NULL |
-| `a / Insert` | Add row |
-| `d / Delete` | Mark row deleted (again = undo) |
-| `Ctrl+Z` | Revert pending changes |
+| `n` | Set NULL (table data) |
+| `a / Insert` | Add row (table data) |
+| `d / Delete` | Mark row deleted, again = undo (table data) |
+| `Ctrl+z` | Revert pending changes (table data) |
 | `s` | Sort by the selected column: ▲ → ▼ → off (table data: ORDER BY · results: loaded rows) |
-| `w / o` | Edit WHERE / ORDER BY |
-| `r` | Reload |
+| `w or / · o` | Edit WHERE · ORDER BY (table data) |
+| `r` | Reload (table data) |
 | `x` | Export to CSV |
-| `y` `⌘C` | Copy cell value |
-| `⌘V` | Paste into cells from the selected one (tabs / lines fill several; extra lines add rows) |
-| `Esc` | Back |
+| `y  ⌘c` | Copy cell value |
+| `⌘v` | Paste into cells from the selected one (tabs / lines fill several; extra lines add rows; table data) |
+| `Esc` | Back (query results: to the editor) |
+
+#### DDL / routine view
+
+| Key | Action |
+|---|---|
+| `↑ ↓  (j k) · PgUp / PgDn` | Scroll |
+| `y  ⌘c` | Copy the text |
+| `Esc` | Back to the explorer |
 
 #### Redis browser (Medis style)
 
@@ -333,14 +354,14 @@ Ctrl+Enter is only distinguishable in terminals that support the kitty keyboard 
 | `m` | Scan more |
 | `r` | Rescan |
 | `a` | Add key (SET / HSET / RPUSH / SADD / ZADD …) |
-| `D` | Delete key |
+| `D / Delete` | Delete key |
 | `R` | Rename key |
 | `t` | Set TTL (empty = persist) |
 | `:` | Run any command |
 | `e / Enter (value)` | Edit selected element / string |
 | `a (value)` | Add element |
-| `x (value)` | Delete element |
-| `Esc` | Back to keys |
+| `x / Delete (value)` | Delete element |
+| `Esc / Tab / ← (value)` | Back to keys |
 
 #### Data source form
 
@@ -349,16 +370,16 @@ Ctrl+Enter is only distinguishable in terminals that support the kitty keyboard 
 | `↑ ↓ / Tab` | Move between fields |
 | `type / Backspace` | Edit text fields |
 | `Space / ← →` | Toggle on/off · change choice (Type, Color, SSL mode, Redis mode…) |
-| `Ctrl+T` | Test connection |
-| `Ctrl+Y` | Trust the SSH server's host key (after Ctrl+T showed its fingerprint) |
-| `Enter / Ctrl+S` | Save |
+| `Ctrl+t` | Test connection |
+| `Ctrl+y` | Trust the SSH server's host key (after Ctrl+t showed its fingerprint) |
+| `Enter / Ctrl+s` | Save |
 | `Esc` | Cancel |
 
 #### Popups
 
 | Key | Action |
 |---|---|
-| `Ctrl+B` | Go to DDL (in Search Everywhere / Go to Database Object) |
+| `Ctrl+b` | Go to DDL (in Search Everywhere / Go to Database Object) |
 | `type` | Filter (palettes) |
 | `↑ ↓ / PgUp PgDn` | Move / scroll |
 | `Enter` | Run / confirm |

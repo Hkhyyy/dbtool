@@ -103,8 +103,19 @@ export function eventSpec(e: { code: string; metaKey: boolean; ctrlKey: boolean;
 
 const MAC_KEYS: Record<string, string> = { Enter: "↩", Backspace: "⌫", Delete: "⌦", Esc: "⎋", Tab: "⇥", Up: "↑", Down: "↓", Left: "←", Right: "→", Space: "Space", PageUp: "⇞", PageDown: "⇟" };
 
-/** 화면 표시: macOS 는 ⌃⌥⇧⌘ 기호, 그 밖은 Ctrl+Alt+Shift+ */
+/** 키 표기의 글자: Shift 없는 ⌘/⌃/⌥(Ctrl+/Alt+) + 글자 하나는 소문자 ("⌘k"). 대문자는 Shift 를 눌러야 하는 키 ("⇧⌘A") */
+export function keyLabel(s: string): string {
+  return s
+    .replace(/([⌃⌥⇧⌘]+)([A-Z])(?![A-Za-z0-9])/g, (m, mods: string, k: string) => (mods.includes("⇧") ? m : mods + k.toLowerCase()))
+    .replace(/\b((?:(?:Ctrl|Alt|Shift|Win|Cmd)\+)+)([A-Z])(?![A-Za-z0-9])/g, (m, mods: string, k: string) => (mods.includes("Shift+") ? m : mods + k.toLowerCase()));
+}
+
+/** 화면 표시: macOS 는 ⌃⌥⇧⌘ 기호, 그 밖은 Ctrl+Alt+Shift+ (글자는 keyLabel 규칙) */
 export function formatSpec(spec: string): string {
+  return keyLabel(formatSpecRaw(spec));
+}
+
+function formatSpecRaw(spec: string): string {
   const parts = spec.split("+");
   const key = parts.pop()!;
   const has = (m: string) => parts.includes(m);

@@ -3,6 +3,8 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { Panel, PanelGroup, PanelResizeHandle } from "react-resizable-panels";
 import { api, QueryResult, redis, RedisKeyDetail, RedisKeyRow, RedisReply } from "../lib/api";
 
+const isMacOS = navigator.platform.toLowerCase().includes("mac");
+
 /** 키 목록 한 줄 높이 (App.css .rd-key 와 같다) · 터미널 출력 최대 줄 수 */
 const KEY_ROW_H = 22;
 const TERM_MAX = 1000;
@@ -119,7 +121,16 @@ export function RedisBrowser(p: Props) {
   const renameLocal = (from: string, to: string) => setKeys((ks) => ks.map((x) => (x.key === from ? { ...x, key: to } : x)).sort((a, b) => a.key.localeCompare(b.key)));
 
   return (
-    <div className="redis-browser">
+    <div
+      className="redis-browser"
+      onKeyDown={(e) => {
+        // ⌘r = 다시 읽기 (툴바 Scan again 과 같다)
+        if ((isMacOS ? e.metaKey : e.ctrlKey) && !e.shiftKey && !e.altKey && e.code === "KeyR") {
+          e.preventDefault();
+          scan(true);
+        }
+      }}
+    >
       <div className="rd-toolbar">
         <span className="rd-conn">{p.connName}</span>
         <select value={p.database} onMouseDown={p.onLoadDbs} onFocus={p.onLoadDbs} onChange={(e) => p.onSwitchDb(e.target.value)} title="Database">
@@ -148,7 +159,7 @@ export function RedisBrowser(p: Props) {
             </option>
           ))}
         </select>
-        <button className="tb" title="Scan again (⌘R)" onClick={() => scan(true)}>
+        <button className="tb" title="Scan again (⌘r)" onClick={() => scan(true)}>
           ⟳
         </button>
         <button className="tb text" title="Add a new key" onClick={() => setAdding(true)} disabled={p.readOnly}>
@@ -585,7 +596,7 @@ function ValueEditor({ text, fmt, setFmt, pretty, readOnly, onSave, label, big }
           <option value="json">JSON{isJson ? "" : " (invalid)"}</option>
         </select>
         {!readOnly && (
-          <button className="primary" onClick={() => onSave(buf)} disabled={buf === shown.current} title="Save (⌘S)">
+          <button className="primary" onClick={() => onSave(buf)} disabled={buf === shown.current} title="Save (⌘s)">
             Save
           </button>
         )}
