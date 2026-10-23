@@ -125,16 +125,17 @@ jobs:
 
       - name: Package
         run: |
-          mkdir dist
+          # out/ (dist/ 는 프론트엔드 빌드 결과)
+          mkdir out
           b="target/$T/release/bundle"
           if [ "$RUNNER_OS" = macOS ]; then
-            cp "$b"/dmg/*.dmg "dist/Qurry_${V}_${A}.dmg"
+            cp "$b"/dmg/*.dmg "out/Qurry_${V}_${A}.dmg"
             # 앱 안 업데이트 묶음 (Tauri 와 같은 형식: 맨 위가 Qurry.app/)
-            COPYFILE_DISABLE=1 tar --no-mac-metadata -czf "dist/Qurry_${V}_${A}.app.tar.gz" -C "$b/macos" Qurry.app
+            COPYFILE_DISABLE=1 tar --no-mac-metadata -czf "out/Qurry_${V}_${A}.app.tar.gz" -C "$b/macos" Qurry.app
           else
             # AppImage 는 그대로 앱 안 업데이트 묶음이다
-            cp "$b"/appimage/*.AppImage "dist/Qurry_${V}_${A}.AppImage"
-            cp "$b"/deb/*.deb "dist/Qurry_${V}_${A}.deb"
+            cp "$b"/appimage/*.AppImage "out/Qurry_${V}_${A}.AppImage"
+            cp "$b"/deb/*.deb "out/Qurry_${V}_${A}.deb"
           fi
           mkdir cli
           cp "target/$T/release/qurry-tui" "target/$T/release/qurry-mcp" cli/
@@ -142,17 +143,17 @@ jobs:
             # 예전 이름 dbtool-tui · dbtool-mcp (같은 바이너리) + dbtool-cli_ 묶음: 0.1.x 설치가 업데이트할 수 있게
             cp cli/qurry-tui cli/dbtool-tui
             cp cli/qurry-mcp cli/dbtool-mcp
-            tar -czf "dist/qurry-cli_${V}_${T}.tar.gz" -C cli qurry-tui qurry-mcp dbtool-tui dbtool-mcp
-            cp "dist/qurry-cli_${V}_${T}.tar.gz" "dist/dbtool-cli_${V}_${T}.tar.gz"
+            tar -czf "out/qurry-cli_${V}_${T}.tar.gz" -C cli qurry-tui qurry-mcp dbtool-tui dbtool-mcp
+            cp "out/qurry-cli_${V}_${T}.tar.gz" "out/dbtool-cli_${V}_${T}.tar.gz"
           else
-            tar -czf "dist/qurry-cli_${V}_${T}.tar.gz" -C cli qurry-tui qurry-mcp
+            tar -czf "out/qurry-cli_${V}_${T}.tar.gz" -C cli qurry-tui qurry-mcp
           fi
-          ls -la dist
+          ls -la out
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist-${{ matrix.target }}
-          path: dist/*
+          path: out/*
           if-no-files-found: error
           retention-days: 3
 
