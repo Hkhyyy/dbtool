@@ -4154,14 +4154,18 @@ dependencies = [
 name = "qurry"
 version = "0.1.0"
 dependencies = [
+ "flate2",
+ "libc",
  "qurry-core",
  "serde",
  "serde_json",
+ "tar",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
  "tauri-plugin-opener",
  "tauri-plugin-updater",
+ "tempfile",
  "tokio",
  "uuid",
 ]

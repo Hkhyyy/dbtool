@@ -1,3 +1,5 @@
+#[cfg(target_os = "macos")]
+mod bundle;
 mod commands;
 // 엔진은 qurry-core (TUI·MCP 와 공유)
 pub use qurry_core::{app, db, error, meta, redisdb, secrets, store};
