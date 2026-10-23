@@ -1,4 +1,4 @@
-//! 프론트엔드에서 호출하는 Tauri 커맨드. 실제 동작은 dbtool_core::app::AppState 에 있다.
+//! 프론트엔드에서 호출하는 Tauri 커맨드. 실제 동작은 qurry_core::app::AppState 에 있다.
 use crate::app::{AppState, ConnectionView, ImportResult};
 use crate::db::QueryResult;
 use crate::error::AppResult;
@@ -95,7 +95,7 @@ pub async fn warm_search_cache(state: State<'_, AppState>, id: String) -> AppRes
 
 /// 접속하지 않은 Data Source 도 Search Everywhere 에서 찾도록 저장해 둔 객체·컬럼 목록
 #[tauri::command]
-pub fn cached_index(state: State<'_, AppState>) -> AppResult<Vec<dbtool_core::search_cache::CachedIndex>> {
+pub fn cached_index(state: State<'_, AppState>) -> AppResult<Vec<qurry_core::search_cache::CachedIndex>> {
     state.cached_index()
 }
 
@@ -132,7 +132,7 @@ pub async fn redis_exec(state: State<'_, AppState>, id: String, args: Vec<String
 
 #[tauri::command]
 pub async fn export_connections(app: tauri::AppHandle, state: State<'_, AppState>) -> AppResult<Option<(usize, String)>> {
-    let Some(path) = save_dialog(&app, "dbtool-datasources.json", "JSON", &["json"]) else { return Ok(None) };
+    let Some(path) = save_dialog(&app, "qurry-datasources.json", "JSON", &["json"]) else { return Ok(None) };
     Ok(Some((state.export_connections(path.clone()).await?, path)))
 }
 
@@ -190,7 +190,7 @@ pub async fn trust_ssh_host(state: State<'_, AppState>, host: String, port: u16)
 /// 실행 전에 확인을 받을 위험한 문장이면 이유 (WHERE 없는 UPDATE/DELETE, DROP, TRUNCATE, Redis FLUSH*·DEL)
 #[tauri::command]
 pub fn unsafe_reason(kind: crate::store::DbKind, sql: String) -> Option<String> {
-    dbtool_core::guard::unsafe_statement(&sql, kind)
+    qurry_core::guard::unsafe_statement(&sql, kind)
 }
 
 #[tauri::command]
@@ -250,19 +250,19 @@ pub fn save_keymap(state: State<'_, AppState>, map: crate::store::Keymap) -> App
 #[serde(rename_all = "camelCase")]
 pub struct UpdateInfo {
     current: String,
-    latest: Option<dbtool_core::update::Release>,
+    latest: Option<qurry_core::update::Release>,
     /// 지금 버전보다 새 버전들의 바뀐 것 (최신부터)
-    changes: Vec<dbtool_core::update::VersionNotes>,
+    changes: Vec<qurry_core::update::VersionNotes>,
 }
 
 /// 새 버전 확인. force 가 아니면 한 시간에 한 번만 GitHub 에 묻는다. 개발 빌드(pnpm tauri dev)는 force 일 때만
 #[tauri::command]
 pub async fn check_update(state: State<'_, AppState>, force: bool) -> AppResult<UpdateInfo> {
     let current = env!("CARGO_PKG_VERSION").to_string();
-    if (cfg!(debug_assertions) && !force) || (dbtool_core::update::disabled() && !force) {
+    if (cfg!(debug_assertions) && !force) || (qurry_core::update::disabled() && !force) {
         return Ok(UpdateInfo { current, latest: None, changes: vec![] });
     }
-    let latest = dbtool_core::update::check(&state.store.dir(), &current, force).await?;
+    let latest = qurry_core::update::check(&state.store.dir(), &current, force).await?;
     let changes = latest.as_ref().map(|r| r.changes_since(&current)).unwrap_or_default();
     Ok(UpdateInfo { current, latest, changes })
 }

@@ -2,8 +2,10 @@
 # 버전: 마지막 태그(vX.Y.Z)의 patch +1. 소스(Cargo.toml) 버전이 그보다 높으면(PR 에서 minor/major 를 올린 경우) 그 버전.
 # 버전은 빌드할 때만 매니페스트에 넣고 main 에 커밋하지 않는다 (main 은 PR 로만 바뀐다). 기준은 태그.
 # 공급망: 액션은 커밋 SHA 로 고정 (태그는 옮겨질 수 있다), Cargo.lock 그대로(--locked), SHA256SUMS 와 빌드 출처 증명(attestation) 을 함께 올린다.
-# dbtool-tui --update 는 SHA256SUMS 로 받은 파일을 검증한다.
-# GUI 앱 안 업데이트(Tauri updater): dbtool_<v>_aarch64.app.tar.gz 와 서명, latest.json 을 함께 올린다.
+# qurry-tui --update 는 SHA256SUMS 로 받은 파일을 검증한다.
+# GUI 앱 안 업데이트(Tauri updater): Qurry_<v>_aarch64.app.tar.gz 와 서명, latest.json 을 함께 올린다.
+# 이름 변경(dbtool → Qurry) 이전 설치도 업데이트되게: CLI 묶음을 dbtool-cli_… 이름으로도 올리고, 묶음 안에 dbtool-tui / dbtool-mcp 도 넣는다
+#   (0.1.x 의 dbtool-tui --update 는 dbtool-cli_ 묶음에서 dbtool-tui · dbtool-mcp 를 찾는다).
 #   서명 키는 레포 Secrets(TAURI_SIGNING_PRIVATE_KEY / _PASSWORD), 공개키는 src-tauri/tauri.conf.json.
 name: Release
 
@@ -84,25 +86,31 @@ jobs:
         run: pnpm tauri build --bundles app,dmg -- --locked
 
       - name: Build TUI and MCP
-        run: cargo build --release --locked -p dbtool-tui -p dbtool-mcp
+        run: cargo build --release --locked -p qurry-tui -p qurry-mcp
 
       - name: Package
         env:
           V: ${{ steps.ver.outputs.version }}
         run: |
           mkdir dist-release
-          cp "target/release/bundle/dmg/dbtool_${V}_aarch64.dmg" dist-release/
-          tar -czf "dist-release/dbtool-cli_${V}_aarch64-apple-darwin.tar.gz" -C target/release dbtool-tui dbtool-mcp
+          cp "target/release/bundle/dmg/Qurry_${V}_aarch64.dmg" dist-release/
+          # CLI: qurry-tui · qurry-mcp + 예전 이름 dbtool-tui · dbtool-mcp (같은 바이너리)
+          mkdir cli
+          cp target/release/qurry-tui target/release/qurry-mcp cli/
+          cp cli/qurry-tui cli/dbtool-tui
+          cp cli/qurry-mcp cli/dbtool-mcp
+          tar -czf "dist-release/qurry-cli_${V}_aarch64-apple-darwin.tar.gz" -C cli qurry-tui qurry-mcp dbtool-tui dbtool-mcp
+          cp "dist-release/qurry-cli_${V}_aarch64-apple-darwin.tar.gz" "dist-release/dbtool-cli_${V}_aarch64-apple-darwin.tar.gz"
           # 앱 안 업데이트: 서명된 .app.tar.gz + latest.json (앱은 releases/latest/download/latest.json 을 본다)
-          app="dbtool_${V}_aarch64.app.tar.gz"
-          cp target/release/bundle/macos/dbtool.app.tar.gz "dist-release/$app"
-          jq -n --arg v "$V" --arg sig "$(cat target/release/bundle/macos/dbtool.app.tar.gz.sig)" \
+          app="Qurry_${V}_aarch64.app.tar.gz"
+          cp target/release/bundle/macos/Qurry.app.tar.gz "dist-release/$app"
+          jq -n --arg v "$V" --arg sig "$(cat target/release/bundle/macos/Qurry.app.tar.gz.sig)" \
             --arg url "https://github.com/${GITHUB_REPOSITORY}/releases/download/v${V}/$app" \
             --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             '{version: $v, pub_date: $date, platforms: {"darwin-aarch64": {signature: $sig, url: $url}}}' > dist-release/latest.json
           cat dist-release/latest.json
           sed "s/{{VERSION}}/${V}/g" .github/release-notes.md > release-notes.md
-          # 체크섬 (dbtool-tui --update 가 검증한다)
+          # 체크섬 (qurry-tui --update 가 검증한다)
           (cd dist-release && shasum -a 256 * > SHA256SUMS && cat SHA256SUMS)
           ls -la dist-release
 
@@ -118,6 +126,6 @@ jobs:
         run: |
           gh release create "v${V}" dist-release/* \
             --target "$GITHUB_SHA" \
-            --title "dbtool ${V}" \
+            --title "Qurry ${V}" \
             --notes-file release-notes.md \
             --generate-notes

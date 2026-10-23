@@ -193,7 +193,7 @@ pub struct Keymap {
 
 impl Keymap {
     /// 기본값 위에 사용자 설정을 덮는다. 모르는 액션 이름은 무시
-    pub fn new(user: &dbtool_core::store::Keymap) -> Self {
+    pub fn new(user: &qurry_core::store::Keymap) -> Self {
         let mut map: HashMap<Action, Vec<String>> = DEFAULT_KEYS.iter().map(|(a, _)| (*a, defaults(*a))).collect();
         for (a, _) in DEFAULT_KEYS {
             if let Some(v) = user.get(&action_id(*a)) {
@@ -246,7 +246,7 @@ impl Keymap {
     }
 
     /// keymap.json 에 쓸 것: 기본값과 다른 명령만
-    pub fn overrides(&self) -> dbtool_core::store::Keymap {
+    pub fn overrides(&self) -> qurry_core::store::Keymap {
         DEFAULT_KEYS.iter().filter(|(a, _)| self.is_custom(*a)).map(|(a, _)| (action_id(*a), self.keys(*a).to_vec())).collect()
     }
 }

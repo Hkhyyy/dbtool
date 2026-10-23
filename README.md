@@ -1,16 +1,18 @@
-# dbtool
+# Qurry
 
-A DataGrip-style database client. One engine (`dbtool-core`), three ways to use it:
+A free DataGrip alternative — query + ferry. Formerly **dbtool**.
+
+A DataGrip-style database client. One engine (`qurry-core`), three ways to use it:
 
 | Binary | What it is |
 |---|---|
-| **dbtool** (GUI, Tauri) | Desktop app modeled on DataGrip |
-| **dbtool-tui** | Terminal UI (great over SSH) — works on its own, no GUI needed |
-| **dbtool-mcp** | MCP server so AI tools such as Claude Code can explore and query your databases |
+| **Qurry** (GUI, Tauri) | Desktop app modeled on DataGrip |
+| **qurry-tui** | Terminal UI (great over SSH) — works on its own, no GUI needed |
+| **qurry-mcp** | MCP server so AI tools such as Claude Code can explore and query your databases |
 
 All three share the same data sources and passwords, so a connection created in one shows up in the others.
 
-- Config folder: `~/Library/Application Support/com.hyunkyo.dbtool` (macOS), `~/.config/com.hyunkyo.dbtool` (Linux)
+- Config folder: `~/Library/Application Support/com.hyunkyo.dbtool` (macOS), `~/.config/com.hyunkyo.dbtool` (Linux). The folder keeps its old name so data sources and passwords from dbtool carry over.
 - Custom shortcuts are stored in `keymap.json` in that folder (`"gui"` and `"tui"` sections, only the ones you changed)
 - Passwords are stored in `secrets.json` in that folder, encrypted with AES-GCM (key in `secret.key`). The folder is 0700 and its files 0600. The macOS Keychain is not used, so anyone who can read your files (or a copy of this folder) can decrypt the passwords.
 
@@ -18,10 +20,10 @@ All three share the same data sources and passwords, so a connection created in 
 
 Get the latest build from [Releases](https://github.com/Hkhyyy/dbtool/releases):
 
-- `dbtool_<version>_aarch64.dmg` — GUI app (Apple Silicon). Drag `dbtool.app` to Applications.
-- `dbtool-cli_<version>_aarch64-apple-darwin.tar.gz` — `dbtool-tui` and `dbtool-mcp`.
+- `Qurry_<version>_aarch64.dmg` — GUI app (Apple Silicon). Drag `Qurry.app` to Applications.
+- `qurry-cli_<version>_aarch64-apple-darwin.tar.gz` — `qurry-tui` and `qurry-mcp`.
 
-The app is not code-signed yet, so macOS shows an "unidentified developer" / "damaged" warning on first launch. Run `xattr -dr com.apple.quarantine /Applications/dbtool.app` (or right-click the app → Open).
+The app is not code-signed yet, so macOS shows an "unidentified developer" / "damaged" warning on first launch. Run `xattr -dr com.apple.quarantine /Applications/Qurry.app` (or right-click the app → Open).
 
 A new release is published automatically every time `main` changes.
 
@@ -29,9 +31,9 @@ A new release is published automatically every time `main` changes.
 
 Both apps check GitHub for a newer release when they start and every hour while they run (one request to the GitHub API) and tell you when there is one. You can also check right away.
 
-- **GUI** — a `⬆ vX.Y.Z available` button appears in the status bar. It lists what changed in each version since yours. **Update & Restart** downloads the new version, checks its signature, replaces the app and opens it again with your tabs. **Download DMG** is the manual fallback. Check now from **dbtool › Check for Updates…** or **Settings › Appearance › Updates**, where you can also turn the automatic check off. In-app updates start from 0.1.9: install that one from the DMG once.
-- **TUI** — the status line shows `⬆ vX.Y.Z available`. Run **⌃k › Update dbtool & Restart** to download the release, verify it against `SHA256SUMS`, replace `dbtool-tui` and `dbtool-mcp` in place and restart with your tabs. **⌃k › Check for Updates** checks now and lists what changed in each version since yours. From a shell, `dbtool-tui --update` does the same. A TUI built from source (`target/release`) is not checked or replaced; update it with `git pull` and `cargo build`.
-- Turn the check off with `dbtool-tui --no-update-check` or `DBTOOL_NO_UPDATE_CHECK=1`.
+- **GUI** — a `⬆ vX.Y.Z available` button appears in the status bar. It lists what changed in each version since yours. **Update & Restart** downloads the new version, checks its signature, replaces the app and opens it again with your tabs. **Download DMG** is the manual fallback. Check now from **Qurry › Check for Updates…** or **Settings › Appearance › Updates**, where you can also turn the automatic check off. In-app updates start from 0.1.9: install that one from the DMG once.
+- **TUI** — the status line shows `⬆ vX.Y.Z available`. Run **⌃k › Update Qurry & Restart** to download the release, verify it against `SHA256SUMS`, replace `qurry-tui` and `qurry-mcp` in place and restart with your tabs. **⌃k › Check for Updates** checks now and lists what changed in each version since yours. From a shell, `qurry-tui --update` does the same. A TUI built from source (`target/release`) is not checked or replaced; update it with `git pull` and `cargo build`.
+- Turn the check off with `qurry-tui --no-update-check` or `QURRY_NO_UPDATE_CHECK=1`.
 
 ## Supported databases
 
@@ -59,18 +61,18 @@ pnpm tauri dev
 pnpm tauri build --bundles dmg
 
 # TUI / MCP
-cargo build --release -p dbtool-tui -p dbtool-mcp
-ln -sf "$PWD/target/release/dbtool-tui" ~/.local/bin/dbtool-tui
-ln -sf "$PWD/target/release/dbtool-mcp" ~/.local/bin/dbtool-mcp
+cargo build --release -p qurry-tui -p qurry-mcp
+ln -sf "$PWD/target/release/qurry-tui" ~/.local/bin/qurry-tui
+ln -sf "$PWD/target/release/qurry-mcp" ~/.local/bin/qurry-mcp
 
-dbtool-tui            # press F1 for the keymap
-dbtool-tui --help     # print the keymap
+qurry-tui            # press F1 for the keymap
+qurry-tui --help     # print the keymap
 ```
 
 ## Layout
 
 ```
-crates/core   dbtool-core: drivers (PostgreSQL, MySQL, Redis), sessions, SSH tunnels, storage, AppState (every feature)
+crates/core   qurry-core: drivers (PostgreSQL, MySQL, Redis), sessions, SSH tunnels, storage, AppState (every feature)
 src-tauri     GUI backend: Tauri commands call AppState methods directly
 src           GUI frontend (React + Monaco)
 crates/tui    TUI (ratatui)
@@ -215,7 +217,7 @@ Command shortcuts can be changed in **Settings › Keymap** (or **Edit Keymap…
 
 ## TUI keyboard shortcuts
 
-Press **F1** inside `dbtool-tui`, or run `dbtool-tui --help`, to see the same list. In the F1 window the **Commands** at the top can be changed: select one, press Enter and then the new key (`a` adds a second key, `Del` resets it). The mouse works too: click to select, double-click to open or edit, scroll with the wheel.
+Press **F1** inside `qurry-tui`, or run `qurry-tui --help`, to see the same list. In the F1 window the **Commands** at the top can be changed: select one, press Enter and then the new key (`a` adds a second key, `Del` resets it). The mouse works too: click to select, double-click to open or edit, scroll with the wheel.
 Ctrl+Enter is only distinguishable in terminals that support the kitty keyboard protocol (iTerm2, kitty, WezTerm, Ghostty). Elsewhere use F5 or Alt+Enter.
 
 **New to it? `Ctrl+p` alone is enough to start.** It searches tables, columns, open tabs and actions (data sources you are not connected to are searched from the list saved the last time they were loaded). The status bar always shows the keys for what you are looking at (explorer, console, table, results, Redis), followed by the most useful global keys. The F1 window starts with the same short list. Keys are shown lowercase when Shift is not needed (`Ctrl+k`); an uppercase letter means Shift (`D`, `Alt+Shift+X`).
@@ -391,8 +393,8 @@ Ctrl+Enter is only distinguishable in terminals that support the kitty keyboard 
 ## MCP server
 
 ```bash
-claude mcp add dbtool -- dbtool-mcp                  # read-only (default)
-claude mcp add dbtool-rw -- dbtool-mcp --allow-write # adds the execute tool
+claude mcp add qurry -- qurry-mcp                   # read-only (default)
+claude mcp add qurry-rw -- qurry-mcp --allow-write  # adds the execute tool
 ```
 
 | Tool | Description |
@@ -406,7 +408,7 @@ claude mcp add dbtool-rw -- dbtool-mcp --allow-write # adds the execute tool
 | `explain` | Execution plan (optionally ANALYZE) |
 | `full_text_search` | Find a value in every table |
 | `redis_scan` / `redis_get` | Redis key list / key details |
-| `export_csv` | Save a read-only query result as CSV in `~/Downloads/dbtool-exports` (file name only, never overwrites) |
+| `export_csv` | Save a read-only query result as CSV in `~/Downloads/qurry-exports` (file name only, never overwrites) |
 | `execute` | Only with `--allow-write`. Runs statements in one transaction; refused for read-only data sources |
 
 **How read-only is enforced**
@@ -425,17 +427,17 @@ Options: `--config-dir DIR` (use another config folder), `--verbose` (engine log
 - **Table editor** saves all edits in one transaction, and each `UPDATE`/`DELETE` must change exactly one row, otherwise nothing is saved.
 - **Import** of data source files shows what changes first (e.g. "turns Read-only OFF", new startup script).
 - **Query history** (GUI) hides passwords in `CREATE/ALTER USER … PASSWORD '…'`, `IDENTIFIED BY '…'` and Redis `AUTH`.
-- **Releases** are built by GitHub Actions pinned to commit SHAs, with `SHA256SUMS` and build provenance attestations; `dbtool-tui --update` verifies the checksum before installing.
+- **Releases** are built by GitHub Actions pinned to commit SHAs, with `SHA256SUMS` and build provenance attestations; `qurry-tui --update` verifies the checksum before installing.
 
 ## Tests
 
 Write the failing test first: a bug fix starts with a test that reproduces it, a feature with a test for the new behavior (screens and terminal keys that can't be tested are checked by hand). Every pull request runs the CI workflow: Rust unit tests, integration tests against PostgreSQL / MySQL / Redis containers, vitest and the web build.
 
 ```bash
-cargo test -p dbtool-core -p dbtool-tui -p dbtool-mcp   # unit tests (no database)
+cargo test -p qurry-core -p qurry-tui -p qurry-mcp   # unit tests (no database)
 pnpm test                                               # GUI logic (src/lib/*.test.ts, vitest)
 cargo test --workspace -- --include-ignored --skip tunnel   # needs a local PostgreSQL and the containers below
-DBTOOL_TEST_PG=127.0.0.1:15499:postgres:shop cargo test -p dbtool-core session -- --ignored   # PostgreSQL elsewhere (host:port:user:db)
+QURRY_TEST_PG=127.0.0.1:15499:postgres:shop cargo test -p qurry-core session -- --ignored   # PostgreSQL elsewhere (host:port:user:db)
 ```
 
 Containers for the integration tests:
@@ -444,7 +446,7 @@ Containers for the integration tests:
 docker run -d --name dbtool-mysql-test -e MYSQL_ROOT_PASSWORD=dbtool -e MYSQL_DATABASE=shop -p 13306:3306 mysql:8.4
 docker run -d --name dbtool-redis-test -p 16379:6379 redis:7-alpine
 # TLS (16391), Sentinel (26392 → 16392) and Cluster (17001-17003) servers: see the test comments in crates/core/src/redisdb.rs
-# (TLS certificate folder: DBTOOL_TEST_TLS_DIR, default /tmp/dbtool-tls)
+# (TLS certificate folder: QURRY_TEST_TLS_DIR, default /tmp/dbtool-tls)
 ```
 
 TUI tests can drive the app without a database: `crates/tui/src/testkit.rs` opens table tabs with fixed rows, sends keys (`h.key("Ctrl+A")`, `h.type_str("ban")`) and renders the screen to text (`h.screen(120, 30)`). See the tests at the end of `crates/tui/src/input.rs`.

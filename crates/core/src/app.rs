@@ -122,7 +122,7 @@ async fn recover(state: &AppState, id: &str, tab: Option<&str>, lost_tx: bool, e
             drop_pool(state, split_target(id).0).await;
         }
     }
-    crate::log!("[dbtool] connection lost on {id}: {e}");
+    crate::log!("[qurry] connection lost on {id}: {e}");
     AppError::Msg(format!(
         "{e} — connection lost{}. Run it again to reconnect.",
         if lost_tx { "; the open transaction was rolled back by the server" } else { "" }
@@ -376,7 +376,7 @@ impl AppState {
 
 impl AppState {
     pub async fn list_connections(&self) -> AppResult<Vec<ConnectionView>> {
-        crate::log!("[dbtool] list_connections");
+        crate::log!("[qurry] list_connections");
         let pools = self.pools.read().await;
         self
             .store
@@ -394,7 +394,7 @@ impl AppState {
 
     /// `password`: None이면 기존 비밀번호 유지, 빈 문자열이면 삭제.
     pub async fn save_connection(&self, mut config: ConnectionConfig, password: Option<String>, ssh_secret: Option<String>) -> AppResult<ConnectionConfig> {
-        crate::log!("[dbtool] save_connection host={} user={} db={}", config.host, config.user, config.database);
+        crate::log!("[qurry] save_connection host={} user={} db={}", config.host, config.user, config.database);
         if config.id.is_empty() {
             config.id = uuid::Uuid::new_v4().to_string();
         }
@@ -470,7 +470,7 @@ impl AppState {
     }
 
     pub async fn connect(&self, id: String) -> AppResult<String> {
-        crate::log!("[dbtool] connect {id}");
+        crate::log!("[qurry] connect {id}");
         ensure_pool(self, &id).await?.server_version().await
     }
 
@@ -725,20 +725,20 @@ impl AppState {
     }
 
     pub async fn list_databases(&self, id: String) -> AppResult<Vec<String>> {
-        crate::log!("[dbtool] list_databases {id}");
+        crate::log!("[qurry] list_databases {id}");
         let r = async { crate::meta::list_databases(&ensure_pool(self, &id).await?).await }.await;
         if let Err(e) = &r {
-            crate::log!("[dbtool] list_databases error: {e}");
+            crate::log!("[qurry] list_databases error: {e}");
         }
         r
     }
 
     pub async fn list_schemas(&self, id: String) -> AppResult<Vec<crate::meta::SchemaInfo>> {
-        crate::log!("[dbtool] list_schemas {id}");
+        crate::log!("[qurry] list_schemas {id}");
         let r = async { crate::meta::list_schemas(&ensure_pool(self, &id).await?).await }.await;
         match &r {
-            Ok(v) => crate::log!("[dbtool] list_schemas → {} schemas", v.len()),
-            Err(e) => crate::log!("[dbtool] list_schemas error: {e}"),
+            Ok(v) => crate::log!("[qurry] list_schemas → {} schemas", v.len()),
+            Err(e) => crate::log!("[qurry] list_schemas error: {e}"),
         }
         r
     }

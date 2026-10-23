@@ -1,17 +1,17 @@
-//! dbtool MCP 서버 (stdio, JSON-RPC 2.0). GUI·TUI 와 같은 엔진(dbtool-core)·같은 Data Source 를 쓴다.
+//! Qurry MCP 서버 (stdio, JSON-RPC 2.0). GUI·TUI 와 같은 엔진(qurry-core)·같은 Data Source 를 쓴다.
 //!
 //! 기본은 읽기 전용: PG/MySQL 은 READ ONLY 트랜잭션 안에서 한 문장만, Redis 는 읽기 명령만.
 //! `--allow-write` 로 켜면 `execute` 도구가 생긴다 (Data Source 의 Read-only 설정은 그래도 지킨다).
-use dbtool_core::app::AppState;
-use dbtool_core::db::QueryResult;
-use dbtool_core::sql;
-use dbtool_core::store::DbKind;
+use qurry_core::app::AppState;
+use qurry_core::db::QueryResult;
+use qurry_core::sql;
+use qurry_core::store::DbKind;
 use serde_json::{json, Value};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
 
-const SERVER_NAME: &str = "dbtool";
+const SERVER_NAME: &str = "qurry";
 const PROTOCOLS: [&str; 3] = ["2025-06-18", "2025-03-26", "2024-11-05"];
 const MAX_ROWS: usize = 1000;
 
@@ -45,7 +45,7 @@ fn ds_props(extra: Value) -> Value {
 impl Server {
     fn tools(&self) -> Vec<Value> {
         let mut t = vec![
-            tool("list_data_sources", "List configured data sources (PostgreSQL, MySQL, Redis) shared with the dbtool app.", json!({}), &[], true),
+            tool("list_data_sources", "List configured data sources (PostgreSQL, MySQL, Redis) shared with the Qurry app.", json!({}), &[], true),
             tool("list_databases", "List databases of a data source.", ds_props(json!({})), &["data_source"], true),
             tool("list_schemas", "List schemas in a database (MySQL/Redis: the database itself).", ds_props(json!({})), &["data_source"], true),
             tool(
@@ -125,7 +125,7 @@ impl Server {
             ),
             tool(
                 "export_csv",
-                "Run a read-only query and save the full result as a CSV file (UTF-8 with BOM, opens in Excel) in ~/Downloads/dbtool-exports. Existing files are never overwritten.",
+                "Run a read-only query and save the full result as a CSV file (UTF-8 with BOM, opens in Excel) in ~/Downloads/qurry-exports. Existing files are never overwritten.",
                 ds_props(json!({ "sql": { "type": "string" }, "file_name": { "type": "string", "description": "Plain file name such as orders.csv (no folders)" } })),
                 &["data_source", "sql", "file_name"],
                 false,
@@ -169,7 +169,7 @@ impl Server {
         let st = &self.state;
         let s = |k: &str| a.get(k).and_then(|v| v.as_str()).map(String::from);
         let n = |k: &str, d: usize| a.get(k).and_then(|v| v.as_u64()).map(|x| x as usize).unwrap_or(d);
-        let e = |e: dbtool_core::error::AppError| e.to_string();
+        let e = |e: qurry_core::error::AppError| e.to_string();
         let schema_or = |kind: DbKind, db: &str| s("schema").unwrap_or_else(|| if kind == DbKind::Postgres { "public".into() } else { db.to_string() });
         match name {
             "list_data_sources" => {
@@ -284,7 +284,7 @@ impl Server {
                     None if kind == DbKind::Postgres => st.list_schemas(t.clone()).await.map_err(e)?.into_iter().filter(|s| !s.is_system).map(|s| s.name).collect(),
                     None => vec![db],
                 };
-                let req = dbtool_core::meta::FtsRequest {
+                let req = qurry_core::meta::FtsRequest {
                     text: s("text").ok_or("text is required")?,
                     mode: s("mode").unwrap_or_else(|| "contains".into()),
                     match_case: a.get("match_case").and_then(|v| v.as_bool()).unwrap_or(false),
@@ -318,14 +318,14 @@ impl Server {
                 let (t, ..) = self.target(a).await?;
                 let q = s("sql").ok_or("sql is required")?;
                 // 정해진 폴더에만, 새 파일로 (남이 정한 경로에 쓰지 않는다)
-                let path = dbtool_core::export_path(&s("file_name").ok_or("file_name is required")?).map_err(e)?;
+                let path = qurry_core::export_path(&s("file_name").ok_or("file_name is required")?).map_err(e)?;
                 let rows = st.export_csv_read_only(t, q, path.clone()).await.map_err(e)?;
                 Ok(json!({ "rows": rows, "path": path.display().to_string() }))
             }
             "execute" if self.allow_write => {
                 let (t, _, _, ro) = self.target(a).await?;
                 if ro {
-                    return Err("This data source is marked read-only in dbtool".into());
+                    return Err("This data source is marked read-only in Qurry".into());
                 }
                 let stmts: Vec<String> = a.get("statements").and_then(|v| v.as_array()).ok_or("statements is required")?.iter().filter_map(|x| x.as_str().map(String::from)).collect();
                 if stmts.is_empty() {
@@ -395,7 +395,7 @@ async fn handle(server: Arc<Server>, msg: Value) -> Option<Value> {
                 "capabilities": { "tools": { "listChanged": false } },
                 "serverInfo": { "name": SERVER_NAME, "version": env!("CARGO_PKG_VERSION") },
                 "instructions": format!(
-                    "dbtool: database tools for the data sources configured in the dbtool app (PostgreSQL, MySQL, Redis; SSH tunnels supported). \
+                    "Qurry: database tools for the data sources configured in the Qurry app (PostgreSQL, MySQL, Redis; SSH tunnels supported). \
                      Start with list_data_sources, then list_objects / describe_table / search_objects, and query for data. {}",
                     if server.allow_write { "Write access is enabled via the execute tool." } else { "The server is read-only: query runs one statement in a READ ONLY transaction." }
                 )
@@ -431,13 +431,13 @@ async fn handle(server: Arc<Server>, msg: Value) -> Option<Value> {
 async fn main() -> std::io::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "-h" || a == "--help") {
-        eprintln!("dbtool-mcp [--allow-write] [--config-dir DIR] [--verbose]\n\nMCP server (stdio) exposing the dbtool data sources. Read-only unless --allow-write.\n\nClaude Code:  claude mcp add dbtool -- {}", args[0]);
+        eprintln!("qurry-mcp [--allow-write] [--config-dir DIR] [--verbose]\n\nMCP server (stdio) exposing the Qurry data sources. Read-only unless --allow-write.\n\nClaude Code:  claude mcp add qurry -- {}", args[0]);
         return Ok(());
     }
     let dir = args.iter().position(|a| a == "--config-dir").and_then(|i| args.get(i + 1)).map(std::path::PathBuf::from);
     // stdout 은 프로토콜 전용. 엔진 로그(stderr)는 --verbose 일 때만
-    dbtool_core::QUIET.store(!args.iter().any(|a| a == "--verbose"), std::sync::atomic::Ordering::Relaxed);
-    let state = Arc::new(dbtool_core::open_state(dir).map_err(|e| std::io::Error::other(e.to_string()))?);
+    qurry_core::QUIET.store(!args.iter().any(|a| a == "--verbose"), std::sync::atomic::Ordering::Relaxed);
+    let state = Arc::new(qurry_core::open_state(dir).map_err(|e| std::io::Error::other(e.to_string()))?);
     let server = Arc::new(Server { state: state.clone(), allow_write: args.iter().any(|a| a == "--allow-write") });
     // keep-alive / auto-disconnect
     {
@@ -445,7 +445,7 @@ async fn main() -> std::io::Result<()> {
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                dbtool_core::app::housekeeping(&st).await;
+                qurry_core::app::housekeeping(&st).await;
             }
         });
     }

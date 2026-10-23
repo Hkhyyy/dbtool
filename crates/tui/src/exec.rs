@@ -1,6 +1,6 @@
 //! ⌃Enter 로 무엇을 실행할지 (DataGrip Settings › Database › Query Execution, GUI 의 src/lib/execPlan.ts 와 같은 규칙)
-use dbtool_core::sql;
-use dbtool_core::store::DbKind;
+use qurry_core::sql;
+use qurry_core::store::DbKind;
 
 /// 커서가 문장 안일 때
 #[derive(Clone, Copy, PartialEq, Debug)]

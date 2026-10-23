@@ -399,9 +399,9 @@ mod tests {
     use crate::db::{connect, Pool};
     use crate::store::{ConnectionConfig, DbKind};
 
-    /// 테스트 DB: 기본은 로컬 PostgreSQL. DBTOOL_TEST_PG=host:port:user:db 로 바꾼다 (예: 컨테이너)
+    /// 테스트 DB: 기본은 로컬 PostgreSQL. QURRY_TEST_PG=host:port:user:db 로 바꾼다 (예: 컨테이너)
     async fn pool() -> PgPool {
-        let env = std::env::var("DBTOOL_TEST_PG").ok();
+        let env = std::env::var("QURRY_TEST_PG").ok();
         let part = |i: usize, d: String| env.as_ref().and_then(|e| e.split(':').nth(i).map(String::from)).unwrap_or(d);
         let cfg = ConnectionConfig {
             id: "t".into(), name: "t".into(), kind: DbKind::Postgres, host: part(0, "localhost".into()), port: part(1, "5432".into()).parse().unwrap(),

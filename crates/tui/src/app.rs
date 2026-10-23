@@ -1,13 +1,13 @@
-//! TUI 상태와 동작. 실제 DB 작업은 전부 dbtool_core::app::AppState (GUI 와 같은 엔진).
+//! TUI 상태와 동작. 실제 DB 작업은 전부 qurry_core::app::AppState (GUI 와 같은 엔진).
 use crate::complete::{self, Item};
 use crate::grid::{raw_text, Grid};
 use crate::tree::{Node, NodeKind, Tree};
-use dbtool_core::app::{AppState, ConnectionView};
-use dbtool_core::db::{ColumnInfo, QueryResult};
-use dbtool_core::meta::{IndexEntry, SchemaObjects};
-use dbtool_core::redisdb::{KeyDetail, KeyRow};
-use dbtool_core::sql;
-use dbtool_core::store::{ConnectionConfig, DbKind, RedisMode, SshAuth, SshConfig, SslConfig};
+use qurry_core::app::{AppState, ConnectionView};
+use qurry_core::db::{ColumnInfo, QueryResult};
+use qurry_core::meta::{IndexEntry, SchemaObjects};
+use qurry_core::redisdb::{KeyDetail, KeyRow};
+use qurry_core::sql;
+use qurry_core::store::{ConnectionConfig, DbKind, RedisMode, SshAuth, SshConfig, SslConfig};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
@@ -325,7 +325,7 @@ pub const ACTIONS: &[(Action, &str, &str)] = &[
     (Action::Palette, "Actions Palette", ""),
     (Action::TrustSshHost, "Trust SSH Host Key (after checking its fingerprint)", ""),
     (Action::CheckUpdate, "Check for Updates", ""),
-    (Action::InstallUpdate, "Update dbtool & Restart (download the latest release)", ""),
+    (Action::InstallUpdate, "Update Qurry & Restart (download the latest release)", ""),
     (Action::Help, "Keymap", ""),
     (Action::Quit, "Quit", ""),
 ];
@@ -341,7 +341,7 @@ fn object_items(conn: &str, name: &str, db: &str, es: Vec<IndexEntry>, tag: &str
 }
 
 /// 컬럼 → 고르면 그 테이블을 연다 (Ctrl+B 는 그 테이블 DDL)
-fn column_items(conn: &str, name: &str, db: &str, ts: Vec<dbtool_core::meta::CompletionTable>, tag: &str) -> Vec<PItem> {
+fn column_items(conn: &str, name: &str, db: &str, ts: Vec<qurry_core::meta::CompletionTable>, tag: &str) -> Vec<PItem> {
     ts.into_iter()
         .flat_map(|t| {
             t.columns.into_iter().map(move |(col, ty)| PItem {
@@ -602,7 +602,7 @@ impl App {
                 }
                 Err(e) => {
                     a.tree.children.insert(key.clone(), vec![Node::info(&key, "", format!("⚠ {e}"))]);
-                    a.status = if e.contains(dbtool_core::tunnel::UNKNOWN_HOST) { format!("{e} — Ctrl+K › Trust SSH Host Key") } else { e };
+                    a.status = if e.contains(qurry_core::tunnel::UNKNOWN_HOST) { format!("{e} — Ctrl+K › Trust SSH Host Key") } else { e };
                 }
             }
             a.tree.clamp();
@@ -621,7 +621,7 @@ impl App {
                     },
                     move |a, r: Result<(Vec<String>, String), String>| {
                         let r = r.map(|(dbs, def)| {
-                            dbtool_core::app::visible_dbs(&cfg, dbs, &def)
+                            qurry_core::app::visible_dbs(&cfg, dbs, &def)
                                 .into_iter()
                                 .map(|d| Node {
                                     key: format!("{}|{d}", cfg.id),
@@ -1155,9 +1155,9 @@ impl App {
                         if !tt.grid.as_ref().is_some_and(|g| g.dirty()) {
                             let columns = match &tt.grid {
                                 Some(g) => g.result.columns.clone(),
-                                None => cols.into_iter().map(|(name, type_name)| dbtool_core::db::ColumnInfo { name, type_name }).collect(),
+                                None => cols.into_iter().map(|(name, type_name)| qurry_core::db::ColumnInfo { name, type_name }).collect(),
                             };
-                            let empty = dbtool_core::db::QueryResult { columns, rows: vec![], rows_affected: 0, truncated: false, elapsed_ms: 0, has_result_set: true, in_transaction: false };
+                            let empty = qurry_core::db::QueryResult { columns, rows: vec![], rows_affected: 0, truncated: false, elapsed_ms: 0, has_result_set: true, in_transaction: false };
                             tt.grid = Some(Grid::new(empty));
                         }
                         tt.error = Some(e.clone());
@@ -1425,7 +1425,7 @@ impl App {
         }
         if !confirmed
             && !explain
-            && let Some((why, s)) = stmts.iter().find_map(|s| dbtool_core::guard::unsafe_statement(s, kind).map(|w| (w, s.clone())))
+            && let Some((why, s)) = stmts.iter().find_map(|s| qurry_core::guard::unsafe_statement(s, kind).map(|w| (w, s.clone())))
         {
             let preview: String = s.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(80).collect();
             self.popup = Some(Popup::Confirm { text: format!("{why}:\n  {preview}\nRun it anyway?"), on_yes: Box::new(move |a| a.run_stmts(stmts, explain, true)) });
@@ -1475,7 +1475,7 @@ impl App {
                     match r {
                         Ok(res) => {
                             c.in_tx = res.in_transaction;
-                            if !res.in_transaction && !dbtool_core::guard::is_read(&s, kind) {
+                            if !res.in_transaction && !qurry_core::guard::is_read(&s, kind) {
                                 committed += 1;
                             }
                             if res.has_result_set {
@@ -1937,7 +1937,7 @@ impl App {
         let mut items = items;
         let columns = title == "Search Everywhere";
         for c in self.state.cached_index().unwrap_or_default() {
-            let (conn, db) = dbtool_core::app::split_target(&c.target);
+            let (conn, db) = qurry_core::app::split_target(&c.target);
             let Some(cv) = self.conns.iter().find(|x| x.config.id == conn && !x.connected) else { continue };
             let (name, db) = (cv.config.name.clone(), db.unwrap_or_default().to_string());
             items.extend(object_items(conn, &name, &db, c.objects, " (cached)"));
@@ -1959,7 +1959,7 @@ impl App {
             let st = self.state.clone();
             let id = cfg.id.clone();
             self.spawn(async move { st.list_databases(id).await.map_err(err) }, move |a, r: Result<Vec<String>, String>| {
-                let mut dbs = r.map(|dbs| dbtool_core::app::visible_dbs(&cfg, dbs, &def)).unwrap_or_default();
+                let mut dbs = r.map(|dbs| qurry_core::app::visible_dbs(&cfg, dbs, &def)).unwrap_or_default();
                 // 기본 DB 먼저 (DB 목록을 못 읽어도 기본 DB 는 찾는다)
                 dbs.retain(|d| d != &def);
                 dbs.insert(0, def);
@@ -2420,7 +2420,7 @@ impl App {
 
     /// Data Source 의 자동완성 메타를 버린다 (끊기·새로 고침)
     pub fn forget_completion(&mut self, conn: &str) {
-        self.completion.retain(|t, _| dbtool_core::app::split_target(t).0 != conn);
+        self.completion.retain(|t, _| qurry_core::app::split_target(t).0 != conn);
     }
 
     pub fn load_completion(&mut self, target: String) {
@@ -2504,7 +2504,7 @@ impl App {
         let dir = self.state.store.dir();
         let tx = self.tx.clone();
         tokio::spawn(async move {
-            let r = dbtool_core::update::check(&dir, env!("CARGO_PKG_VERSION"), true).await;
+            let r = qurry_core::update::check(&dir, env!("CARGO_PKG_VERSION"), true).await;
             let _ = tx.send(Box::new(move |a: &mut App| match r {
                 Ok(Some(r)) => a.show_update(r),
                 Ok(None) => a.status = format!("You have the latest version ({}).", env!("CARGO_PKG_VERSION")),
@@ -2514,26 +2514,26 @@ impl App {
     }
 
     /// 새 버전 창: 지금 버전 이후 바뀐 것 (버전마다) + 업데이트 방법
-    pub fn show_update(&mut self, r: dbtool_core::update::Release) {
+    pub fn show_update(&mut self, r: qurry_core::update::Release) {
         let cur = env!("CARGO_PKG_VERSION");
-        let how = format!("{} › Update dbtool & Restart", self.keys.label(Action::Palette));
-        let changes = dbtool_core::update::changes_text(&r.changes_since(cur));
+        let how = format!("{} › Update Qurry & Restart", self.keys.label(Action::Palette));
+        let changes = qurry_core::update::changes_text(&r.changes_since(cur));
         // 업데이트 방법은 맨 위에 (버전이 많으면 창 아래가 잘린다)
         let text = format!("You have {cur} — {how}\n\n{}", if changes.is_empty() { "See the release page for what changed.\n".into() } else { changes });
-        self.status = format!("dbtool {} is available — {how}", r.version);
-        self.popup = Some(Popup::Message { title: format!("dbtool {} is available", r.version), text });
+        self.status = format!("Qurry {} is available — {how}", r.version);
+        self.popup = Some(Popup::Message { title: format!("Qurry {} is available", r.version), text });
         self.update = Some(r.version);
     }
 
     /// 최신 릴리스를 받아 바꿔 넣고, 끝나면 다시 켠다 (열어 둔 탭은 끝낼 때 저장된다)
     fn install_update(&mut self) {
-        self.status = "Updating dbtool… (downloading)".into();
+        self.status = "Updating Qurry… (downloading)".into();
         let tx = self.tx.clone();
         tokio::spawn(async move {
             let r = crate::selfupdate::install(true).await;
             let _ = tx.send(Box::new(move |a: &mut App| match r {
                 Ok(crate::selfupdate::Outcome::Installed { version, .. }) => {
-                    a.status = format!("dbtool {version} installed — restarting…");
+                    a.status = format!("Qurry {version} installed — restarting…");
                     a.restart = true;
                     a.quit = true;
                 }

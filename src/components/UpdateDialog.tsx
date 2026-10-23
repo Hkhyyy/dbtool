@@ -39,7 +39,7 @@ export function UpdateDialog({ info, onClose, beforeInstall }: { info: UpdateInf
   return (
     <div className="modal-backdrop" onMouseDown={close}>
       <div className="modal update" onMouseDown={(e) => e.stopPropagation()} onKeyDown={(e) => e.key === "Escape" && close()}>
-        <div className="modal-title">dbtool {r.version} is available</div>
+        <div className="modal-title">Qurry {r.version} is available</div>
         <div className="hint" style={{ marginTop: 0 }}>
           You have {info.current}. Update &amp; Restart downloads it, replaces this app and opens it again (open tabs are kept).
         </div>

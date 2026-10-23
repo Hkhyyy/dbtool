@@ -60,7 +60,7 @@ pub async fn connect_via(cfg: &ConnectionConfig, password: Option<&str>, tunnel_
                 .host(host)
                 .port(port)
                 .username(&cfg.user)
-                .application_name("dbtool");
+                .application_name("qurry");
             // DataGrip처럼 비워 두면 postgres DB로 접속한다 (PG 기본값인 사용자명 DB는 없을 때가 많음)
             let database = if cfg.database.trim().is_empty() { "postgres" } else { cfg.database.trim() };
             opts = opts.database(database);
@@ -500,11 +500,11 @@ mod tests {
             id: "test".into(),
             name: "local".into(),
             kind: DbKind::Postgres,
-            host: std::env::var("DBTOOL_TEST_PG_HOST").unwrap_or_else(|_| "localhost".into()),
+            host: std::env::var("QURRY_TEST_PG_HOST").unwrap_or_else(|_| "localhost".into()),
             port: 5432,
-            user: std::env::var("DBTOOL_TEST_PG_USER")
+            user: std::env::var("QURRY_TEST_PG_USER")
                 .unwrap_or_else(|_| std::env::var("USER").unwrap()),
-            database: std::env::var("DBTOOL_TEST_PG_DB").unwrap_or_else(|_| "postgres".into()),
+            database: std::env::var("QURRY_TEST_PG_DB").unwrap_or_else(|_| "postgres".into()),
             color: None,
             ssh: None,
             password_saved: false,
