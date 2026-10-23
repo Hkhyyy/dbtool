@@ -1,13 +1,13 @@
-//! `dbtool-tui --update`: 최신 릴리스의 CLI 묶음(dbtool-tui + dbtool-mcp)을 받아 지금 실행 파일 자리에 바꿔 넣는다.
+//! `qurry-tui --update`: 최신 릴리스의 CLI 묶음(qurry-tui + qurry-mcp)을 받아 지금 실행 파일 자리에 바꿔 넣는다.
 //! 소스에서 빌드한 실행 파일(…/target/release 등)은 건드리지 않고 다시 빌드하라고 안내한다.
 //! 받는 파일은 이 레포의 릴리스 주소인지 확인하고, HTTPS 로만 받고, 릴리스의 SHA256SUMS 와 대조한 뒤에야 바꿔 넣는다
-use dbtool_core::update;
+use qurry_core::update;
 use std::path::{Path, PathBuf};
 
 /// 이 실행 파일이 받을 릴리스 파일 이름의 끝 (지금은 Apple Silicon macOS 만 빌드한다)
 const ASSET_SUFFIX: Option<&str> = if cfg!(all(target_os = "macos", target_arch = "aarch64")) { Some("aarch64-apple-darwin.tar.gz") } else { None };
 
-/// cargo 로 빌드한 실행 파일인지 (…/target/release/dbtool-tui, …/target/debug/…)
+/// cargo 로 빌드한 실행 파일인지 (…/target/release/qurry-tui, …/target/debug/…)
 pub fn from_source(exe: &Path) -> bool {
     let parts: Vec<String> = exe.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
     parts.windows(2).any(|w| w[0] == "target" && (w[1] == "release" || w[1] == "debug"))
@@ -23,7 +23,8 @@ fn err(e: impl std::fmt::Display) -> std::io::Error {
 
 /// 이 레포 릴리스에서 받는 파일만 (update-check.json 이나 API 응답이 바뀌어도 다른 곳에서 받지 않게)
 fn trusted_url(url: &str) -> bool {
-    url.starts_with(&format!("https://github.com/{}/releases/download/", update::REPO))
+    // 저장소를 Qurry 로 바꿔도 받을 수 있게 (지금 이름 · 바뀔 이름)
+    [update::REPO, "Hkhyyy/qurry"].iter().any(|r| url.starts_with(&format!("https://github.com/{r}/releases/download/")))
 }
 
 /// curl: HTTPS 만 (리다이렉트 포함). quiet = TUI 화면 안에서 (진행 막대를 찍지 않는다)
@@ -70,7 +71,7 @@ pub enum Outcome {
 
 /// 소스에서 빌드했으면 그 안내
 fn source_build_note(exe: &Path) -> Option<String> {
-    from_source(exe).then(|| format!("This dbtool-tui was built from source ({}). Update it with: git pull && cargo build --release -p dbtool-tui -p dbtool-mcp", exe.display()))
+    from_source(exe).then(|| format!("This qurry-tui was built from source ({}). Update it with: git pull && cargo build --release -p qurry-tui -p qurry-mcp", exe.display()))
 }
 
 /// 최신 릴리스를 받아 지금 실행 파일 자리에 바꿔 넣는다. quiet = TUI 화면 안에서 (아무것도 찍지 않는다)
@@ -84,24 +85,32 @@ pub async fn install(quiet: bool) -> std::io::Result<Outcome> {
     if !update::is_newer(cur, &rel.version) {
         return Ok(Outcome::UpToDate);
     }
-    let Some(asset) = ASSET_SUFFIX.and_then(|s| rel.asset("dbtool-cli_", s)).cloned() else {
-        return Ok(Outcome::Skipped(format!("dbtool {} is available, but there is no prebuilt binary for this platform. See {}", rel.version, rel.url)));
+    // 묶음 이름: qurry-cli_… (이름을 바꾸기 전 릴리스는 dbtool-cli_…)
+    let Some(asset) = ASSET_SUFFIX.and_then(|s| rel.asset("qurry-cli_", s).or_else(|| rel.asset("dbtool-cli_", s))).cloned() else {
+        return Ok(Outcome::Skipped(format!("Qurry {} is available, but there is no prebuilt binary for this platform. See {}", rel.version, rel.url)));
     };
     let Some(sums) = rel.assets.iter().find(|a| a.name == "SHA256SUMS").cloned() else {
-        return Ok(Outcome::Skipped(format!("dbtool {} has no SHA256SUMS file, so it can't be verified. Download it yourself from {}", rel.version, rel.url)));
+        return Ok(Outcome::Skipped(format!("Qurry {} has no SHA256SUMS file, so it can't be verified. Download it yourself from {}", rel.version, rel.url)));
     };
     if !trusted_url(&asset.url) || !trusted_url(&sums.url) {
         return Err(err(format!("refusing to download from an unexpected address: {}", asset.url)));
     }
     if !quiet {
         print!("{}", update::changes_text(&rel.changes_since(cur)));
-        println!("Updating dbtool-tui {cur} → {} …", rel.version);
+        println!("Updating qurry-tui {cur} → {} …", rel.version);
     }
     let paths = tokio::task::spawn_blocking(move || replace(&exe, &asset, &sums, quiet)).await.map_err(err)??;
     Ok(Outcome::Installed { version: rel.version, paths })
 }
 
-/// 받아서 검증하고 exe 와 같은 폴더의 dbtool-tui·dbtool-mcp 를 바꿔 넣는다
+/// 설치할 이름: 새 이름은 늘, 예전 이름(dbtool-*)은 이미 있을 때만
+fn install_names(exists: impl Fn(&str) -> bool) -> Vec<&'static str> {
+    let mut v = vec!["qurry-tui", "qurry-mcp"];
+    v.extend(["dbtool-tui", "dbtool-mcp"].into_iter().filter(|n| exists(n)));
+    v
+}
+
+/// 받아서 검증하고 exe 와 같은 폴더의 qurry-tui·qurry-mcp 를 바꿔 넣는다
 fn replace(exe: &Path, asset: &update::Asset, sums: &update::Asset, quiet: bool) -> std::io::Result<Vec<PathBuf>> {
     // 임시 폴더는 새로 만든다 (이미 있으면 남이 만든 것일 수 있어 쓰지 않는다)
     let tmp = std::env::temp_dir().join(format!("dbtool-update-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)));
@@ -129,8 +138,9 @@ fn replace(exe: &Path, asset: &update::Asset, sums: &update::Asset, quiet: bool)
         // 지금 실행 파일과 같은 폴더에 바꿔 넣는다 (임시 이름으로 복사 → rename 이라 도중에 깨지지 않는다)
         let dir = exe.parent().ok_or_else(|| err("no install folder"))?;
         let mut done = vec![];
-        for name in ["dbtool-tui", "dbtool-mcp"] {
-            let src = tmp.join(name);
+        for name in install_names(|n| dir.join(n).exists()) {
+            // 예전 이름도 새 바이너리로 (묶음 안에는 qurry-* 가 있다)
+            let src = tmp.join(name.replace("dbtool-", "qurry-"));
             if !src.exists() {
                 continue;
             }
@@ -153,13 +163,13 @@ fn replace(exe: &Path, asset: &update::Asset, sums: &update::Asset, quiet: bool)
 
 pub async fn run_update() -> std::io::Result<()> {
     match install(false).await? {
-        Outcome::UpToDate => println!("dbtool-tui {} is up to date.", env!("CARGO_PKG_VERSION")),
+        Outcome::UpToDate => println!("qurry-tui {} is up to date.", env!("CARGO_PKG_VERSION")),
         Outcome::Skipped(why) => println!("{why}"),
         Outcome::Installed { version, paths } => {
             for p in &paths {
                 println!("  updated {}", p.display());
             }
-            println!("dbtool {version} installed. Restart dbtool-tui (and your MCP client, if it runs dbtool-mcp).");
+            println!("Qurry {version} installed. Restart qurry-tui (and your MCP client, if it runs qurry-mcp).");
         }
     }
     Ok(())
@@ -177,15 +187,27 @@ mod tests {
         assert_eq!(super::expected_sha(sums, "dbtool_0.1.3_aarch64.dmg").as_deref(), Some("def456"));
         assert!(super::expected_sha(sums, "other").is_none());
         assert!(super::trusted_url("https://github.com/Hkhyyy/dbtool/releases/download/v0.1.3/x.tar.gz"));
+        // 저장소 이름을 Qurry 로 바꿔도 (GitHub 이 새 주소로 돌려준다)
+        assert!(super::trusted_url("https://github.com/Hkhyyy/qurry/releases/download/v0.2.0/x.tar.gz"));
+        assert!(!super::trusted_url("https://github.com/someone/qurry/releases/download/v0.2.0/x.tar.gz"));
         assert!(!super::trusted_url("https://evil.example/x.tar.gz"));
         assert!(!super::trusted_url("http://github.com/Hkhyyy/dbtool/releases/download/v0.1.3/x"));
     }
 
+    /// 이름이 바뀐 뒤: qurry-* 는 늘 설치, 예전 이름 dbtool-* 은 그 폴더에 이미 있을 때만 (MCP 설정 등이 그 이름을 부른다)
+    #[test]
+    fn install_names_keep_old_aliases() {
+        let has = |names: &'static [&'static str]| move |n: &str| names.contains(&n);
+        assert_eq!(super::install_names(has(&[])), ["qurry-tui", "qurry-mcp"]);
+        assert_eq!(super::install_names(has(&["dbtool-tui", "dbtool-mcp"])), ["qurry-tui", "qurry-mcp", "dbtool-tui", "dbtool-mcp"]);
+        assert_eq!(super::install_names(has(&["dbtool-mcp"])), ["qurry-tui", "qurry-mcp", "dbtool-mcp"]);
+    }
+
     #[test]
     fn detects_cargo_builds() {
-        assert!(from_source(Path::new("/Users/me/dbtool/target/release/dbtool-tui")));
-        assert!(from_source(Path::new("/x/target/debug/dbtool-tui")));
-        assert!(!from_source(Path::new("/Users/me/.local/bin/dbtool-tui")));
-        assert!(!from_source(Path::new("/opt/target-tools/release/dbtool-tui")));
+        assert!(from_source(Path::new("/Users/me/dbtool/target/release/qurry-tui")));
+        assert!(from_source(Path::new("/x/target/debug/qurry-tui")));
+        assert!(!from_source(Path::new("/Users/me/.local/bin/qurry-tui")));
+        assert!(!from_source(Path::new("/opt/target-tools/release/qurry-tui")));
     }
 }

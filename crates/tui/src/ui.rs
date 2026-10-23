@@ -190,7 +190,7 @@ fn draw_tabs(f: &mut Frame, app: &mut App, area: Rect) {
         let key = |a| app.keys.keys(a).first().cloned().unwrap_or_default();
         let p = Paragraph::new(vec![
             Line::raw(""),
-            Line::styled("dbtool", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+            Line::styled("Qurry", Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
             Line::raw(""),
             Line::styled(format!("Not sure? Press {}", disp(&key(crate::app::Action::SearchEverywhere))), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
             Line::raw("search tables, columns, open tabs and actions"),
@@ -593,7 +593,7 @@ fn hint_line(mut ctx: Vec<(String, &'static str)>, glob: Vec<(String, &'static s
 
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     // 새 버전 알림은 상태 글 앞에 계속 보인다
-    let badge = app.update.as_ref().map(|v| format!(" ⬆ v{v} available — {} › Update dbtool & Restart ", app.keys.label(crate::app::Action::Palette)));
+    let badge = app.update.as_ref().map(|v| format!(" ⬆ v{v} available — {} › Update Qurry & Restart ", app.keys.label(crate::app::Action::Palette)));
     let bw = badge.as_ref().map(|b| b.chars().count() as u16).unwrap_or(0);
     // 폭이 모자라면 오른쪽 안내를 줄인다 (업데이트 알림·상태 글이 잘리지 않게)
     let (ctx, glob) = status_hints(app);

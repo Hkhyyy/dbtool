@@ -1,15 +1,15 @@
 [package]
-name = "dbtool-mcp"
+name = "qurry-mcp"
 version = "0.1.0"
 edition = "2024"
-description = "dbtool MCP server (stdio)"
+description = "Qurry MCP server (stdio)"
 
 [[bin]]
-name = "dbtool-mcp"
+name = "qurry-mcp"
 path = "src/main.rs"
 
 [dependencies]
-dbtool-core = { workspace = true }
+qurry-core = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

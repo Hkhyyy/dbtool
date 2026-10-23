@@ -13,8 +13,8 @@ static PENDING_KEYS: Mutex<Option<HashMap<(String, u16), russh::keys::PublicKey>
 pub const UNKNOWN_HOST: &str = "Unknown SSH host key";
 
 fn known_hosts_path() -> Option<String> {
-    // 테스트에서는 DBTOOL_KNOWN_HOSTS 로 별도 파일을 쓴다 (사용자 ~/.ssh/known_hosts 보호)
-    std::env::var("DBTOOL_KNOWN_HOSTS").ok()
+    // 테스트에서는 QURRY_KNOWN_HOSTS 로 별도 파일을 쓴다 (사용자 ~/.ssh/known_hosts 보호)
+    std::env::var("QURRY_KNOWN_HOSTS").ok()
 }
 
 /// 사용자가 지문을 확인한 서버 키를 known_hosts 에 등록한다 (그다음 접속부터 통과)
@@ -170,7 +170,7 @@ pub async fn open(ssh: &SshConfig, secret: Option<&str>, remote_host: &str, remo
                         let mut stream = ch.into_stream();
                         let _ = tokio::io::copy_bidirectional(&mut tcp, &mut stream).await;
                     }
-                    Err(e) => crate::log!("[dbtool] ssh channel open failed: {e}"),
+                    Err(e) => crate::log!("[qurry] ssh channel open failed: {e}"),
                 }
             });
         }
@@ -185,13 +185,13 @@ mod tests {
     use crate::store::{ConnectionConfig, DbKind};
 
     /// docker 로 띄운 sshd(localhost:2222) → pg 컨테이너(dbtool-pg:5432) 경유 접속.
-    /// 실행: DBTOOL_SSH_TEST=1 cargo test --lib tunnel -- --ignored
+    /// 실행: QURRY_SSH_TEST=1 cargo test --lib tunnel -- --ignored
     #[tokio::test]
     #[ignore]
     async fn ssh_tunnel_password_and_key() {
         let kh = std::env::temp_dir().join(format!("dbtool-kh-{}", uuid::Uuid::new_v4()));
         std::fs::write(&kh, "").unwrap();
-        unsafe { std::env::set_var("DBTOOL_KNOWN_HOSTS", &kh) }; // 단일 테스트에서만 사용
+        unsafe { std::env::set_var("QURRY_KNOWN_HOSTS", &kh) }; // 단일 테스트에서만 사용
         let cfg = ConnectionConfig {
             id: "t".into(), name: "t".into(), kind: DbKind::Postgres, host: "dbtool-pg".into(), port: 5432,
             user: "postgres".into(), database: "postgres".into(), color: None, ssh: None, password_saved: false, ssh_secret_saved: false, scope: Default::default(), read_only: false, options: Default::default(), ssl: None, redis: None,
@@ -232,7 +232,7 @@ mod tests {
 
         // 3) 개인키 인증
         ssh.auth = SshAuth::Key;
-        ssh.key_path = std::env::var("DBTOOL_SSH_TEST_KEY").unwrap();
+        ssh.key_path = std::env::var("QURRY_SSH_TEST_KEY").unwrap();
         let t = open(&ssh, None, &cfg.host, cfg.port).await.expect("key tunnel");
         let pool = connect_via(&cfg, Some("pgpw"), Some(t.local_port)).await.unwrap();
         println!("via key tunnel: {}", pool.server_version().await.unwrap());

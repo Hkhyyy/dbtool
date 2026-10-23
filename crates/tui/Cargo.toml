@@ -1,15 +1,15 @@
 [package]
-name = "dbtool-tui"
+name = "qurry-tui"
 version = "0.1.0"
 edition = "2024"
-description = "dbtool terminal UI"
+description = "Qurry terminal UI"
 
 [[bin]]
-name = "dbtool-tui"
+name = "qurry-tui"
 path = "src/main.rs"
 
 [dependencies]
-dbtool-core = { workspace = true }
+qurry-core = { workspace = true }
 tokio = { workspace = true }
 serde_json = { workspace = true }
 ratatui = "0.29"

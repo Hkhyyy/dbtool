@@ -1,5 +1,5 @@
 //! 새 버전 확인: GitHub 의 최신 릴리스(main 에 머지될 때마다 자동으로 올라간다)와 지금 버전을 비교한다.
-//! 한 시간에 한 번만 묻고 결과는 설정 폴더의 update-check.json 에 둔다. DBTOOL_NO_UPDATE_CHECK=1 이면 묻지 않는다.
+//! 한 시간에 한 번만 묻고 결과는 설정 폴더의 update-check.json 에 둔다. QURRY_NO_UPDATE_CHECK=1 이면 묻지 않는다.
 //! HTTP 는 curl 로 한다 (macOS·Linux 기본 도구, 의존성 추가 없이)
 use crate::error::{AppError, AppResult};
 use serde::{Deserialize, Serialize};
@@ -98,7 +98,8 @@ struct Cache {
 }
 
 pub fn disabled() -> bool {
-    std::env::var("DBTOOL_NO_UPDATE_CHECK").is_ok_and(|v| !v.is_empty() && v != "0")
+    // 예전 이름(DBTOOL_NO_UPDATE_CHECK)도 받는다
+    ["QURRY_NO_UPDATE_CHECK", "DBTOOL_NO_UPDATE_CHECK"].iter().any(|k| std::env::var(k).is_ok_and(|v| !v.is_empty() && v != "0"))
 }
 
 /// "0.1.10" > "0.1.9" 처럼 숫자로 비교한다. 못 읽으면 새 버전이 아닌 것으로

@@ -914,7 +914,7 @@ fn redis_key(app: &mut App, id: u64, k: KeyEvent) {
                     });
                 };
                 // FLUSHALL·FLUSHDB·DEL 같은 지우는 명령은 한 번 더 묻는다
-                match dbtool_core::guard::unsafe_statement(&line, dbtool_core::store::DbKind::Redis) {
+                match qurry_core::guard::unsafe_statement(&line, qurry_core::store::DbKind::Redis) {
                     Some(why) => a.popup = Some(Popup::Confirm { text: format!("{why}:\n  {line}\nRun it anyway?"), on_yes: Box::new(move |a| run(a, line)) }),
                     None => run(a, line),
                 }
@@ -1096,7 +1096,7 @@ fn popup_key(app: &mut App, k: KeyEvent) {
                                 if let Some(Popup::ConnForm(f)) = &mut a.popup {
                                     f.message = Some(match r {
                                         Ok(v) => (true, format!("✓ {v}")),
-                                        Err(e) if e.contains(dbtool_core::tunnel::UNKNOWN_HOST) => (false, format!("✕ {e} Press Ctrl+Y to trust it.")),
+                                        Err(e) if e.contains(qurry_core::tunnel::UNKNOWN_HOST) => (false, format!("✕ {e} Press Ctrl+Y to trust it.")),
                                         Err(e) => (false, format!("✕ {e}")),
                                     });
                                 }
@@ -1298,7 +1298,7 @@ mod tests {
     /// Manage Shown Schemas: Space 로 고르고 Enter 로 저장 (Data Source 의 scope, GUI 와 공유). Esc 는 저장하지 않는다
     #[tokio::test]
     async fn manage_shown_schemas_saves_scope() {
-        use dbtool_core::store::{ConnectionConfig, DbKind};
+        use qurry_core::store::{ConnectionConfig, DbKind};
         let mut h = Harness::new().await;
         let cfg = ConnectionConfig {
             id: "c1".into(), name: "pg".into(), kind: DbKind::Postgres, host: "localhost".into(), port: 5432, user: "postgres".into(), database: "postgres".into(),
@@ -1423,7 +1423,7 @@ mod tests {
     /// Check for Updates 로 새 버전을 찾으면: 지금 버전 이후 바뀐 것을 버전마다 보여 주고 업데이트 방법을 알린다
     #[tokio::test]
     async fn update_found_shows_changes() {
-        use dbtool_core::update::{Release, VersionNotes};
+        use qurry_core::update::{Release, VersionNotes};
         let mut h = Harness::new().await;
         let r = Release {
             version: "9.0.1".into(), url: "u".into(), notes: String::new(), assets: vec![],
@@ -1436,7 +1436,7 @@ mod tests {
         h.app.show_update(r);
         assert_eq!(h.app.update.as_deref(), Some("9.0.1"));
         let s = h.screen(120, 30);
-        for want in ["dbtool 9.0.1 is available", "• [fix] b (#2)", "• [feat] a (#1)", "Update dbtool & Restart"] {
+        for want in ["Qurry 9.0.1 is available", "• [fix] b (#2)", "• [feat] a (#1)", "Update Qurry & Restart"] {
             assert!(s.contains(want), "{want:?} in {s}");
         }
         assert!(!s.contains("old"), "{s}");
@@ -1524,11 +1524,11 @@ mod tests {
         let mut h = Harness::new().await;
         h.app.update = Some("9.9.9".into());
         let s = h.screen(160, 30);
-        let want = format!("v9.9.9 available — {} › Update dbtool & Restart", crate::keys::disp("Ctrl+K"));
+        let want = format!("v9.9.9 available — {} › Update Qurry & Restart", crate::keys::disp("Ctrl+K"));
         assert!(s.contains(&want), "{s}");
     }
 
-    /// 소스에서 빌드한 dbtool-tui(cargo test 도 그렇다)는 바꿔 넣지 않고 다시 빌드하라고 한다
+    /// 소스에서 빌드한 qurry-tui(cargo test 도 그렇다)는 바꿔 넣지 않고 다시 빌드하라고 한다
     #[tokio::test]
     async fn in_app_update_skips_source_builds() {
         let mut h = Harness::new().await;

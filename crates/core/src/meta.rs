@@ -481,7 +481,7 @@ pub async fn full_text_search(pool: &Pool, r: &FtsRequest) -> AppResult<Vec<FtsH
         match res {
             Ok(result) if !result.rows.is_empty() => hits.push(FtsHit { schema, table, where_clause, result }),
             Ok(_) => {}
-            Err(e) => crate::log!("[dbtool] fts {schema}.{table}: {e}"),
+            Err(e) => crate::log!("[qurry] fts {schema}.{table}: {e}"),
         }
     }
     Ok(hits)

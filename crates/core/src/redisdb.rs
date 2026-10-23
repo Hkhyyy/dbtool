@@ -1053,7 +1053,7 @@ mod tests {
     }
 
     fn tls_dir() -> String {
-        std::env::var("DBTOOL_TEST_TLS_DIR").unwrap_or_else(|_| "/tmp/dbtool-tls".into())
+        std::env::var("QURRY_TEST_TLS_DIR").unwrap_or_else(|_| "/tmp/dbtool-tls".into())
     }
 
     /// docker: dbtool-redis-tls (16391, requirepass tlspass, tls-auth-clients optional)

@@ -1,7 +1,7 @@
 //! Manage Shown Schemas: 트리에 보일 DB·스키마를 고르는 창 (GUI src/components/ScopePopup.tsx 와 같은 규칙).
 //! 상태와 체크 규칙만 여기 있고, 그리기는 ui.rs, 키는 input.rs 가 한다
-use dbtool_core::meta::SchemaInfo;
-use dbtool_core::store::{Scope, SCOPE_ALL, SCOPE_DEFAULT};
+use qurry_core::meta::SchemaInfo;
+use qurry_core::store::{Scope, SCOPE_ALL, SCOPE_DEFAULT};
 use std::collections::{HashMap, HashSet};
 
 /// 창의 한 줄

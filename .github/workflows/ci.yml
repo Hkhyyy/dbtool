@@ -49,15 +49,15 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       - name: Unit tests
-        run: cargo test --locked -p dbtool-core -p dbtool-tui -p dbtool-mcp
+        run: cargo test --locked -p qurry-core -p qurry-tui -p qurry-mcp
 
       - name: Integration tests (PostgreSQL / MySQL / Redis)
         env:
           # 테스트는 USER 를 PG 사용자로 쓴다
           USER: postgres
-          DBTOOL_TEST_PG: localhost:5432:postgres:postgres
-          DBTOOL_TEST_PG_USER: postgres
-        run: cargo test --locked -p dbtool-core -- --ignored --skip ssl --skip tls --skip sentinel --skip cluster --skip ssh_tunnel
+          QURRY_TEST_PG: localhost:5432:postgres:postgres
+          QURRY_TEST_PG_USER: postgres
+        run: cargo test --locked -p qurry-core -- --ignored --skip ssl --skip tls --skip sentinel --skip cluster --skip ssh_tunnel
 
   web:
     runs-on: ubuntu-latest

@@ -175,7 +175,7 @@ export default function App() {
   useEffect(() => {
     refresh();
   }, [refresh]);
-  // dbtool › Check for Updates…
+  // Qurry › Check for Updates…
   useEffect(() => {
     let off: (() => void) | undefined;
     listen("check-update", async () => {
@@ -203,7 +203,7 @@ export default function App() {
       .catch(() => {});
     return () => off?.();
   }, []);
-  // dbtool › Settings…
+  // Qurry › Settings…
   useEffect(() => {
     let off: (() => void) | undefined;
     listen("open-settings", () => setSettingsOpen("appearance"))
@@ -1818,7 +1818,7 @@ export default function App() {
   return (
     <div className="app">
       <div className="toolbar" style={activeConn?.color ? { boxShadow: `inset 4px 0 0 ${activeConn.color}` } : undefined}>
-        <span className="brand">dbtool</span>
+        <span className="brand">Qurry</span>
         <span className="sep" />
         <button
           className="run"

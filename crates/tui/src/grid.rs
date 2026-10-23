@@ -1,5 +1,5 @@
 //! 결과 그리드: 셀 이동·가로/세로 스크롤·편집 표시 (DataGrip 데이터 에디터의 TUI 판)
-use dbtool_core::db::QueryResult;
+use qurry_core::db::QueryResult;
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Cell, Row, Table};
 use serde_json::Value;
@@ -444,7 +444,7 @@ mod tests {
 
     #[test]
     fn local_sort_cycles_and_restores() {
-        let col = |n: &str| dbtool_core::db::ColumnInfo { name: n.into(), type_name: String::new() };
+        let col = |n: &str| qurry_core::db::ColumnInfo { name: n.into(), type_name: String::new() };
         let rows = vec![vec![json!(10)], vec![Value::Null], vec![json!("9")], vec![json!(100)]];
         let mut g = Grid::new(QueryResult { columns: vec![col("a")], rows, rows_affected: 0, truncated: true, elapsed_ms: 0, has_result_set: true, in_transaction: false });
         let vals = |g: &Grid| g.result.rows.iter().map(|r| cell_text(&r[0])).collect::<Vec<_>>();

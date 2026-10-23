@@ -2,7 +2,7 @@
 use crate::app::{Apply, App, TabKind, TableTab};
 use crate::grid::Grid;
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
-use dbtool_core::db::{ColumnInfo, QueryResult};
+use qurry_core::db::{ColumnInfo, QueryResult};
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedReceiver;
 
@@ -23,8 +23,8 @@ impl Drop for TempDir {
 impl Harness {
     /// 빈 설정 폴더로 띄운다 (tokio 런타임 안에서: 백그라운드 작업을 쓴다)
     pub async fn new() -> Self {
-        let dir = std::env::temp_dir().join(format!("dbtool-tui-test-{}", uuid::Uuid::new_v4()));
-        let state = Arc::new(dbtool_core::open_state(Some(dir.clone())).unwrap());
+        let dir = std::env::temp_dir().join(format!("qurry-tui-test-{}", uuid::Uuid::new_v4()));
+        let state = Arc::new(qurry_core::open_state(Some(dir.clone())).unwrap());
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let app = App::new(state, tx);
         let mut h = Harness { app, rx, _dir: TempDir(dir) };

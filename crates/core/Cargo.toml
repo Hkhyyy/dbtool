@@ -1,8 +1,8 @@
 [package]
-name = "dbtool-core"
+name = "qurry-core"
 version = "0.1.0"
 edition = "2024"
-description = "dbtool shared engine: data sources, drivers (PostgreSQL, MySQL, Redis), sessions, SSH tunnels, secrets"
+description = "Qurry shared engine: data sources, drivers (PostgreSQL, MySQL, Redis), sessions, SSH tunnels, secrets"
 
 [dependencies]
 serde = { workspace = true }

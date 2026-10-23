@@ -1,6 +1,6 @@
 mod commands;
-// 엔진은 dbtool-core (TUI·MCP 와 공유)
-pub use dbtool_core::{app, db, error, meta, redisdb, secrets, store};
+// 엔진은 qurry-core (TUI·MCP 와 공유)
+pub use qurry_core::{app, db, error, meta, redisdb, secrets, store};
 
 use tauri::Manager;
 
@@ -20,7 +20,7 @@ pub fn run() {
             let check_updates = tauri::menu::MenuItemBuilder::with_id("check-update", "Check for Updates…").build(app)?;
             // Settings (⌘, 는 웹뷰 키맵이 처리 — 메뉴 가속키를 달면 이중 실행)
             let settings = tauri::menu::MenuItemBuilder::with_id("settings", "Settings…").build(app)?;
-            let app_menu = SubmenuBuilder::new(app, "dbtool")
+            let app_menu = SubmenuBuilder::new(app, "Qurry")
                 .about(None)
                 .item(&check_updates)
                 .separator()
@@ -69,7 +69,7 @@ pub fn run() {
                     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
                     let state = handle.state::<app::AppState>();
                     for id in app::housekeeping(&state).await {
-                        eprintln!("[dbtool] auto-disconnect {id}");
+                        eprintln!("[qurry] auto-disconnect {id}");
                         let _ = handle.emit("conn-disconnected", id);
                     }
                 }

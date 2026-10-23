@@ -1,7 +1,7 @@
 //! 콘솔 자동완성 (GUI src/lib/completion.ts 의 TUI 판)
 //! - `alias.` / `table.` → 그 테이블의 컬럼, `schema.` → 그 스키마의 테이블
 //! - 그 밖: 문장에 나온 테이블의 컬럼 → 테이블 → 스키마 → 키워드
-use dbtool_core::meta::CompletionTable;
+use qurry_core::meta::CompletionTable;
 use std::collections::HashMap;
 
 /// 자동완성 메타: 불러올 때 한 번 소문자 이름과 이름별 색인을 만들어 둔다 (키마다 다시 만들지 않게)

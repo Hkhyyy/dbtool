@@ -1,4 +1,4 @@
-//! dbtool TUI — DataGrip 식 터미널 클라이언트. GUI 와 같은 엔진(dbtool-core)·같은 Data Source 를 쓴다.
+//! Qurry TUI — DataGrip 식 터미널 클라이언트. GUI 와 같은 엔진(qurry-core)·같은 Data Source 를 쓴다.
 mod app;
 mod complete;
 mod exec;
@@ -27,25 +27,25 @@ async fn main() -> std::io::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "-h" || a == "--help") {
         println!(
-            "dbtool-tui {} [--config-dir DIR] [--no-update-check]\n       dbtool-tui --update     download and install the latest release\n\nTerminal UI for dbtool (PostgreSQL / MySQL / Redis). Shares data sources with the dbtool app.\nA new version is checked every hour (off: --no-update-check or DBTOOL_NO_UPDATE_CHECK=1).\nPress F1 inside for this keymap.\n{}",
+            "qurry-tui {} [--config-dir DIR] [--no-update-check]\n       qurry-tui --update     download and install the latest release\n\nTerminal UI for Qurry (PostgreSQL / MySQL / Redis). Shares data sources with the Qurry app.\nA new version is checked every hour (off: --no-update-check or QURRY_NO_UPDATE_CHECK=1).\nPress F1 inside for this keymap.\n{}",
             env!("CARGO_PKG_VERSION"),
             help::text()
         );
         return Ok(());
     }
     if args.iter().any(|a| a == "--version" || a == "-V") {
-        println!("dbtool-tui {}", env!("CARGO_PKG_VERSION"));
+        println!("qurry-tui {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
     if args.iter().any(|a| a == "--update") {
         return selfupdate::run_update().await;
     }
-    let check_update = !args.iter().any(|a| a == "--no-update-check") && !dbtool_core::update::disabled() && !selfupdate::current_exe().is_some_and(|e| selfupdate::from_source(&e));
+    let check_update = !args.iter().any(|a| a == "--no-update-check") && !qurry_core::update::disabled() && !selfupdate::current_exe().is_some_and(|e| selfupdate::from_source(&e));
     let dir = args.iter().position(|a| a == "--config-dir").and_then(|i| args.get(i + 1)).map(std::path::PathBuf::from);
-    let cfg_dir = dir.clone().unwrap_or_else(dbtool_core::config_dir);
+    let cfg_dir = dir.clone().unwrap_or_else(qurry_core::config_dir);
     // 엔진 로그가 화면을 깨지 않도록
-    dbtool_core::QUIET.store(true, std::sync::atomic::Ordering::Relaxed);
-    let state = Arc::new(dbtool_core::open_state(dir).map_err(|e| std::io::Error::other(e.to_string()))?);
+    qurry_core::QUIET.store(true, std::sync::atomic::Ordering::Relaxed);
+    let state = Arc::new(qurry_core::open_state(dir).map_err(|e| std::io::Error::other(e.to_string()))?);
 
     enable_raw_mode()?;
     let mut out = std::io::stdout();
@@ -80,7 +80,7 @@ fn restore() -> std::io::Result<()> {
     execute!(std::io::stdout(), LeaveAlternateScreen, DisableMouseCapture, DisableBracketedPaste)
 }
 
-async fn run(term: &mut Terminal<CrosstermBackend<std::io::Stdout>>, state: Arc<dbtool_core::app::AppState>, update_dir: Option<std::path::PathBuf>) -> std::io::Result<bool> {
+async fn run(term: &mut Terminal<CrosstermBackend<std::io::Stdout>>, state: Arc<qurry_core::app::AppState>, update_dir: Option<std::path::PathBuf>) -> std::io::Result<bool> {
     // 돌려주는 값 = 다시 켤지 (앱 안 업데이트를 마쳤다)
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<app::Apply>();
     let mut app = app::App::new(state.clone(), tx.clone());
@@ -89,7 +89,7 @@ async fn run(term: &mut Terminal<CrosstermBackend<std::io::Stdout>>, state: Arc<
         let tx = tx.clone();
         tokio::spawn(async move {
             loop {
-                if let Ok(Some(r)) = dbtool_core::update::check(&dir, env!("CARGO_PKG_VERSION"), false).await {
+                if let Ok(Some(r)) = qurry_core::update::check(&dir, env!("CARGO_PKG_VERSION"), false).await {
                     if tx.send(Box::new(move |a: &mut app::App| a.update = Some(r.version))).is_err() {
                         break;
                     }
@@ -109,7 +109,7 @@ async fn run(term: &mut Terminal<CrosstermBackend<std::io::Stdout>>, state: Arc<
                 if tx.send(Box::new(|a: &mut app::App| a.save_workspace())).is_err() {
                     break;
                 }
-                let dropped = dbtool_core::app::housekeeping(&st).await;
+                let dropped = qurry_core::app::housekeeping(&st).await;
                 if !dropped.is_empty() && tx.send(Box::new(move |a: &mut app::App| {
                     for id in &dropped {
                         a.forget_completion(id);
