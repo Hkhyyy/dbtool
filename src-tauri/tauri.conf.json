@@ -41,7 +41,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDA0MjA1NDlDN0EyODFEM0YKUldRL0hTaDZuRlFnQklTVks5ZFNkdVBNamNqK0JJWEY0akRmR3p3azVGQ2ZiTXUwM2xiL3VtUWwK",
       "endpoints": [
-        "https://github.com/Hkhyyy/dbtool/releases/latest/download/latest.json"
+        "https://github.com/Hkhyyy/qurry/releases/latest/download/latest.json"
       ]
     }
   }
