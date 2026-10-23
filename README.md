@@ -1,29 +1,41 @@
 # Qurry
 
-A free DataGrip alternative — query + ferry. Formerly **dbtool**.
+A free DataGrip alternative for PostgreSQL, MySQL/MariaDB and Redis — query + ferry. Formerly **dbtool**.
 
-A DataGrip-style database client. One engine (`qurry-core`), three ways to use it:
+![Qurry GUI](docs/screenshots/gui.png)
+
+![qurry-tui](docs/screenshots/tui.png)
+
+- **Free and open source.** DataGrip-style explorer, query console, data editor, explain plan, DDL and full-text search, with DataGrip key bindings.
+- **GUI, terminal and AI from one engine.** The desktop app, the terminal UI (great over SSH) and the MCP server share the same data sources and passwords.
+- **Safe for AI.** The MCP server is read-only by default, and the engine enforces that: one reading statement, in a READ ONLY transaction that is rolled back.
+- **Small and fast.** Rust + Tauri, no JVM. SSH tunnels, SSL/TLS, Redis Sentinel and Cluster built in.
 
 | Binary | What it is |
 |---|---|
 | **Qurry** (GUI, Tauri) | Desktop app modeled on DataGrip |
-| **qurry-tui** | Terminal UI (great over SSH) — works on its own, no GUI needed |
+| **qurry-tui** | Terminal UI — works on its own, no GUI needed |
 | **qurry-mcp** | MCP server so AI tools such as Claude Code can explore and query your databases |
 
 All three share the same data sources and passwords, so a connection created in one shows up in the others.
 
 - Config folder: `~/Library/Application Support/com.hyunkyo.dbtool` (macOS), `~/.config/com.hyunkyo.dbtool` (Linux). The folder keeps its old name so data sources and passwords from dbtool carry over.
 - Custom shortcuts are stored in `keymap.json` in that folder (`"gui"` and `"tui"` sections, only the ones you changed)
-- Passwords are stored in `secrets.json` in that folder, encrypted with AES-GCM (key in `secret.key`). The folder is 0700 and its files 0600. The macOS Keychain is not used, so anyone who can read your files (or a copy of this folder) can decrypt the passwords.
+- Passwords are stored in `secrets.json` in that folder, encrypted with AES-GCM (key in `secret.key`). The folder is 0700 and its files 0600. The OS keychain is not used, so anyone who can read your files (or a copy of this folder) can decrypt the passwords.
 
 ## Download
 
 Get the latest build from [Releases](https://github.com/Hkhyyy/qurry/releases):
 
-- `Qurry_<version>_aarch64.dmg` — GUI app (Apple Silicon). Drag `Qurry.app` to Applications.
-- `qurry-cli_<version>_aarch64-apple-darwin.tar.gz` — `qurry-tui` and `qurry-mcp`.
+| | GUI | TUI + MCP |
+|---|---|---|
+| macOS, Apple Silicon | `Qurry_<version>_aarch64.dmg` | `qurry-cli_<version>_aarch64-apple-darwin.tar.gz` |
+| macOS, Intel | `Qurry_<version>_x64.dmg` | `qurry-cli_<version>_x86_64-apple-darwin.tar.gz` |
+| Linux x86_64 | `Qurry_<version>_amd64.AppImage` or `.deb` | `qurry-cli_<version>_x86_64-unknown-linux-gnu.tar.gz` |
 
-The app is not code-signed yet, so macOS shows an "unidentified developer" / "damaged" warning on first launch. Run `xattr -dr com.apple.quarantine /Applications/Qurry.app` (or right-click the app → Open).
+- **macOS**: drag `Qurry.app` to Applications. The app is not code-signed yet, so macOS shows an "unidentified developer" / "damaged" warning on first launch. Run `xattr -dr com.apple.quarantine /Applications/Qurry.app` (or right-click the app → Open).
+- **Linux**: `chmod +x Qurry_*.AppImage` and run it, or `sudo apt install ./Qurry_<version>_amd64.deb`. The GUI needs WebKitGTK 4.1 (Ubuntu 22.04+, Debian 12+, Fedora 38+).
+- **TUI / MCP**: `tar -xzf qurry-cli_….tar.gz && mkdir -p ~/.local/bin && mv qurry-tui qurry-mcp ~/.local/bin/` (macOS: `xattr -d com.apple.quarantine qurry-tui qurry-mcp` first).
 
 A new release is published automatically every time `main` changes.
 
@@ -31,7 +43,7 @@ A new release is published automatically every time `main` changes.
 
 Both apps check GitHub for a newer release when they start and every hour while they run (one request to the GitHub API) and tell you when there is one. You can also check right away.
 
-- **GUI** — a `⬆ vX.Y.Z available` button appears in the status bar. It lists what changed in each version since yours. **Update & Restart** downloads the new version, checks its signature, replaces the app and opens it again with your tabs. **Download DMG** is the manual fallback. Check now from **Qurry › Check for Updates…** or **Settings › Appearance › Updates**, where you can also turn the automatic check off. In-app updates start from 0.1.9: install that one from the DMG once.
+- **GUI** — a `⬆ vX.Y.Z available` button appears in the status bar. It lists what changed in each version since yours. **Update & Restart** downloads the new version, checks its signature, replaces the app and opens it again with your tabs. The release page is the manual fallback. Check now from **Qurry › Check for Updates…** or **Settings › Appearance › Updates**, where you can also turn the automatic check off. In-app updates start from 0.1.9 (Apple Silicon), and from the first Intel / Linux release.
 - **TUI** — the status line shows `⬆ vX.Y.Z available`. Run **⌃k › Update Qurry & Restart** to download the release, verify it against the signed `SHA256SUMS`, replace `qurry-tui` and `qurry-mcp` in place and restart with your tabs. **⌃k › Check for Updates** checks now and lists what changed in each version since yours. From a shell, `qurry-tui --update` does the same. A TUI built from source (`target/release`) is not checked or replaced; update it with `git pull` and `cargo build`.
 - Turn the check off with `qurry-tui --no-update-check` or `QURRY_NO_UPDATE_CHECK=1`.
 
@@ -57,8 +69,8 @@ Connection options:
 pnpm install
 pnpm tauri dev
 
-# GUI installer (.dmg)
-pnpm tauri build --bundles dmg
+# GUI installer (.dmg on macOS, .AppImage / .deb on Linux)
+pnpm tauri build
 
 # TUI / MCP
 cargo build --release -p qurry-tui -p qurry-mcp
