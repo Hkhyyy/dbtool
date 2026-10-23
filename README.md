@@ -18,7 +18,7 @@ All three share the same data sources and passwords, so a connection created in 
 
 ## Download
 
-Get the latest build from [Releases](https://github.com/Hkhyyy/dbtool/releases):
+Get the latest build from [Releases](https://github.com/Hkhyyy/qurry/releases):
 
 - `Qurry_<version>_aarch64.dmg` — GUI app (Apple Silicon). Drag `Qurry.app` to Applications.
 - `qurry-cli_<version>_aarch64-apple-darwin.tar.gz` — `qurry-tui` and `qurry-mcp`.

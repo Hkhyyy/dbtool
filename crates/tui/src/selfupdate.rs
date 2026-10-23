@@ -23,8 +23,8 @@ fn err(e: impl std::fmt::Display) -> std::io::Error {
 
 /// 이 레포 릴리스에서 받는 파일만 (update-check.json 이나 API 응답이 바뀌어도 다른 곳에서 받지 않게)
 fn trusted_url(url: &str) -> bool {
-    // 저장소를 Qurry 로 바꿔도 받을 수 있게 (지금 이름 · 바뀔 이름)
-    [update::REPO, "Hkhyyy/qurry"].iter().any(|r| url.starts_with(&format!("https://github.com/{r}/releases/download/")))
+    // 지금 저장소 + 이름을 바꾸기 전 주소 (GitHub 이 새 주소로 돌려준다)
+    [update::REPO, "Hkhyyy/dbtool"].iter().any(|r| url.starts_with(&format!("https://github.com/{r}/releases/download/")))
 }
 
 /// curl: HTTPS 만 (리다이렉트 포함). quiet = TUI 화면 안에서 (진행 막대를 찍지 않는다)

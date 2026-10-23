@@ -30,4 +30,4 @@ Already installed? In the TUI run ⌃k › **Update Qurry & Restart** (or `qurry
 
 Coming from **dbtool**? Your data sources, passwords and settings are kept. Updating an old `dbtool-tui` replaces `dbtool-tui` / `dbtool-mcp` with Qurry under the old names (so existing MCP settings keep working); the next update also adds `qurry-tui` / `qurry-mcp`. The `dbtool-cli_…` file in this release is the same archive, kept so older versions can update.
 
-See the [README](https://github.com/Hkhyyy/dbtool#readme) for all features and shortcuts.
+See the [README](https://github.com/Hkhyyy/qurry#readme) for all features and shortcuts.

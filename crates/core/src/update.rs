@@ -5,7 +5,7 @@ use crate::error::{AppError, AppResult};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-pub const REPO: &str = "Hkhyyy/dbtool";
+pub const REPO: &str = "Hkhyyy/qurry";
 const CACHE_FILE: &str = "update-check.json";
 const CHECK_EVERY_SECS: u64 = 60 * 60;
 
