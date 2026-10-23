@@ -45,7 +45,7 @@ type Row =
   | { t: "file"; f: FileItem; score: number }
   | { t: "action"; a: ActionItem; score: number };
 
-// ── 객체 인덱스 캐시 (대상 DB별). Refresh(⌥⌘Y)·재접속 시 invalidate ──
+// ── 객체 인덱스 캐시 (대상 DB별). Refresh(⌥⌘y)·재접속 시 invalidate ──
 const objCache = new Map<string, Promise<DbObject[]>>();
 const colCache = new Map<string, Promise<DbObject[]>>();
 const dbCache = new Map<string, Promise<string[]>>();
@@ -361,7 +361,7 @@ export function SearchEverywhere(p: Props) {
         </div>
         <div className="popup-foot">
           {cur?.t === "db"
-            ? "↩ Select in Database Explorer   ⌘↓ Edit Data   ⌘B Go to DDL   F1 Quick Documentation   ⇥ Next tab"
+            ? "↩ Select in Database Explorer   ⌘↓ Edit Data   ⌘b Go to DDL   F1 Quick Documentation   ⇥ Next tab"
             : "↩ Open   ⇥ Next tab   ⇧⇧ Search Everywhere"}
         </div>
       </div>

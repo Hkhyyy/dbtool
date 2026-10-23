@@ -145,6 +145,18 @@ fn lower_unshifted(s: &str) -> String {
             rest = &rest[key_len..];
             continue;
         }
+        // 기호로 쓴 키 (⌘C, ⌥⌘Y): 수식키 기호 묶음 + 글자 하나
+        let glyphs: String = rest.chars().take_while(|c| "⌃⌥⇧⌘".contains(*c)).collect();
+        if !glyphs.is_empty() {
+            let after = &rest[glyphs.len()..];
+            let mut it = after.chars();
+            if let Some(k) = it.next().filter(|k| k.is_ascii_uppercase() && !it.next().is_some_and(|n| n.is_alphanumeric())) {
+                out.push_str(&glyphs);
+                out.push(if glyphs.contains('⇧') { k } else { k.to_ascii_lowercase() });
+                rest = &after[1..];
+                continue;
+            }
+        }
         let c = rest.chars().next().unwrap();
         out.push(c);
         rest = &rest[c.len_utf8()..];
@@ -259,6 +271,8 @@ mod tests {
         assert_eq!(d("Ctrl+Enter / Ctrl+Alt+Up / Ctrl+PgDn / F5"), if mac { "⌃Enter / ⌃⌥Up / ⌃PgDn / F5" } else { "Ctrl+Enter / Ctrl+Alt+Up / Ctrl+PgDn / F5" });
         // 수식키 없는 글자·문장은 그대로
         assert_eq!(d("D delete · Ctrl+Space"), if mac { "D delete · ⌃Space" } else { "D delete · Ctrl+Space" });
+        // 기호로 쓴 키도 같은 규칙 (⌘C → ⌘c, ⇧⌘A 는 그대로)
+        assert_eq!(d("y  ⌘C · ⌘A ⌫ · ⇧⌘A · ⌘F2"), "y  ⌘c · ⌘a ⌫ · ⇧⌘A · ⌘F2");
     }
 
     #[test]

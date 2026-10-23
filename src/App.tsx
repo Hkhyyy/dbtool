@@ -68,7 +68,7 @@ interface Tab {
   stale?: boolean;
 }
 
-/** 닫은 탭 / 최근 파일 (Reopen Closed Tab, ⌘E Recent Files) */
+/** 닫은 탭 / 최근 파일 (Reopen Closed Tab, ⌘e Recent Files) */
 interface TabSnapshot {
   key: string;
   kind: Tab["kind"];
@@ -719,7 +719,7 @@ export default function App() {
     if (rel) items.push({ label: "Import/Export", submenu: [{ label: "Export Data to File…", action: () => exportTable(info) }] });
     items.push({ label: "Tools", submenu: [{ label: "Manage Shown Schemas…", action: () => document.querySelector<HTMLElement>(".tree-node.conn.selected .scope-badge, .tree-node.selected .scope-badge")?.click() }] });
     if (info.kind === "conn") {
-      items.push({ label: "Diagnostics", submenu: [{ label: "Force Refresh", shortcut: K.force, action: () => info.refresh?.() }] });
+      items.push({ label: "Diagnostics", submenu: [{ label: "Force Refresh", shortcut: K.force, action: () => (invalidateSearchIndex(c.id), invalidateCompletion(c.id), info.refresh?.()) }] });
       items.push({ separator: true });
       items.push({ label: "Remove Data Source", shortcut: K.drop, danger: true, action: () => removeConn(c) });
     }
@@ -1128,16 +1128,21 @@ export default function App() {
       items.push(
         { separator: true },
         { label: "Duplicate", action: () => addTab(c, "console", { title: `${t.title} (copy)`, sql: sqlOf(t), database: t.database, group: t.group }) },
-        {
-          label: "Rename File…",
-          shortcut: "⇧F6",
-          action: () => {
-            const name = prompt("Rename console", t.title);
-            if (name && name.trim()) patch(t.id, { title: name.trim() });
-          },
-        },
+        { label: "Rename File…", shortcut: "⇧F6", action: () => renameConsole(t) },
       );
     setTabMenu({ x: e.clientX, y: e.clientY, items });
+  };
+
+  /** Refresh (⌥⌘y, Find Action): Data Source 목록 + 검색·자동완성 캐시 */
+  const refreshAll = () => {
+    invalidateSearchIndex();
+    for (const c of conns) invalidateCompletion(c.id);
+    refresh();
+  };
+
+  const renameConsole = (t: Tab) => {
+    const name = prompt("Rename console", t.title);
+    if (name && name.trim()) patch(t.id, { title: name.trim() });
   };
 
   // ───────── Switcher / Recent Files / Maximize ─────────
@@ -1163,7 +1168,7 @@ export default function App() {
       .map((r) => ({ key: r.key, icon: kindIcon(r.kind), title: r.title, hint: hintOf(r.connId, r.database), open: openKeys.has(r.key), color: conns.find((c) => c.id === r.connId)?.color }));
   };
 
-  // ───────── Search Everywhere (⇧⇧) / Go to Database Object (⌘O) / Find Action (⇧⌘A) ─────────
+  // ───────── Search Everywhere (⇧⇧) / Go to Database Object (⌘o) / Find Action (⇧⌘A) ─────────
   const [se, setSe] = useState<SeTab | null>(null);
 
   // ── Tool windows: Database Explorer (⌘1), Find (⌘3) ──
@@ -1279,7 +1284,7 @@ export default function App() {
       { name: "Maximize Editor", shortcut: sk("maximize"), group: "Window", run: () => setMaximized((m) => !m) },
       { name: "Database Explorer", shortcut: sk("explorer"), group: "Tool Windows", run: () => toggleExplorer() },
       { name: "Find (Full-text Search results)", shortcut: sk("find.window"), group: "Tool Windows", run: () => setFindOpen((o) => !o) },
-      { name: "Refresh", shortcut: sk("refresh"), group: "Database", run: () => refresh() },
+      { name: "Refresh", shortcut: sk("refresh"), group: "Database", run: () => refreshAll() },
       { name: "Increase Editor Font Size", shortcut: sk("font.bigger"), group: "Editor", run: () => bumpFont(1) },
       { name: "Decrease Editor Font Size", shortcut: sk("font.smaller"), group: "Editor", run: () => bumpFont(-1) },
       { name: "Reset Editor Font Size", group: "Editor", run: () => bumpFont(0) },
@@ -1374,11 +1379,7 @@ export default function App() {
         e.preventDefault();
         if (inTree && treeSel?.refresh) treeSel.refresh();
         else if (active?.kind === "table") applyTableFilter(active, active.where, active.orderBy);
-        else {
-          invalidateSearchIndex();
-          for (const c of conns) invalidateCompletion(c.id);
-          refresh();
-        }
+        else refreshAll();
         return;
       }
       if (is("editor.history") && active?.kind === "console") {
@@ -1389,6 +1390,12 @@ export default function App() {
       if (is("editor.cancel") && !inTree && active?.running) {
         e.preventDefault();
         cancel(active);
+        return;
+      }
+      // ⇧F6 = 콘솔 이름 바꾸기 (탭 메뉴 Rename File… 과 같다)
+      if (e.key === "F6" && e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey && active?.kind === "console") {
+        e.preventDefault();
+        renameConsole(active);
         return;
       }
       if (is("tab.close") && active) {
@@ -1656,7 +1663,7 @@ export default function App() {
             <div className="empty center">
               Right-click a data source → <b>New Query Console</b> ({isMac ? "⇧⌘L" : "Ctrl+Shift+L"}).
               <br />
-              <span className="muted">Double-click a table ({isMac ? "⌘↓" : "F4"}) to edit data, {isMac ? "⌘B" : "Ctrl+B"} for DDL, {isMac ? "⌘↩" : "Ctrl+Enter"} to execute.</span>
+              <span className="muted">Double-click a table ({isMac ? "⌘↓" : "F4"}) to edit data, {isMac ? "⌘b" : "Ctrl+b"} for DDL, {isMac ? "⌘↩" : "Ctrl+Enter"} to execute.</span>
               <br />
               <span className="muted">All shortcuts: <b>Keymap Reference</b> ({sk("keymap")}) · Search Everywhere ({isMac ? "⇧⇧" : "Shift Shift"})</span>
             </div>

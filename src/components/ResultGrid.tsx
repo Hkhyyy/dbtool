@@ -474,7 +474,8 @@ export function ResultGrid(p: Props) {
       return stop();
     }
     if (mod && k === "r") return p.onReload(), stop();
-    if (mod && e.key === "F2") return p.onCancel(), stop();
+    // 실행 중이면 전역 단축키(editor.cancel)가 먼저 취소했다 (두 번 부르지 않게)
+    if (mod && e.key === "F2") return e.defaultPrevented || p.onCancel(), stop();
     if (mod && e.altKey && e.code === "KeyN") return setNull(), stop();
     if (mod && e.altKey && e.code === "KeyD") return setDefault(), stop();
     if (mod && e.altKey && e.code === "KeyZ") return revertSelected(), stop();
@@ -517,8 +518,8 @@ export function ResultGrid(p: Props) {
     const r = dataIndex(d);
     const v = valueAt(r, c);
     const k = isMac
-      ? { vedit: "⇧↩", nul: "⌥⌘N", def: "⌥⌘D", copy: "⌘C", paste: "⌘V", del: "⌘⌫", clone: "⌘D", revert: "⌥⌘Z", rec: "⇧⌘↩" }
-      : { vedit: "Shift+Enter", nul: "Ctrl+Alt+N", def: "Ctrl+Alt+D", copy: "Ctrl+C", paste: "Ctrl+V", del: "Ctrl+Backspace", clone: "Ctrl+D", revert: "Ctrl+Alt+Z", rec: "Ctrl+Shift+Enter" };
+      ? { vedit: "⇧↩", nul: "⌥⌘n", def: "⌥⌘d", copy: "⌘c", paste: "⌘v", del: "⌘⌫", clone: "⌘d", revert: "⌥⌘z", rec: "⇧⌘↩" }
+      : { vedit: "Shift+Enter", nul: "Ctrl+Alt+n", def: "Ctrl+Alt+d", copy: "Ctrl+c", paste: "Ctrl+v", del: "Ctrl+Backspace", clone: "Ctrl+d", revert: "Ctrl+Alt+z", rec: "Ctrl+Shift+Enter" };
     const name = quoteIdent(cols[c].name);
     const items: MenuItem[] = [
       ...(canEdit ? ([{ label: "Edit", shortcut: "↩", action: () => startEdit(r, c) }] as MenuItem[]) : []),
@@ -567,7 +568,7 @@ export function ResultGrid(p: Props) {
         : []),
       { separator: true },
       { label: "Export Data…", action: p.onExport },
-      ...(p.onDdl ? ([{ label: "Go To DDL", shortcut: isMac ? "⌘B" : "Ctrl+B", action: p.onDdl }] as MenuItem[]) : []),
+      ...(p.onDdl ? ([{ label: "Go To DDL", shortcut: isMac ? "⌘b" : "Ctrl+b", action: p.onDdl }] as MenuItem[]) : []),
     ];
     setMenu({ x: e.clientX, y: e.clientY, items });
   };
@@ -578,7 +579,7 @@ export function ResultGrid(p: Props) {
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
     setMenu({ x: r.left, y: r.bottom + 2, items });
   };
-  const k = isMac ? { reload: "⌘R", cancel: "⌘F2", add: "⌘N", del: "⌘⌫", revert: "⌥⌘Z", submit: "⌘↩", find: "⌘F" } : { reload: "Ctrl+R", cancel: "Ctrl+F2", add: "Alt+Insert", del: "Ctrl+Y", revert: "Ctrl+Alt+Z", submit: "Ctrl+Enter", find: "Ctrl+F" };
+  const k = isMac ? { reload: "⌘r", cancel: "⌘F2", add: "⌘n", del: "⌘⌫", revert: "⌥⌘z", submit: "⌘↩", find: "⌘f" } : { reload: "Ctrl+r", cancel: "Ctrl+F2", add: "Ctrl+n", del: "Ctrl+Backspace", revert: "Ctrl+Alt+z", submit: "Ctrl+Enter", find: "Ctrl+f" };
 
   const rowsLabel = `${baseCount}${result.truncated ? "+" : ""} row${baseCount === 1 ? "" : "s"}`;
 
@@ -705,7 +706,7 @@ export function ResultGrid(p: Props) {
               <div
                 className="cell rownum"
                 style={{ width: ROWNUM_W }}
-                title="Select all (⌘A)"
+                title="Select all (⌘a)"
                 onMouseDown={() => {
                   setSelA({ r: 0, c: 0 });
                   setSelB({ r: rowCount - 1, c: cols.length - 1 });

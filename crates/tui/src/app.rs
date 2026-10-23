@@ -281,7 +281,7 @@ pub const ACTIONS: &[(Action, &str, &str)] = &[
     (Action::TxToggle, "Toggle Transaction Mode (Auto/Manual)", ""),
     (Action::Commit, "Commit", ""),
     (Action::Rollback, "Roll Back", ""),
-    (Action::ExecSettings, "Query Execution Settings (what ⌃Enter runs)", ""),
+    (Action::ExecSettings, "Query Execution Settings (what Ctrl+Enter runs)", ""),
     (Action::ClearConsole, "Clear Console (delete all text)", "⌘A ⌫ (console)"),
     (Action::SearchEverywhere, "Search Everywhere (objects · columns · tabs · actions)", ""),
     (Action::GoToObject, "Go to Database Object", ""),
@@ -299,7 +299,7 @@ pub const ACTIONS: &[(Action, &str, &str)] = &[
     (Action::DeleteDataSource, "Remove Data Source", "D (explorer)"),
     (Action::Connect, "Connect", "c (explorer)"),
     (Action::Disconnect, "Disconnect", ""),
-    (Action::Refresh, "Refresh", "r (explorer) / F5 (table)"),
+    (Action::Refresh, "Refresh", "r (explorer · table · Redis)"),
     (Action::ManageSchemas, "Manage Shown Schemas… (databases · schemas in the explorer)", "s (explorer)"),
     (Action::CloseTab, "Close Tab", ""),
     (Action::NextTab, "Next Tab", ""),
@@ -1085,7 +1085,7 @@ impl App {
             return self.reload_table(id);
         }
         self.popup = Some(Popup::Confirm {
-            text: format!("{n} pending change(s) are not saved to the database (⌃S submits them). Discard them and reload?"),
+            text: format!("{n} pending change(s) are not saved to the database ({} submits them). Discard them and reload?", self.keys.label(Action::Submit)),
             on_yes: Box::new(move |a| a.reload_table(id)),
         });
     }
@@ -1366,7 +1366,11 @@ impl App {
         let id = t.id;
         let TabKind::Console(c) = &t.kind else {
             if let TabKind::Table(_) = t.kind {
-                self.reload_table_checked(id);
+                if explain {
+                    self.status = "Explain Plan runs in a query console".into();
+                } else {
+                    self.reload_table_checked(id);
+                }
             }
             return;
         };
@@ -2260,8 +2264,9 @@ impl App {
                 self.set_explorer_width(w);
             }
             Action::SplitShrink | Action::SplitGrow => {
-                // 포커스 있는 칸 옆의 좌우 경계선을 옮긴다 (가장 가까운 것이 위아래 경계선이어도)
-                let path = self.panes.ancestor_with_dir(self.focused_group(), SplitDir::Right);
+                // 포커스 있는 칸 옆의 좌우 경계선을 옮긴다 (가장 가까운 것이 위아래 경계선이어도). 좌우가 없으면 위아래
+                let g = self.focused_group();
+                let path = self.panes.ancestor_with_dir(g, SplitDir::Right).or_else(|| self.panes.ancestor_with_dir(g, SplitDir::Down));
                 if let Some(pct) = path.and_then(|p| self.panes.pct_mut(&p)) {
                     *pct = (*pct as i16 + if a == Action::SplitGrow { 5 } else { -5 }).clamp(15, 85) as u16;
                 }

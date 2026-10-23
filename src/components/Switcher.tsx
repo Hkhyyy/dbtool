@@ -61,7 +61,7 @@ export function Switcher({ items, start, onPick, onClose }: { items: SwitchItem[
   );
 }
 
-/** ⌘E Recent Files: 입력하면 바로 거른다 (speed search) */
+/** ⌘e Recent Files: 입력하면 바로 거른다 (speed search) */
 export function RecentFiles({ items, onPick, onClose, title = "Recent Files", start }: { items: SwitchItem[]; onPick: (k: string) => void; onClose: () => void; title?: string; start?: number }) {
   const [q, setQ] = useState("");
   const [i, setI] = useState(start ?? (items.length > 1 ? 1 : 0));

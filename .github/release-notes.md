@@ -26,7 +26,7 @@ mkdir -p ~/.local/bin && mv dbtool-tui dbtool-mcp ~/.local/bin/
 dbtool-tui                            # F1 = keymap
 claude mcp add dbtool -- dbtool-mcp   # register with Claude Code (read-only by default)
 ```
-Already installed? In the TUI run ⌃K › **Update dbtool & Restart** (or `dbtool-tui --update`). The GUI shows `⬆ available` in its status bar; **Update & Restart** installs the new version in place (from 0.1.9 on).
+Already installed? In the TUI run ⌃k › **Update dbtool & Restart** (or `dbtool-tui --update`). The GUI shows `⬆ available` in its status bar; **Update & Restart** installs the new version in place (from 0.1.9 on).
 
 See the [README](https://github.com/Hkhyyy/dbtool#readme) for all features and shortcuts.
 

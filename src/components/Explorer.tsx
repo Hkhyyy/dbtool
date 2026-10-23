@@ -217,7 +217,7 @@ export function Explorer(p: Props) {
         <span className="explorer-title">Database Explorer</span>
         <span className="grow" />
         <button className="icon" title="New Data Source" onClick={p.onAdd}>＋</button>
-        <button className="icon" title="Refresh (⌘⌥Y)" onClick={p.onRefresh}>⟳</button>
+        <button className="icon" title="Refresh (⌥⌘y)" onClick={p.onRefresh}>⟳</button>
         <span className="menu-anchor">
           <button
             className="icon"
